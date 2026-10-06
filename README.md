@@ -11,7 +11,8 @@ looking at it.
 > **Status: Phase 1 (developer-first).** One Rust binary on Postgres, a per-slot contextual
 > bandit with a holdout and auto-rollback, three installs (`@pratibimba/next`, the
 > `@pratibimba/edge` worker and a script-tag fallback) and a dashboard with an approval gate.
-> Phase 2 has started: an open MCP server at `/mcp` is in. Expect breaking changes.
+> Phase 2 has started: an open MCP server at `/mcp` and an agent instruction pack are in.
+> Expect breaking changes.
 
 ## How it works
 
@@ -201,6 +202,41 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
   to `mcp_calls`, and each result returns that row as `audit`. A draft links to the call that
   wrote it, so the approvals API shows the agent and its justification.
 
+### The agent instruction pack
+
+The MCP server gives your agent the tools. The pack teaches it how to use them. Run this in
+your site's repo:
+
+```sh
+npx @pratibimba/agent install --url https://core.example.com    # /mcp is added for you
+export PRATIBIMBA_MCP_TOKEN=prb_mcp_…                           # from pratibimba mcp-token
+```
+
+| File | For |
+|---|---|
+| `.claude/skills/pratibimba/SKILL.md`, `.mcp.json` | Claude Code |
+| `.cursor/rules/pratibimba.mdc`, `.cursor/mcp.json` | Cursor |
+| `.pratibimba/agent-instructions.md`, `.pratibimba/mcp.json` | any other MCP client |
+
+The instructions are the same in all three files. They tell the agent to:
+- read the slot's results, its variant history and a few decision explanations before it
+  proposes anything;
+- write each variant as a real component next to the baseline, using the repo's own components
+  and copy and no invented facts, and send the same markup as the draft's `html`;
+- give a specific justification on every call;
+- never claim a draft is live, and never add variants through the site file, which would
+  approve them.
+
+The pack is yours to edit and commit. Running the install again never overwrites a pack file
+you changed (`--force` does). In an MCP config it only adds the `pratibimba` entry and leaves
+other servers alone. The token is never written to a file: the configs read it from
+`PRATIBIMBA_MCP_TOKEN` (`--token-env` picks another name), as `${VAR}` for Claude Code and
+`${env:VAR}` for Cursor.
+
+It ships as an npm package rather than a `pratibimba agent` subcommand because it runs in your
+site's repo, where Node is already installed. The Core binary runs on a server next to
+Postgres.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -238,6 +274,10 @@ and comment actions, install probes, and model versions with manual rollback.
 export DATABASE_URL=postgres://postgres@localhost:5432/postgres
 cargo test                                  # bandit math, migrations, HTTP, worker, scripted cohorts
 cd packages/client && npm install && npm test   # the client script, in jsdom
+cd packages/agent && npm install && npm test    # the instruction pack installer
+npm run mutate                                  # 23 mutants, each must turn that suite red
+# Install the pack into a copy of examples/next, then propose a draft through the MCP SDK client:
+PRB_BIN=../../target/debug/pratibimba DATABASE_URL=postgres://…/scratch npm run e2e
 
 # The dashboard, in headless Chromium against real Core and a seeded history.
 cargo build && cd dashboard && npm install && npx playwright install chromium
