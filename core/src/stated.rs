@@ -52,7 +52,11 @@ pub fn is_demographic(key: &str) -> bool {
 /// they never contain a `:` and cannot collide with these.
 pub const TIME_PREFIX: &str = "time:";
 /// The time-of-day features (see [`crate::insights::localtime`]), by decision feature name.
-pub const TIME_FEATURES: [&str; 3] = ["sin_hour", "cos_hour", "is_night_local"];
+///
+/// Append-only: `is_weekend_local` and `is_business_hours_local` joined after the first three.
+/// A model saved with only the first three keeps what they learned; the two new dimensions
+/// join at the prior on the first decision that carries them (see [`StatedModel`]).
+pub const TIME_FEATURES: [&str; 5] = ["sin_hour", "cos_hour", "is_night_local", "is_weekend_local", "is_business_hours_local"];
 /// The policy name of a decision scored with the extension for time features alone.
 pub const TIME_POLICY: &str = "lints_time";
 
@@ -89,7 +93,8 @@ pub fn ext_from_features(features: &Value) -> BTreeMap<String, f64> {
 
 /// The time features of a local clock, by model key.
 pub fn time_values(t: &crate::insights::localtime::LocalTime) -> BTreeMap<String, f64> {
-    let v = [t.sin_hour, t.cos_hour, if t.is_night_local { 1.0 } else { 0.0 }];
+    let b = |v: bool| if v { 1.0 } else { 0.0 };
+    let v = [t.sin_hour, t.cos_hour, b(t.is_night_local), b(t.is_weekend_local), b(t.is_business_hours_local)];
     time_keys().into_iter().zip(v).collect()
 }
 
@@ -549,11 +554,15 @@ mod tests {
         let mut keys = vec!["a".to_string()];
         keys.extend(time_keys());
         let m = model_for(&old, &keys);
-        assert_eq!(m.keys, ["a", "time:cos_hour", "time:is_night_local", "time:sin_hour"], "appended after the old keys");
+        assert_eq!(
+            m.keys,
+            ["a", "time:cos_hour", "time:is_business_hours_local", "time:is_night_local", "time:is_weekend_local", "time:sin_hour"],
+            "appended after the old keys"
+        );
         let a = m.arm(&old, 1);
         assert_eq!(&a.mean[..5], &before.mean[..], "the old dimensions keep their posterior");
-        assert_eq!(&a.mean[5..], &[0.0, 0.0, 0.0]);
-        for i in 5..8 {
+        assert_eq!(&a.mean[5..], &[0.0; 5]);
+        for i in 5..10 {
             assert_eq!(a.cov[i][i], 1.0);
             assert_eq!(a.cov[0][i], 0.0);
         }
@@ -596,6 +605,64 @@ mod tests {
         assert!(ext_from_features(&feat(1.0)).contains_key("time:is_night_local"));
         assert_eq!(feature_name("time:cos_hour"), "cos_hour");
         assert_eq!(feature_name("garden"), "stated:garden");
+    }
+
+    /// A model saved by the release before weekend and business hours joined: three time keys,
+    /// arms of dimension 4 + 3. The JSON is the exact shape that release wrote.
+    fn saved_v2() -> LinTs {
+        let mut m = LinTs::default();
+        for i in 0..60 {
+            let night = (i % 2) as f64;
+            learn(&mut m, 1, &X, &json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0,
+                "sin_hour": 0.5, "cos_hour": -0.5, "is_night_local": night }), i % 2 == 0);
+        }
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["stated"]["keys"], json!(["time:cos_hour", "time:is_night_local", "time:sin_hour"]));
+        assert_eq!(v["stated"]["arms"]["1"]["mean"].as_array().unwrap().len(), 7);
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn weekend_and_business_hours_extend_a_three_time_feature_model() {
+        let old = saved_v2();
+        let before = old.stated.clone().unwrap().arms[&1].clone();
+        let m = model_for(&old, &time_keys());
+        assert_eq!(
+            m.keys,
+            ["time:cos_hour", "time:is_night_local", "time:sin_hour", "time:is_business_hours_local", "time:is_weekend_local"],
+            "the two new keys are appended; the old three keep their places"
+        );
+        let a = m.arm(&old, 1);
+        assert_eq!(&a.mean[..7], &before.mean[..], "the old dimensions keep their posterior");
+        assert_eq!(&a.cov[3][..7], &before.cov[3][..], "and their covariance");
+        assert_eq!(&a.mean[7..], &[0.0, 0.0]);
+        for i in 7..9 {
+            assert_eq!(a.cov[i][i], 1.0);
+            assert_eq!(a.cov[6][i], 0.0);
+        }
+        let w = weights(&old, &time_keys(), 1);
+        assert_eq!(w["is_night_local"], json!(before.mean[5]));
+        assert_eq!(w["is_weekend_local"], json!(0.0));
+        // Before any weekend data, the extended model scores exactly as the saved one did.
+        let f = json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0, "sin_hour": 0.5, "cos_hour": -0.5, "is_night_local": 1 });
+        let mut fw = f.clone();
+        fw["is_weekend_local"] = json!(1);
+        fw["is_business_hours_local"] = json!(1);
+        assert!((mean_score(&old, 1, &X, &f) - mean_score(&old, 1, &X, &fw)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn time_learning_separates_weekend_from_weekday() {
+        let mut model = LinTs::default();
+        let feat = |weekend: f64| json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0, "sin_hour": 0.0, "cos_hour": 1.0,
+            "is_night_local": 0, "is_weekend_local": weekend, "is_business_hours_local": 1.0 - weekend });
+        for _ in 0..200 {
+            learn(&mut model, 1, &X, &feat(1.0), true);
+            learn(&mut model, 1, &X, &feat(0.0), false);
+        }
+        let weekend = mean_score(&model, 1, &X, &feat(1.0));
+        let weekday = mean_score(&model, 1, &X, &feat(0.0));
+        assert!(weekend > 0.8 && weekday < 0.2, "weekend {weekend:.2} weekday {weekday:.2}");
     }
 
     #[test]

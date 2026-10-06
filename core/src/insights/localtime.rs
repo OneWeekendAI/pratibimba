@@ -8,6 +8,13 @@
 //! It is coarse (one of ~40 values, not identifying), it is DST-correct at the moment of the
 //! event, and spoofing it only mislabels the spoofer's own hour. An event with no offset falls
 //! back to UTC and is counted out of `tz_known`, so a chart can say how much of it is a guess.
+//!
+//! **Server-side SDKs.** `@pratibimba/next` and `@pratibimba/edge` render on a server with no
+//! browser clock. They send `ctx.tz`, an IANA zone name, taken from the edge's IP geolocation
+//! header (Vercel's `x-vercel-ip-timezone`, Cloudflare's `request.cf.timezone` or `cf-timezone`,
+//! CloudFront's `cloudfront-viewer-time-zone`) or, failing that, from a first-party cookie the
+//! browser half sets. Core resolves the zone at the decision's own clock ([`zone_offset`]), and
+//! a named zone is preferred over a raw offset when both are sent.
 
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use serde::Serialize;
@@ -18,6 +25,24 @@ pub const MAX_OFFSET: i16 = 840;
 
 pub fn valid_offset(m: i16) -> bool {
     (MIN_OFFSET..=MAX_OFFSET).contains(&m)
+}
+
+/// The longest IANA zone name accepted (the longest real one is 32 characters).
+pub const MAX_ZONE_LEN: usize = 64;
+
+/// A named IANA time zone (`Asia/Kolkata`), or `None` for a name the tz database lacks.
+pub fn parse_zone(name: &str) -> Option<chrono_tz::Tz> {
+    if name.is_empty() || name.len() > MAX_ZONE_LEN {
+        return None;
+    }
+    name.parse().ok()
+}
+
+/// A zone's offset (minutes east of UTC) at the instant `at`: daylight saving is the zone's
+/// rule at that instant, so a sandbox's simulated July is BST even when the real clock says GMT.
+pub fn zone_offset(zone: chrono_tz::Tz, at: DateTime<Utc>) -> i16 {
+    use chrono::{Offset, TimeZone};
+    (zone.offset_from_utc_datetime(&at.naive_utc()).fix().local_minus_utc() / 60) as i16
 }
 
 /// The site's night window, `[start, end)` in local hours; wraps midnight when start > end.

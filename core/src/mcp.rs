@@ -214,7 +214,7 @@ fn catalogue() -> Vec<Value> {
              json!({ "subject": { "type": "string", "description": "The subject id, e.g. one from list_decisions on the sandbox or your own test visitor." },
                      "days": { "type": "number", "description": "How far to move the clock (or use `seconds`)." },
                      "seconds": { "type": "integer" },
-                     "ctx": { "type": "object", "description": "Optional decision context {returning, mobile, from_ad, tz_offset}. Default: a returning visitor." } }),
+                     "ctx": { "type": "object", "description": "Optional decision context {returning, mobile, from_ad, tz_offset, tz (an IANA zone name)}. Default: a returning visitor." } }),
              &["subject"]),
     ]
 }

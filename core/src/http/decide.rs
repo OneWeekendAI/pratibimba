@@ -42,6 +42,11 @@ pub struct Ctx {
     /// `is_night_local` (see [`crate::insights::localtime`]); without it, it carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tz_offset: Option<i16>,
+    /// The visitor's IANA time zone (`Asia/Kolkata`), as a server-side SDK reads it from the
+    /// edge's geolocation or the browser's cookie. Resolved at the decision's clock, so DST
+    /// holds; preferred over `tz_offset` when both are sent. An unknown name is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<String>,
 }
 
 impl Ctx {
@@ -136,6 +141,13 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     if req.ctx.tz_offset.is_some_and(|m| !crate::insights::localtime::valid_offset(m)) {
         return Err(ApiError::BadRequest("ctx.tz_offset is minutes east of UTC, -720 to 840".into()));
     }
+    let zone = match req.ctx.tz.as_deref() {
+        None => None,
+        Some(name) => Some(
+            crate::insights::localtime::parse_zone(name)
+                .ok_or_else(|| ApiError::BadRequest(format!("ctx.tz {name:?} is not an IANA time zone")))?,
+        ),
+    };
     let pool = &state.pool;
     // `at` is the site's clock: the database's now, or a sandbox's simulated time.
     let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>, i16, i16)> = sqlx::query_as(
@@ -150,6 +162,11 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .await?;
     let Some((slot_id, ttl, holdout_fraction, paused, at, night_start, night_end)) = slot else {
         return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", req.slot, req.site)));
+    };
+    // The visitor's local clock: a named zone (resolved at the site's clock) wins over an offset.
+    let ctx = Ctx {
+        tz_offset: zone.map(|z| crate::insights::localtime::zone_offset(z, at)).or(req.ctx.tz_offset),
+        ..req.ctx.clone()
     };
     let mut arms: Vec<ArmRow> = sqlx::query_as(
         "SELECT id, key, payload, is_baseline, traffic_share FROM variants WHERE slot_id = $1 AND status = 'approved' ORDER BY id",
@@ -169,13 +186,13 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     }
     // Promoted audiences gate their variants: a visitor outside the audience never gets them.
     let night = crate::insights::localtime::NightWindow { start: night_start as u8, end: night_end as u8 };
-    let audiences = gate_by_audience(pool, slot_id, &req.ctx, at, night, &mut arms).await?;
+    let audiences = gate_by_audience(pool, slot_id, &ctx, at, night, &mut arms).await?;
     if arms.is_empty() {
         return Err(ApiError::Conflict(format!("no variant of slot {:?} is open to this visitor's audiences", req.slot)));
     }
     // The `stated` feature group: present on every decision of a site that has a picker.
     let site_keys = stated::site_keys(pool, &req.site).await?;
-    let said = stated::resolve(pool, &req.site, &req.subject, &site_keys, &req.ctx.stated).await?;
+    let said = stated::resolve(pool, &req.site, &req.subject, &site_keys, &ctx.stated).await?;
     let said_now = stated::from_features(&stated::with_stated(json!({}), &site_keys, &said));
     let key_of = |id: i64| arms.iter().find(|a| a.0 == id).map(|a| (a.1.clone(), a.2.clone()));
 
@@ -217,13 +234,13 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let (version, state_json): (i64, Value) =
         sqlx::query_as("SELECT version, state FROM models WHERE slot_id = $1").bind(slot_id).fetch_one(pool).await?;
     let model: LinTs = serde_json::from_value(state_json).map_err(anyhow::Error::from)?;
-    let x = req.ctx.vector();
+    let x = ctx.vector();
     let seed = state.seeds.lock().expect("seed rng poisoned").next_u64();
     let ids = if eligible.is_empty() { arms.iter().map(|a| a.0).collect() } else { eligible };
     // The extension: the site's stated tastes, plus the local clock when the visitor reported it.
     let mut ext_keys = site_keys.clone();
     let mut ext = said.clone();
-    if let Some(off) = req.ctx.tz_offset {
+    if let Some(off) = ctx.tz_offset {
         let local = crate::insights::localtime::LocalTime::at(at, Some(off), night);
         ext_keys.extend(stated::time_keys());
         ext.extend(stated::time_values(&local));
