@@ -172,7 +172,7 @@ pub fn score(cells: &[(Cell, i64)], baselines: &HashMap<i64, i64>, night: NightW
 
 /// Run discovery for every site; returns the number of drafts written or refreshed.
 pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<u64> {
-    let sites: Vec<(String, i16, i16)> = sqlx::query_as("SELECT id, night_start_hour, night_end_hour FROM sites").fetch_all(pool).await?;
+    let sites: Vec<(String, i16, i16)> = sqlx::query_as("SELECT id, night_start_hour, night_end_hour FROM sites WHERE sandbox_of IS NULL").fetch_all(pool).await?;
     let mut written = 0;
     for (site, ns, ne) in sites {
         let cells: Vec<(i64, i64, i16, i16, i16, bool, i64)> = sqlx::query_as(

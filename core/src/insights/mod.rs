@@ -7,6 +7,8 @@
 //!   per-visitor activity weeks, and segment backfill. See `rollup`.
 //! - `nightly` (every 24 h): `rollup_retention` and segment discovery. See `discover`.
 //!
+//! Simulator sandboxes (`sites.sandbox_of`) are skipped, as the learning worker skips them.
+//!
 //! Raw events are not pruned: the spec schedules removal only for right-to-erase, and drops
 //! old *rollup* partitions, not raw rows. The rollups are partitioned by month for that.
 

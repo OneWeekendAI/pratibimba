@@ -233,7 +233,7 @@ pub async fn visitors(pool: &PgPool, site: &str, cohort: &Cohort) -> Result<Day,
             }
         }
         if !events.is_empty() {
-            let _accepted = crate::http::events::handler(State(state.clone()), Json(EventsRequest { site: id.clone(), subject, events })).await?;
+            let _accepted = crate::http::events::handler(State(state.clone()), Json(EventsRequest { site: id.clone(), subject, events, tz_offset: None })).await?;
         }
     }
     day.absorb(worker::run_sandbox(pool, &id, at).await?);

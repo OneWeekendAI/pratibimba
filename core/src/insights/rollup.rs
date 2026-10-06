@@ -109,7 +109,8 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<RollupStats> {
     };
     let mut dirty: BTreeSet<(String, DateTime<Utc>)> = sqlx::query_as::<_, (String, DateTime<Utc>)>(
         "SELECT DISTINCT site_id, date_trunc('hour', exposed_at, 'UTC') FROM decisions
-          WHERE exposed_at IS NOT NULL AND (exposed_at >= $1 OR settled_at >= $1 OR outcome_at >= $1)",
+          WHERE exposed_at IS NOT NULL AND (exposed_at >= $1 OR settled_at >= $1 OR outcome_at >= $1)
+            AND site_id IN (SELECT id FROM sites WHERE sandbox_of IS NULL)",
     )
     .bind(since)
     .fetch_all(pool)
@@ -162,6 +163,7 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<RollupStats> {
     sqlx::query(
         "INSERT INTO insight_visitor_weeks (site_id, subject, week)
          SELECT DISTINCT site_id, subject, date_trunc('week', received_at, 'UTC')::date FROM events WHERE received_at >= $1
+            AND site_id IN (SELECT id FROM sites WHERE sandbox_of IS NULL)
          ON CONFLICT DO NOTHING",
     )
     .bind(since)
