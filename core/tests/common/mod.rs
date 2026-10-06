@@ -158,3 +158,26 @@ pub async fn seed_decisions(pool: &PgPool, variant: &str, in_holdout: bool, n: i
     .await
     .unwrap();
 }
+
+pub const TOKEN: &str = "test-admin-token";
+
+/// The router with the admin API on.
+pub fn admin_app(pool: &PgPool) -> Router {
+    pratibimba::http::router(pratibimba::http::AppState::configured(pool.clone(), Some(7), Some(TOKEN.into()), None), &[])
+}
+
+pub async fn api_get(app: &Router, path: &str) -> Resp {
+    send(app, Request::get(path).header("authorization", format!("Bearer {TOKEN}")).body(Body::empty()).unwrap()).await
+}
+
+pub async fn api_post(app: &Router, path: &str, body: serde_json::Value) -> Resp {
+    send(
+        app,
+        Request::post(path)
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+}

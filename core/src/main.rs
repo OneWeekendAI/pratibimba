@@ -8,6 +8,8 @@
 //! - `PRB_SITE_ORIGIN`: comma-separated origins allowed by CORS. Needed only when the page is not
 //!   served from the same origin as Core (dev setups); production proxies `/_prb/*` instead.
 //! - `PRB_WORKER_TICK_MS`: how often `worker` closes attribution windows, default 1000.
+//! - `PRB_ADMIN_TOKEN`: turns on the dashboard API (`/api`); without it `/api` answers 503.
+//! - `PRB_DASHBOARD_DIR`: the dashboard's static export, served at `/app`.
 
 use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
@@ -37,7 +39,16 @@ async fn main() -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .map(String::from)
                 .collect();
-            let app = http::router(http::AppState::new(pool), &origins);
+            let admin = std::env::var("PRB_ADMIN_TOKEN").ok();
+            if admin.as_deref().is_none_or(str::is_empty) {
+                tracing::warn!("PRB_ADMIN_TOKEN is not set: the dashboard API (/api) is off");
+            }
+            let dashboard = std::env::var("PRB_DASHBOARD_DIR").ok().map(std::path::PathBuf::from).filter(|d| d.join("index.html").exists());
+            match &dashboard {
+                Some(d) => tracing::info!(dir = %d.display(), "serving the dashboard at /app"),
+                None => tracing::info!("no dashboard: set PRB_DASHBOARD_DIR to a built dashboard (dashboard/out)"),
+            }
+            let app = http::router(http::AppState::configured(pool, None, admin, dashboard), &origins);
             let bind = std::env::var("PRB_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
             let listener = tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("cannot bind {bind}"))?;
             tracing::info!(%bind, "serving");

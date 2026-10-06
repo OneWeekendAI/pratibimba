@@ -1,9 +1,13 @@
-//! The HTTP surface: `/decide`, `/e`, `/manifest/:site`, `/sdk.js`, `/health`.
+//! The HTTP surface.
 //!
-//! Browsers reach these through the site's own origin (`/_prb/*` proxied to Core), so the
-//! decision path stays first-party. CORS exists only for dev setups where the page and Core
-//! sit on different origins (`PRB_SITE_ORIGIN`).
+//! - **Public** (what owners proxy at `/_prb/*`): `/decide`, `/decide/batch`, `/e`,
+//!   `/manifest/:site`, `/sdk.js`, `/health`. Browsers reach these through the site's own
+//!   origin, so the decision path stays first-party. CORS exists only for dev setups where the
+//!   page and Core sit on different origins (`PRB_SITE_ORIGIN`).
+//! - **Admin** (`/api/*`): the dashboard's API, behind `PRB_ADMIN_TOKEN`. See `admin`.
+//! - **Dashboard** (`/app/*`): the static export of `dashboard/`, from `PRB_DASHBOARD_DIR`.
 
+pub mod admin;
 pub mod decide;
 pub mod events;
 pub mod manifest;
@@ -17,7 +21,9 @@ use axum::{
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use sqlx::PgPool;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 pub use decide::{Ctx, DecideRequest, DecideResponse};
@@ -27,27 +33,64 @@ pub struct AppState {
     /// Source of per-decision seeds. OS entropy in production; fixed in tests so a cohort
     /// replays exactly.
     pub seeds: Mutex<ChaCha8Rng>,
+    /// `PRB_ADMIN_TOKEN`. `None` turns the whole `/api` surface off.
+    pub admin_token: Option<String>,
+    /// Where the dashboard's static export lives. `None` serves no `/app`.
+    pub dashboard_dir: Option<PathBuf>,
+    /// For the install probes.
+    pub http: reqwest::Client,
+    /// How often `/api/sites/:id/stream` sends the overview.
+    pub stream_every: Duration,
 }
 
 impl AppState {
+    fn build(pool: PgPool, seeds: ChaCha8Rng) -> Self {
+        AppState {
+            pool,
+            seeds: Mutex::new(seeds),
+            admin_token: None,
+            dashboard_dir: None,
+            http: crate::probes::client(),
+            stream_every: Duration::from_secs(3),
+        }
+    }
+
     pub fn new(pool: PgPool) -> Arc<Self> {
-        Arc::new(AppState { pool, seeds: Mutex::new(ChaCha8Rng::from_os_rng()) })
+        Arc::new(Self::build(pool, ChaCha8Rng::from_os_rng()))
     }
 
     pub fn with_seed(pool: PgPool, seed: u64) -> Arc<Self> {
-        Arc::new(AppState { pool, seeds: Mutex::new(ChaCha8Rng::seed_from_u64(seed)) })
+        Arc::new(Self::build(pool, ChaCha8Rng::seed_from_u64(seed)))
+    }
+
+    /// The full state for `serve`: an admin token and a dashboard directory, both optional.
+    pub fn configured(pool: PgPool, seed: Option<u64>, admin_token: Option<String>, dashboard_dir: Option<PathBuf>) -> Arc<Self> {
+        let rng = seed.map(ChaCha8Rng::seed_from_u64).unwrap_or_else(ChaCha8Rng::from_os_rng);
+        let mut s = Self::build(pool, rng);
+        s.admin_token = admin_token.filter(|t| !t.is_empty());
+        s.dashboard_dir = dashboard_dir;
+        Arc::new(s)
     }
 }
 
 pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/decide", post(decide::handler))
         .route("/decide/batch", post(decide::batch_handler))
         .route("/e", post(events::handler))
         .route("/manifest/{site}", get(manifest::handler))
         .route("/sdk.js", get(sdk_js))
         .route("/health", get(health))
-        .with_state(state);
+        .nest("/api", admin::router(state.clone()));
+    if let Some(dir) = state.dashboard_dir.clone() {
+        // The export uses trailing slashes, so /app/slot/ is slot/index.html. Unknown paths get
+        // the export's own 404 page.
+        let not_found = dir.join("404.html");
+        app = app
+            .route("/app", get(|| async { axum::response::Redirect::permanent("/app/") }))
+            .nest_service("/app/", tower_http::services::ServeDir::new(dir).not_found_service(tower_http::services::ServeFile::new(not_found)));
+    }
+    let app = app.with_state(state);
     let origins: Vec<HeaderValue> = cors_origins.iter().filter_map(|o| o.trim().parse().ok()).collect();
     if origins.is_empty() {
         return app;
