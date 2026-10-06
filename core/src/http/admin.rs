@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/sites/{site}/decisions", get(decisions))
         .route("/sites/{site}/approvals", get(approvals))
         .route("/sites/{site}/install", get(install))
+        .route("/sites/{site}/mcp-tokens", post(issue_mcp_token))
         .route("/decisions/{id}", get(decision))
         .route("/variants/{id}/approve", post(approve))
         .route("/variants/{id}/reject", post(reject))
@@ -109,18 +110,29 @@ async fn site_origin(state: &AppState, site: &str) -> Result<String, ApiError> {
 }
 
 async fn sites(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!(site_list(&state.pool).await?)))
+}
+
+/// Every site with its slot count and pending drafts. MCP filters it to the token's site.
+pub async fn site_list(pool: &sqlx::PgPool) -> Result<Vec<Value>, ApiError> {
     let rows: Vec<(String, String, f32, i64, i64)> = sqlx::query_as(
         "SELECT t.id, t.origin, t.holdout_fraction,
                 (SELECT count(*) FROM slots s WHERE s.site_id = t.id),
                 (SELECT count(*) FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.site_id = t.id AND v.status = 'draft')
            FROM sites t ORDER BY t.id",
     )
-    .fetch_all(&state.pool)
+    .fetch_all(pool)
     .await?;
-    Ok(Json(json!(rows
+    Ok(rows
         .into_iter()
         .map(|(id, origin, h, slots, pending)| json!({ "id": id, "origin": origin, "holdout_fraction": h, "slots": slots, "pending": pending }))
-        .collect::<Vec<_>>())))
+        .collect())
+}
+
+/// The variant a slot is "on": the most-shown approved one, else the approved baseline.
+pub fn champion(variants: &[results::VariantResult]) -> Option<&results::VariantResult> {
+    let live: Vec<&results::VariantResult> = variants.iter().filter(|v| v.status == "approved").collect();
+    live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline)).copied()
 }
 
 /// The site home's numbers: three live tiles, a silence diagnosis, and the slot list.
@@ -297,7 +309,20 @@ struct DecisionFilter {
 
 async fn decisions(State(state): State<Arc<AppState>>, Path(site): Path<String>, Query(f): Query<DecisionFilter>) -> Result<Json<Value>, ApiError> {
     site_origin(&state, &site).await?;
-    let outcome = f.outcome.as_deref().unwrap_or("all");
+    let rows = decision_list(&state.pool, &site, f.slot.as_deref(), f.variant.as_deref(), f.outcome.as_deref(), f.limit.unwrap_or(500).clamp(1, 5000)).await?;
+    Ok(Json(json!(rows)))
+}
+
+/// Decisions on a site, newest first, filtered by slot, variant and outcome.
+pub async fn decision_list(
+    pool: &sqlx::PgPool,
+    site: &str,
+    slot: Option<&str>,
+    variant: Option<&str>,
+    outcome: Option<&str>,
+    limit: i64,
+) -> Result<Vec<Value>, ApiError> {
+    let outcome = outcome.unwrap_or("all");
     let outcome_sql = match outcome {
         "all" => "true",
         "converted" => "d.outcome = 1",
@@ -314,19 +339,19 @@ async fn decisions(State(state): State<Arc<AppState>>, Path(site): Path<String>,
               WHERE d.site_id = $1 AND ($2::text IS NULL OR s.key = $2) AND ($3::text IS NULL OR v.key = $3) AND {outcome_sql}
               ORDER BY d.created_at DESC LIMIT $4"
         ))
-        .bind(&site)
-        .bind(&f.slot)
-        .bind(&f.variant)
-        .bind(f.limit.unwrap_or(500).clamp(1, 5000))
-        .fetch_all(&state.pool)
+        .bind(site)
+        .bind(slot)
+        .bind(variant)
+        .bind(limit)
+        .fetch_all(pool)
         .await?;
-    Ok(Json(json!(rows
+    Ok(rows
         .into_iter()
         .map(|(id, at, slot, variant, subject, held, exposed, outcome, settled, features)| json!({
             "id": id, "created_at": at, "slot": slot, "variant": variant, "subject": subject, "in_holdout": held,
             "exposed": exposed.is_some(), "outcome": outcome, "settled": settled.is_some(), "features": features,
         }))
-        .collect::<Vec<_>>())))
+        .collect())
 }
 
 async fn decision(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
@@ -393,8 +418,13 @@ async fn create_draft(
 async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
     site_origin(&state, &site).await?;
     let forbidden: Vec<String> = sqlx::query_scalar("SELECT forbidden_claims FROM sites WHERE id = $1").bind(&site).fetch_one(&state.pool).await?;
-    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64)> = sqlx::query_as(
-        "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id FROM variants v JOIN slots s ON s.id = v.slot_id
+    #[allow(clippy::type_complexity)]
+    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>)> = sqlx::query_as(
+        "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id,
+                CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
+                     'on_behalf_of', c.on_behalf_of, 'token', k.name, 'call_id', c.call_id, 'at', c.created_at) END
+           FROM variants v JOIN slots s ON s.id = v.slot_id
+           LEFT JOIN mcp_calls c ON c.id = v.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
           WHERE s.site_id = $1 AND v.status = 'draft' ORDER BY v.created_at, v.id",
     )
     .bind(&site)
@@ -403,7 +433,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let now = Utc::now();
     let r = results::site(&state.pool, &site, now - Duration::days(7), now).await?.expect("site exists");
     let mut cards = vec![];
-    for (id, slot, key, payload, author, created, slot_id) in drafts {
+    for (id, slot, key, payload, author, created, slot_id, agent) in drafts {
         let sr = r.slots.iter().find(|s| s.id == slot_id);
         let live: Vec<&results::VariantResult> = sr.map(|s| s.variants.iter().filter(|v| v.status == "approved").collect()).unwrap_or_default();
         let champ = live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline));
@@ -420,7 +450,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
                 .fetch_all(&state.pool)
                 .await?;
         cards.push(json!({
-            "id": id, "slot": slot, "key": key, "html": payload, "author": author, "created_at": created,
+            "id": id, "slot": slot, "key": key, "html": payload, "author": author, "created_at": created, "agent": agent,
             "champion": champion, "checks": checks::run(payload.as_deref().unwrap_or(""), &forbidden),
             "comments": comments.into_iter().map(|(a, by, c, at)| json!({ "action": a, "actor": by, "comment": c, "at": at })).collect::<Vec<_>>(),
         }));
@@ -589,4 +619,17 @@ async fn install(State(state): State<Arc<AppState>>, Path(site): Path<String>) -
     let origin = site_origin(&state, &site).await?;
     let steps = probes::all(&state.pool, &state.http, &site, &origin).await?;
     Ok(Json(json!({ "site": site, "origin": origin, "steps": steps })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewMcpToken {
+    name: String,
+}
+
+/// A per-site MCP token for a developer's agent. Shown once; only its hash is kept.
+async fn issue_mcp_token(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<NewMcpToken>) -> Result<(StatusCode, Json<Value>), ApiError> {
+    site_origin(&state, &site).await?;
+    let token = crate::mcp::issue_token(&state.pool, &site, &b.name).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(json!({ "site": site, "name": b.name.trim(), "token": token, "url": "/mcp" }))))
 }

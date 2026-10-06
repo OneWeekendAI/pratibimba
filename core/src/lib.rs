@@ -5,6 +5,7 @@ pub mod db;
 pub mod explain;
 pub mod guard;
 pub mod hash;
+pub mod mcp;
 pub mod probes;
 pub mod http;
 pub mod results;

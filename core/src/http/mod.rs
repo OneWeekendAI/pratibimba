@@ -5,6 +5,7 @@
 //!   origin, so the decision path stays first-party. CORS exists only for dev setups where the
 //!   page and Core sit on different origins (`PRB_SITE_ORIGIN`).
 //! - **Admin** (`/api/*`): the dashboard's API, behind `PRB_ADMIN_TOKEN`. See `admin`.
+//! - **MCP** (`/mcp`): the open MCP server for coding agents, behind per-site tokens. See `mcp`.
 //! - **Dashboard** (`/app/*`): the static export of `dashboard/`, from `PRB_DASHBOARD_DIR`.
 
 pub mod admin;
@@ -81,6 +82,7 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
         .route("/manifest/{site}", get(manifest::handler))
         .route("/sdk.js", get(sdk_js))
         .route("/health", get(health))
+        .route("/mcp", post(crate::mcp::handler))
         .nest("/api", admin::router(state.clone()));
     if let Some(dir) = state.dashboard_dir.clone() {
         // The export uses trailing slashes, so /app/slot/ is slot/index.html. Unknown paths get
