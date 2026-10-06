@@ -12,6 +12,7 @@ pub mod admin;
 pub mod decide;
 pub mod events;
 pub mod manifest;
+pub mod sim;
 
 use axum::{
     Json, Router,

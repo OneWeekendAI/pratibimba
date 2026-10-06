@@ -59,8 +59,8 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         let slot_id = e.slot.as_ref().and_then(|k| slots.get(k)).copied();
         let r = sqlx::query(
             "WITH ins AS (
-                 INSERT INTO events (id, site_id, subject, name, slot_id, decision_id)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+                 INSERT INTO events (id, site_id, subject, name, slot_id, decision_id, received_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(sim_now, now()) FROM sites WHERE id = $2))
                  ON CONFLICT (id) DO NOTHING
                  RETURNING id)
              INSERT INTO pending_events (event_id) SELECT id FROM ins",

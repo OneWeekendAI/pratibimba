@@ -1,4 +1,4 @@
-//! `pratibimba serve | worker | migrate | apply <site.json> | mcp-token <site> <name>`
+//! `pratibimba serve | worker | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> ...`
 //!
 //! One binary, several entry points, so the HTTP server and the learning worker always agree
 //! on schema and policy. Configuration is environment only:
@@ -15,7 +15,16 @@ use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
 use std::time::Duration;
 
-const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json> | mcp-token <site> <name>>";
+const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]>
+
+simulate <site>: run synthetic visitors against the site's sandbox (<site>~sim), never the site itself.
+  --days N          simulated days to run, one cohort per day (default 30)
+  --visitors N      visitors per day (default 200; 0 just moves the clock)
+  --rate S.V=P      planted conversion rate for variant V of slot S (repeatable)
+  --default-rate P  rate for variants not named (default 0.02)
+  --returning P     fraction of returning visitors (default 0)
+  --seed N          RNG seed (default 1)
+  --keep            continue the existing sandbox instead of resetting it";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -82,9 +91,67 @@ async fn main() -> Result<()> {
             eprintln!("MCP token for site {site:?} ({name}). It is shown once; only its hash is stored.");
             println!("{token}");
         }
+        Some("simulate") => {
+            db::migrate(&pool).await?;
+            simulate(&pool, &args[1..]).await?;
+        }
         Some(other) => bail!("unknown command {other:?}\n{USAGE}"),
         None => unreachable!(),
     }
+    Ok(())
+}
+
+/// `pratibimba simulate`: reset (or keep) the sandbox, time-travel day by day, print the curve.
+async fn simulate(pool: &sqlx::PgPool, args: &[String]) -> Result<()> {
+    use pratibimba::sim::{self, Cohort};
+    let site = args.first().filter(|a| !a.starts_with("--")).context(USAGE)?;
+    let (mut days, mut keep) = (30i64, false);
+    let mut c = Cohort { visitors: 200, seed: 1, default_rate: 0.02, ..Cohort::default() };
+    let mut it = args[1..].iter();
+    while let Some(flag) = it.next() {
+        let mut val = || it.next().with_context(|| format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--days" => days = val()?.parse()?,
+            "--visitors" => c.visitors = val()?.parse()?,
+            "--default-rate" => c.default_rate = val()?.parse()?,
+            "--returning" => c.returning = val()?.parse()?,
+            "--seed" => c.seed = val()?.parse()?,
+            "--rate" => {
+                let v = val()?;
+                let parsed = v.split_once('=').and_then(|(sv, p)| Some((sv.split_once('.')?, p.parse::<f64>().ok()?)));
+                let Some(((slot, variant), p)) = parsed else { bail!("--rate wants slot.variant=probability, got {v:?}") };
+                c.rates.entry(slot.into()).or_default().insert(variant.into(), p);
+            }
+            "--keep" => keep = true,
+            other => bail!("unknown option {other:?}\n{USAGE}"),
+        }
+    }
+    let api = |e: http::ApiError| anyhow::anyhow!("{e:?}");
+    if !keep {
+        sim::reset(pool, site, chrono::Utc::now()).await.map_err(api)?;
+    }
+    println!("sandbox {}  (the real site {site:?} is not touched)", sim::sandbox_id(site));
+    let cohort = (c.visitors > 0).then_some(&c);
+    for d in sim::advance(pool, site, days * sim::DAY, cohort).await.map_err(api)? {
+        let served: Vec<String> = d
+            .served
+            .iter()
+            .map(|(slot, by)| {
+                let total: u64 = by.values().sum();
+                let parts: Vec<String> = by.iter().map(|(v, n)| format!("{v} {:.0}%", 100.0 * *n as f64 / total.max(1) as f64)).collect();
+                format!("{slot}: {}", parts.join(", "))
+            })
+            .collect();
+        println!("day {:>3}  {}  conv {:>4}  {}", d.day, d.at.format("%Y-%m-%d"), d.conversions.values().sum::<u64>(), served.join("  |  "));
+    }
+    let status = sim::status(pool, site).await.map_err(api)?;
+    for slot in status["results"]["slots"].as_array().into_iter().flatten() {
+        for v in slot["variants"].as_array().into_iter().flatten() {
+            let (n, k) = (v["counts"]["n"].as_u64().unwrap_or(0), v["counts"]["conversions"].as_u64().unwrap_or(0));
+            println!("{}.{:<16} n {:>6}  conversions {:>5}  rate {:.2}%", slot["key"].as_str().unwrap_or("?"), v["key"].as_str().unwrap_or("?"), n, k, 100.0 * k as f64 / n.max(1) as f64);
+        }
+    }
+    println!("clock now {}", status["clock"].as_str().unwrap_or("?"));
     Ok(())
 }
 

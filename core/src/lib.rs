@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod probes;
 pub mod http;
 pub mod results;
+pub mod sim;
 pub mod site_file;
 pub mod stats;
 pub mod worker;

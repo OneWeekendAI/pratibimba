@@ -123,15 +123,17 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         return Err(ApiError::BadRequest("subject must be 1-256 printable ASCII characters".into()));
     }
     let pool = &state.pool;
-    let slot: Option<(i64, i32, f32, bool)> = sqlx::query_as(
-        "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL FROM slots s JOIN sites t ON t.id = s.site_id
+    // `at` is the site's clock: the database's now, or a sandbox's simulated time.
+    let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL, COALESCE(t.sim_now, now())
+           FROM slots s JOIN sites t ON t.id = s.site_id
           WHERE s.site_id = $1 AND s.key = $2",
     )
     .bind(&req.site)
     .bind(&req.slot)
     .fetch_optional(pool)
     .await?;
-    let Some((slot_id, ttl, holdout_fraction, paused)) = slot else {
+    let Some((slot_id, ttl, holdout_fraction, paused, at)) = slot else {
         return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", req.slot, req.site)));
     };
     let mut arms: Vec<ArmRow> = sqlx::query_as(
@@ -155,12 +157,13 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
     let recent: Option<(Uuid, i64, Value, Value, i64, i64, bool)> = sqlx::query_as(
         "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout FROM decisions
-          WHERE slot_id = $1 AND subject = $2 AND created_at > now() - make_interval(secs => $3)
+          WHERE slot_id = $1 AND subject = $2 AND created_at > $4 - make_interval(secs => $3) AND created_at <= $4
           ORDER BY created_at DESC LIMIT 1",
     )
     .bind(slot_id)
     .bind(&req.subject)
     .bind(ttl as f64)
+    .bind(at)
     .fetch_optional(pool)
     .await?;
     if let Some((id, variant_id, features, scores, seed, version, held)) = recent {
@@ -196,8 +199,8 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let features = named(&x);
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        "INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(id)
     .bind(&req.site)
@@ -211,6 +214,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(version)
     .bind(seed as i64)
     .bind(in_holdout)
+    .bind(at)
     .execute(pool)
     .await?;
     let (key, payload) = key_of(chosen).expect("chosen arm is in the pool");

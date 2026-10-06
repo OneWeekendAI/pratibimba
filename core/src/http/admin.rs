@@ -47,6 +47,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/variants/{id}/comment", post(comment))
         .route("/models/{slot}/rollback", post(rollback))
         .route("/models/{slot}/versions", get(versions))
+        .merge(super::sim::routes())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }
@@ -122,7 +123,7 @@ pub async fn site_list(pool: &sqlx::PgPool) -> Result<Vec<Value>, ApiError> {
         "SELECT t.id, t.origin, t.holdout_fraction,
                 (SELECT count(*) FROM slots s WHERE s.site_id = t.id),
                 (SELECT count(*) FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.site_id = t.id AND v.status = 'draft')
-           FROM sites t ORDER BY t.id",
+           FROM sites t WHERE t.sandbox_of IS NULL ORDER BY t.id",
     )
     .fetch_all(pool)
     .await?;
