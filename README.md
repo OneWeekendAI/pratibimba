@@ -11,7 +11,7 @@ looking at it.
 > **Status: Phase 1 (developer-first).** One Rust binary on Postgres, a per-slot contextual
 > bandit with a holdout and auto-rollback, three installs (`@pratibimba/next`, the
 > `@pratibimba/edge` worker and a script-tag fallback) and a dashboard with an approval gate.
-> There is no MCP server yet; that is Phase 2. Expect breaking changes.
+> Phase 2 has started: an open MCP server at `/mcp` is in. Expect breaking changes.
 
 ## How it works
 
@@ -171,6 +171,36 @@ Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
   There is no bulk approve. You can write a draft by hand here too.
 - **Install**: the six-step wizard above, for Next.js, the edge worker or the script tag.
 
+## The MCP server
+
+Your own coding agent (Claude Code, Cursor, any MCP client) can read Pratibimba's state and
+propose variants. Core serves MCP at `/mcp` over the streamable HTTP transport, in the same
+binary. Tokens are per site:
+
+```bash
+pratibimba mcp-token demo "Claude Code"      # prints prb_mcp_…; only its hash is stored
+# or: POST /api/sites/demo/mcp-tokens {"name": "Claude Code"} with the admin token
+claude mcp add --transport http pratibimba https://core.example.com/mcp \
+  --header "Authorization: Bearer prb_mcp_…"
+```
+
+| Tool | What it does |
+|---|---|
+| `list_sites`, `get_site` | The token's site: origin, holdout, forbidden claims, slots. A token sees no other site. |
+| `list_slots` | Each slot's selector, metric, champion and variant counts by status. |
+| `list_variants` | A slot's variants with their HTML, approval details and the reviewer comment thread. |
+| `get_results` | Per-slot and per-variant results with lift against the holdout. |
+| `list_decisions`, `explain_decision` | Recent decisions, and why one visitor saw what they saw. |
+| `propose_variant` | Submits a variant as a **draft**, with an optional note to the reviewer. Returns the constraint checks. |
+
+- **An agent cannot approve.** There is no approve tool, `propose_variant` writes `draft`
+  whatever it is sent (a `status` or `traffic_share` argument fails the call), and an MCP
+  token is not accepted by `/api`. A person approves in the dashboard.
+- **Every call is audited.** Each tool takes `agent` and `justification` (and optionally
+  `on_behalf_of`); a call without them is refused. Every call, refused or not, writes a row
+  to `mcp_calls`, and each result returns that row as `audit`. A draft links to the call that
+  wrote it, so the approvals API shows the agent and its justification.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -194,6 +224,7 @@ Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
 | `GET /sdk.js` | The client script. |
 | `POST /decide/batch` | Several slots for one subject in one call: `{site, subject, slots, ctx}`. |
 | `GET /health` | 200 when the database answers. |
+| `POST /mcp` | The MCP server (JSON-RPC), behind a per-site `prb_mcp_…` token. See above. |
 
 The dashboard API lives under `/api` and needs `Authorization: Bearer $PRB_ADMIN_TOKEN` (or the
 session cookie that `POST /api/session` sets). It covers each site's overview and live stream,
