@@ -198,9 +198,21 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let scores_json = Value::Object(scores.iter().map(|(id, s)| (id.to_string(), json!(s))).collect());
     let features = named(&x);
     let id = Uuid::new_v4();
+    let (key, payload) = key_of(chosen).expect("chosen arm is in the pool");
+    // One statement writes the decision and its webhook outbox rows, so both land or neither.
+    let (hook_key, hook_body) = crate::webhooks::envelope(
+        &req.site,
+        "decision",
+        json!({ "decision_id": id, "slot": req.slot, "variant": key, "subject": req.subject, "in_holdout": in_holdout,
+                "policy_version": version }),
+        at,
+    );
     sqlx::query(
-        "INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "WITH ins AS (
+             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING 1)
+         INSERT INTO webhook_deliveries (subscription_id, event, idempotency_key, payload)
+         SELECT id, 'decision', $14, $15 FROM webhook_subscriptions WHERE site_id = $2 AND 'decision' = ANY(events) AND EXISTS (SELECT 1 FROM ins)",
     )
     .bind(id)
     .bind(&req.site)
@@ -215,9 +227,10 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(seed as i64)
     .bind(in_holdout)
     .bind(at)
+    .bind(hook_key)
+    .bind(hook_body)
     .execute(pool)
     .await?;
-    let (key, payload) = key_of(chosen).expect("chosen arm is in the pool");
     Ok(response(id, &req.slot, key, payload, version, features, &scores_json, seed, in_holdout, &arms))
 }
 

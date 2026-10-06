@@ -135,6 +135,8 @@ async fn pause(
         .bind(&certificate)
         .execute(&mut *tx)
         .await?;
+    let data = json!({ "variant_id": v.id, "slot": slot_key, "variant": v.key, "sentence": sentence, "certificate": certificate });
+    crate::webhooks::enqueue(&mut *tx, site, "auto_rollback", data).await?;
     tx.commit().await?;
     tracing::warn!(variant = v.id, %sentence, "auto-rollback");
     Ok(Some(Paused { variant_id: v.id, restored_to }))

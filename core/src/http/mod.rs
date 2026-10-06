@@ -13,6 +13,7 @@
 pub mod admin;
 pub mod decide;
 pub mod events;
+pub mod hooks;
 pub mod manifest;
 pub mod sim;
 pub mod webhooks;

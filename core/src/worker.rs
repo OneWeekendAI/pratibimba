@@ -23,6 +23,9 @@
 //! - **Sandboxes are invisible to the real pass.** `run_once` skips sandbox sites entirely (their
 //!   events stay in the outbox); `run_sandbox` runs one sandbox at its own simulated clock.
 //!
+//! Each pass also sends due webhooks (see `webhooks`): the first exposure of a decision and
+//! each credited conversion write their outbox rows inside the same transaction.
+//!
 //! `decisions.settled_at` is the exactly-once guard. Events are drained BEFORE settling, so a
 //! conversion that arrived inside the window but is processed late still counts. The model row
 //! is locked `FOR UPDATE` around each read-modify-write, so concurrent workers never lose an
@@ -33,7 +36,8 @@ use crate::http::decide::from_named;
 use crate::http::events::CHANNEL;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use crate::webhooks;
+use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
 use std::time::Duration;
 use uuid::Uuid;
@@ -152,13 +156,24 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
         match name {
             "exposure" => {
                 if let Some(d) = decision_id {
-                    sqlx::query("UPDATE decisions SET exposed_at = $4 WHERE id = $1 AND site_id = $2 AND subject = $3 AND exposed_at IS NULL")
-                        .bind(d)
-                        .bind(site)
-                        .bind(subject)
-                        .bind(received_at)
-                        .execute(&mut *tx)
-                        .await?;
+                    let shown: Option<(String, String, bool)> = sqlx::query_as(
+                        "UPDATE decisions d SET exposed_at = $4 FROM slots s, variants v
+                          WHERE d.id = $1 AND d.site_id = $2 AND d.subject = $3 AND d.exposed_at IS NULL
+                            AND s.id = d.slot_id AND v.id = d.variant_id
+                          RETURNING s.key, v.key, d.in_holdout",
+                    )
+                    .bind(d)
+                    .bind(site)
+                    .bind(subject)
+                    .bind(received_at)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    // Only the first exposure of a decision is news.
+                    if let Some((slot, variant, held)) = shown {
+                        let data = json!({ "decision_id": d, "slot": slot, "variant": variant, "subject": subject,
+                                           "in_holdout": held, "exposed_at": received_at });
+                        webhooks::enqueue(&mut *tx, site, "exposure", data).await?;
+                    }
                 }
             }
             "missed" => {} // Recorded in `events` for the Phase 1 dashboard; nothing to learn.
@@ -238,13 +253,14 @@ async fn candidates(
 /// Credit one decision as converted, at most once, and teach its model. Returns whether it
 /// was credited.
 async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) -> Result<bool> {
-    let row: Option<(i64, i64, Value, bool)> = sqlx::query_as(
+    #[allow(clippy::type_complexity)]
+    let row: Option<(i64, i64, Value, bool, String, String, String, String, String)> = sqlx::query_as(
         "UPDATE decisions d SET outcome = 1, outcome_at = $2, settled_at = $3
-           FROM slots s
-          WHERE d.id = $1 AND s.id = d.slot_id
+           FROM slots s, variants v
+          WHERE d.id = $1 AND s.id = d.slot_id AND v.id = d.variant_id
             AND d.settled_at IS NULL AND d.exposed_at IS NOT NULL
             AND $2 >= d.created_at AND $2 <= d.created_at + make_interval(secs => s.attribution_window_secs)
-          RETURNING d.slot_id, d.variant_id, d.features, d.in_holdout",
+          RETURNING d.slot_id, d.variant_id, d.features, d.in_holdout, d.site_id, s.key, v.key, s.metric, d.subject",
     )
     .bind(decision)
     .bind(at)
@@ -252,7 +268,10 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
     .fetch_optional(&mut **tx)
     .await?;
     match row {
-        Some((slot, variant, features, held)) => {
+        Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject)) => {
+            let data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
+                               "subject": subject, "in_holdout": held, "converted_at": at });
+            webhooks::enqueue(&mut **tx, &site, "conversion", data).await?;
             // A holdout outcome is the control group's measurement, never a lesson.
             if !held {
                 learn(tx, slot, variant, &features, true).await?;
@@ -342,6 +361,7 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
     let mut listener = PgListener::connect_with(&pool).await?;
     listener.listen(CHANNEL).await?;
     let mut last_guard: Option<std::time::Instant> = None;
+    let http = webhooks::client();
     loop {
         match run_once(&pool, Utc::now()).await {
             Ok(s) if s != Stats::default() => tracing::info!(?s, "worker pass"),
@@ -359,9 +379,17 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
             }
             Err(e) => tracing::error!(error = %e, "listing sandboxes failed"),
         }
+        match webhooks::deliver_once(&pool, &http, Utc::now()).await {
+            Ok(p) if p != webhooks::Pass::default() => tracing::info!(?p, "webhook pass"),
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "webhook pass failed"),
+        }
         if last_guard.is_none_or(|t| t.elapsed() >= guard_every) {
             if let Err(e) = crate::guard::run(&pool, Utc::now()).await {
                 tracing::error!(error = %e, "guard pass failed");
+            }
+            if let Err(e) = webhooks::prune(&pool, Utc::now()).await {
+                tracing::error!(error = %e, "webhook prune failed");
             }
             last_guard = Some(std::time::Instant::now());
         }

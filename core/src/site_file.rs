@@ -8,6 +8,8 @@
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
+use crate::webhooks;
+use serde_json::json;
 use sqlx::PgPool;
 
 pub const APPROVER: &str = "cli:apply";
@@ -155,6 +157,9 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             .bind(slot_id)
             .execute(&mut *tx)
             .await?;
+        // Which listed variants this apply newly approves: the webhook says only what changed.
+        let before: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, status FROM variants WHERE slot_id = $1").bind(slot_id).fetch_all(&mut *tx).await?;
         // Clear the baseline flag first so moving it between variants never trips the
         // one-baseline index halfway through.
         sqlx::query("UPDATE variants SET is_baseline = false WHERE slot_id = $1").bind(slot_id).execute(&mut *tx).await?;
@@ -175,12 +180,24 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             .execute(&mut *tx)
             .await?;
         }
+        for v in &slot.variants {
+            if !before.iter().any(|(k, s)| k == &v.key && s == "approved") {
+                let data = json!({ "slot": slot.key, "variant": v.key, "approved_by": APPROVER, "traffic_share": null });
+                webhooks::enqueue(&mut *tx, &file.site, "variant.approved", data).await?;
+            }
+        }
         let keys: Vec<&str> = slot.variants.iter().map(|v| v.key.as_str()).collect();
-        sqlx::query("UPDATE variants SET status = 'retired' WHERE slot_id = $1 AND status = 'approved' AND NOT (key = ANY($2))")
-            .bind(slot_id)
-            .bind(&keys)
-            .execute(&mut *tx)
-            .await?;
+        let retired: Vec<String> = sqlx::query_scalar(
+            "UPDATE variants SET status = 'retired' WHERE slot_id = $1 AND status = 'approved' AND NOT (key = ANY($2)) RETURNING key",
+        )
+        .bind(slot_id)
+        .bind(&keys)
+        .fetch_all(&mut *tx)
+        .await?;
+        for key in retired {
+            let data = json!({ "slot": slot.key, "variant": key, "retired_by": APPROVER });
+            webhooks::enqueue(&mut *tx, &file.site, "variant.retired", data).await?;
+        }
     }
     tx.commit().await?;
     Ok(())

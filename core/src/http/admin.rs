@@ -50,6 +50,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(super::sim::routes())
         .merge(super::webhooks::admin_routes())
         .merge(crate::insights::api::routes())
+        .merge(super::hooks::router())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }
@@ -506,6 +507,7 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
         return Err(ApiError::BadRequest("the planned traffic share must be above 0 and at most 50%".into()));
     }
     let mut tx = state.pool.begin().await?;
+    #[allow(clippy::type_complexity)]
     let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>)> = sqlx::query_as(
         "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims, v.author, t.facts FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
           WHERE v.id = $1 FOR UPDATE OF v",
@@ -542,6 +544,10 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
         .bind(json!(report))
         .execute(&mut *tx)
         .await?;
+    let (site, slot_key, variant_key): (String, String, String) =
+        sqlx::query_as("SELECT s.site_id, s.key, v.key FROM variants v JOIN slots s ON s.id = v.slot_id WHERE v.id = $1").bind(id).fetch_one(&mut *tx).await?;
+    let data = json!({ "variant_id": id, "slot": slot_key, "variant": variant_key, "approved_by": approver, "traffic_share": b.traffic_share });
+    crate::webhooks::enqueue(&mut *tx, &site, "variant.approved", data).await?;
     tx.commit().await?;
     Ok(Json(json!({ "id": id, "status": "approved", "traffic_share": b.traffic_share })).into_response())
 }
