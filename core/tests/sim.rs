@@ -162,3 +162,59 @@ async fn the_sim_api_is_admin_only_and_drives_the_sandbox(pool: PgPool) {
     let sites = api_get(&app, "/api/sites").await.json();
     assert_eq!(sites.as_array().unwrap().len(), 1, "{sites}");
 }
+
+// ---- auto-rollback on the sandbox's clock ----
+
+/// The sandbox of a site whose gift converts at 0 against a baseline at 0.5, with a rollback
+/// bar a few simulated days can clear. Settings are copied from the real site at reset.
+async fn losing_sandbox(pool: &PgPool) {
+    setup_learning(pool).await;
+    sqlx::query("UPDATE sites SET holdout_fraction = 0.5, rollback_min_exposures = 20, rollback_margin = 0.01 WHERE id = 'demo'").execute(pool).await.unwrap();
+    sim::reset(pool, "demo", Utc::now()).await.unwrap();
+}
+
+async fn sandbox_gift(pool: &PgPool) -> (String, Option<chrono::DateTime<Utc>>) {
+    sqlx::query_as("SELECT v.status, v.paused_at FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.site_id = 'demo~sim' AND v.key = 'gift'")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn auto_rollback_runs_on_the_sandbox_clock(pool: PgPool) {
+    losing_sandbox(&pool).await;
+    let start = sim::clock(&pool, "demo").await.unwrap();
+    let days = sim::advance(&pool, "demo", 6 * 86_400, Some(&cohort(200, 0.0, 0.5))).await.unwrap();
+    let (status, paused_at) = sandbox_gift(&pool).await;
+    assert_eq!(status, "paused", "{:?}", days.iter().map(|d| &d.served).collect::<Vec<_>>());
+    // Paused at a simulated day's end, days ahead of the wall clock: the sandbox's time.
+    let paused_at = paused_at.unwrap();
+    let ends: Vec<_> = (1..=6).map(|n| start + Duration::days(n)).collect();
+    assert!(ends.contains(&paused_at), "paused at {paused_at}, not at a simulated day's end {ends:?}");
+    assert!(paused_at > Utc::now() + Duration::hours(12), "paused at {paused_at}: wall-clock time");
+    let day = days.iter().find(|d| !d.paused.is_empty()).expect("a day reports the pause");
+    assert_eq!(day.paused, ["hero/gift"]);
+    assert_eq!(count(&pool, "SELECT count(*) FROM learnings WHERE site_id = 'demo~sim' AND kind = 'rollback'").await, 1);
+    // The real site's gift is untouched.
+    let real: String = sqlx::query_scalar("SELECT status FROM variants WHERE key = 'gift' AND slot_id IN (SELECT id FROM slots WHERE site_id = 'demo')").fetch_one(&pool).await.unwrap();
+    assert_eq!(real, "approved");
+}
+
+/// The real guard pass never judges a sandbox: it reads the wall clock, which is not the
+/// sandbox's time. Only the sandbox's own pass, at its clock, may pause a sandbox variant.
+#[sqlx::test(migrations = false)]
+async fn the_real_guard_pass_skips_sandboxes(pool: PgPool) {
+    losing_sandbox(&pool).await;
+    // Run the days with the bar out of reach, then lower it.
+    sqlx::query("UPDATE sites SET rollback_min_exposures = 1000000 WHERE id = 'demo~sim'").execute(&pool).await.unwrap();
+    sim::advance(&pool, "demo", 6 * 86_400, Some(&cohort(200, 0.0, 0.5))).await.unwrap();
+    sqlx::query("UPDATE sites SET rollback_min_exposures = 20 WHERE id = 'demo~sim'").execute(&pool).await.unwrap();
+    let paused = pratibimba::guard::run(&pool, Utc::now() + Duration::days(400)).await.unwrap();
+    assert!(paused.is_empty(), "the real pass paused {paused:?}");
+    assert_eq!(sandbox_gift(&pool).await.0, "approved");
+    // One simulated second later, the sandbox's own pass does it.
+    sim::advance(&pool, "demo", 1, None).await.unwrap();
+    let (status, at) = sandbox_gift(&pool).await;
+    assert_eq!(status, "paused");
+    assert_eq!(at.unwrap(), sim::clock(&pool, "demo").await.unwrap());
+}

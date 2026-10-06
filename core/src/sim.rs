@@ -94,6 +94,8 @@ pub struct Day {
     /// What the sandbox's worker passes did: credited, settled as misses.
     pub credited: u64,
     pub settled_negative: u64,
+    /// Variants auto-rollback paused at this day's clock, as `slot/variant`.
+    pub paused: Vec<String>,
 }
 
 impl Day {
@@ -238,7 +240,14 @@ pub async fn visitors(pool: &PgPool, site: &str, cohort: &Cohort) -> Result<Day,
         }
     }
     day.absorb(worker::run_sandbox(pool, &id, at).await?);
+    day.paused.extend(guard(pool, &id, at).await?);
     Ok(day)
+}
+
+/// Auto-rollback for the sandbox, at the sandbox's clock (never the wall clock: the sandbox's
+/// windows close in simulated time, and a pause is dated in it).
+async fn guard(pool: &PgPool, sandbox: &str, at: DateTime<Utc>) -> Result<Vec<String>, ApiError> {
+    Ok(crate::guard::run_site(pool, sandbox, at).await?.into_iter().map(|p| p.name).collect())
 }
 
 /// Move the sandbox's clock forward by `secs`. With a cohort, time passes a day at a time and
@@ -264,6 +273,7 @@ pub async fn advance(pool: &PgPool, site: &str, secs: i64, cohort: Option<&Cohor
         let now = start + chrono::Duration::seconds(elapsed);
         sqlx::query("UPDATE sites SET sim_now = $2 WHERE id = $1").bind(&id).bind(now).execute(pool).await?;
         day.absorb(worker::run_sandbox(pool, &id, now).await?);
+        day.paused.extend(guard(pool, &id, now).await?);
         out.push(day);
     }
     Ok(out)

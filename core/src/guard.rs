@@ -25,6 +25,8 @@ use sqlx::PgPool;
 pub struct Paused {
     pub variant_id: i64,
     pub restored_to: Option<i64>,
+    /// `slot/variant`, for reports.
+    pub name: String,
 }
 
 fn pp(x: f64) -> String {
@@ -35,23 +37,40 @@ fn pct(x: Option<f64>) -> String {
     x.map(|r| format!("{:.1}%", r * 100.0)).unwrap_or_else(|| "n/a".into())
 }
 
-/// Check every site. Returns the variants paused in this pass.
+/// Check every real site at `now` (the wall clock). Returns the variants paused in this pass.
+///
+/// Sandboxes are skipped: their decisions are stamped with the sandbox's simulated clock, so
+/// judging them at the wall clock would count the wrong windows as closed and date a pause in
+/// the wrong time. The simulator runs [`run_site`] for its sandbox at the sandbox's clock after
+/// every worker pass it makes.
 pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<Vec<Paused>> {
-    let sites: Vec<(String, f32, i32)> =
-        sqlx::query_as("SELECT id, rollback_margin, rollback_min_exposures FROM sites ORDER BY id").fetch_all(pool).await?;
+    let sites: Vec<String> = sqlx::query_scalar("SELECT id FROM sites WHERE sandbox_of IS NULL ORDER BY id").fetch_all(pool).await?;
     let mut paused = vec![];
-    for (site, margin, min_n) in sites {
-        let Some(r) = results::site(pool, &site, results::ALL_TIME, now).await? else { continue };
-        for slot in &r.slots {
-            for v in slot.variants.iter().filter(|v| v.status == "approved" && !v.is_baseline) {
-                let Some(lift) = v.lift else { continue };
-                if v.counts.n >= min_n as u64 && lift.hi < -f64::from(margin) {
-                    if let Some(p) = pause(pool, &site, slot.id, &slot.key, v, slot.holdout, now).await? {
-                        paused.push(p);
-                    }
-                } else if lift.lo > 0.0 {
-                    winning(pool, &site, slot.id, &slot.key, v).await?;
+    for site in sites {
+        paused.extend(run_site(pool, &site, now).await?);
+    }
+    Ok(paused)
+}
+
+/// Check one site at `now`, which is that site's clock (a sandbox's `sim_now`).
+pub async fn run_site(pool: &PgPool, site: &str, now: DateTime<Utc>) -> Result<Vec<Paused>> {
+    let Some((margin, min_n)): Option<(f32, i32)> =
+        sqlx::query_as("SELECT rollback_margin, rollback_min_exposures FROM sites WHERE id = $1").bind(site).fetch_optional(pool).await?
+    else {
+        return Ok(vec![]);
+    };
+    let site = site.to_string();
+    let mut paused = vec![];
+    let Some(r) = results::site(pool, &site, results::ALL_TIME, now).await? else { return Ok(paused) };
+    for slot in &r.slots {
+        for v in slot.variants.iter().filter(|v| v.status == "approved" && !v.is_baseline) {
+            let Some(lift) = v.lift else { continue };
+            if v.counts.n >= min_n as u64 && lift.hi < -f64::from(margin) {
+                if let Some(p) = pause(pool, &site, slot.id, &slot.key, v, slot.holdout, now).await? {
+                    paused.push(p);
                 }
+            } else if lift.lo > 0.0 {
+                winning(pool, &site, slot.id, &slot.key, v).await?;
             }
         }
     }
@@ -139,7 +158,7 @@ async fn pause(
     crate::webhooks::enqueue(&mut *tx, site, "auto_rollback", data).await?;
     tx.commit().await?;
     tracing::warn!(variant = v.id, %sentence, "auto-rollback");
-    Ok(Some(Paused { variant_id: v.id, restored_to }))
+    Ok(Some(Paused { variant_id: v.id, restored_to, name: format!("{slot_key}/{}", v.key) }))
 }
 
 async fn winning(pool: &PgPool, site: &str, slot: i64, slot_key: &str, v: &VariantResult) -> Result<()> {
