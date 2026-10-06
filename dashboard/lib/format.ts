@@ -53,3 +53,18 @@ export function shortId(id: string) {
 export function seriesVar(index: number) {
   return `var(--s${(index % 8) + 1})`;
 }
+
+/**
+ * Axis ticks on round values: a step of 1, 2 or 5 times a power of ten, about `target` of
+ * them, covering [lo, hi] and always including zero when the range spans it.
+ */
+export function niceTicks(lo: number, hi: number, target = 5): number[] {
+  if (!(hi > lo)) return [lo];
+  const raw = (hi - lo) / Math.max(1, target);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? 10 * mag;
+  const first = Math.floor(lo / step) * step;
+  const out: number[] = [];
+  for (let v = first; v < hi + step * 0.5; v += step) out.push(Number(v.toFixed(10)) + 0);
+  return out;
+}

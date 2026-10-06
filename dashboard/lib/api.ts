@@ -77,6 +77,8 @@ export interface Overview {
   sparkline: number[];
   stale: string | null;
   pending_approvals: number;
+  /** The kill switch: set while every slot on the site serves only its baseline. */
+  paused: { at: string; by: string } | null;
   slots: {
     key: string;
     metric: string;
@@ -208,6 +210,17 @@ export interface ApprovalCard {
   html: string | null;
   author: string;
   created_at: string;
+  /** Set when an agent wrote the draft over MCP: the tool call behind it. */
+  agent: null | {
+    name: string;
+    justification: string | null;
+    on_behalf_of: string | null;
+    token: string;
+    call_id: unknown;
+    at: string;
+    audit_id: number;
+    tool: string;
+  };
   champion: { key: string; payload: string | null; is_baseline: boolean } | null;
   checks: Check[];
   comments: { action: string; actor: string; comment: string | null; at: string }[];
@@ -222,4 +235,27 @@ export interface ProbeStep {
   id: 'framework' | 'package' | 'reach' | 'slot' | 'agent' | 'live';
   state: 'choice' | 'done' | 'pending' | 'failed' | 'later';
   detail: string;
+}
+export interface McpCall {
+  id: number;
+  tool: string;
+  agent: string;
+  on_behalf_of: string | null;
+  justification: string | null;
+  outcome: 'ok' | 'error' | 'refused';
+  error: string | null;
+  call_id: unknown;
+  token: string;
+  at: string;
+}
+export interface McpTail {
+  site: string;
+  endpoint: string;
+  tokens: { name: string; created_at: string; revoked_at: string | null; last_used: string | null; calls: number }[];
+  calls: McpCall[];
+}
+export interface McpCallDetail extends McpCall {
+  site: string;
+  arguments: Record<string, unknown>;
+  variants: { id: number; slot: string; key: string; status: string }[];
 }

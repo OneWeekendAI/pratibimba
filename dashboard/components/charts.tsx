@@ -4,7 +4,7 @@
 import { useMemo } from 'react';
 import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { CurvePoint, Interval } from '@/lib/api';
-import { pp, seriesVar } from '@/lib/format';
+import { niceTicks, pp, seriesVar } from '@/lib/format';
 
 export function Sparkline({ values, label }: { values: number[]; label: string }) {
   const max = Math.max(1, ...values);
@@ -64,7 +64,9 @@ export function LiftCurve({ curve, series, height = 260 }: { curve: CurvePoint[]
     let hi = 0;
     for (const p of tail) for (const s of series) { const i = p.variants[s.key]; if (i) { lo = Math.min(lo, i.lo * 100); hi = Math.max(hi, i.hi * 100); } }
     const pad = Math.max(1, (hi - lo) * 0.15);
-    return [Math.floor(lo - pad), Math.ceil(hi + pad)] as [number, number];
+    // Round values on the axis: the domain snaps out to the tick step.
+    const ticks = niceTicks(lo - pad, hi + pad, 5);
+    return { range: [ticks[0], ticks[ticks.length - 1]] as [number, number], ticks };
   }, [curve, series]);
   const dayTicks = useMemo(() => {
     if (curve.length === 0) return [];
@@ -97,14 +99,16 @@ export function LiftCurve({ curve, series, height = 260 }: { curve: CurvePoint[]
               tickLine={false}
             />
             <YAxis
-              domain={domain}
+              domain={domain.range}
+              ticks={domain.ticks}
+              interval={0}
               allowDataOverflow
               stroke="var(--axis)"
               tick={{ fill: 'var(--muted)', fontSize: 11 }}
               tickLine={false}
               axisLine={false}
               width={48}
-              tickFormatter={(v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`}
+              tickFormatter={(v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v)}`}
               label={{ value: 'pp vs holdout', angle: -90, position: 'insideLeft', fill: 'var(--muted)', fontSize: 11, dx: 6, dy: 40 }}
             />
             <ReferenceLine y={0} stroke="var(--ink-2)" strokeWidth={1} />

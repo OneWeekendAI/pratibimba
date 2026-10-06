@@ -28,6 +28,7 @@
   --warn-ink: #8a5a00;
   --pause: #d6417a;
   --pause-ink: #a3245a;
+  --pause-soft: #fbe7ef;
   --critical: #d03b3b;
   /* Chart chrome and the categorical series (dataviz reference palette, light steps). */
   --grid: #e6e0d3;
@@ -43,7 +44,7 @@
     --line: #2d2e35; --line-strong: #3b3c44;
     --chrome: #0b1020; --chrome-2: #141b31; --chrome-ink: #dfe4f2; --chrome-muted: #7f8aab;
     --accent: #8b84ff; --accent-ink: #0b0b14; --accent-soft: #26244a;
-    --good-ink: #3fcf3f; --warn-ink: #fab219; --pause-ink: #f07aa6;
+    --good-ink: #3fcf3f; --warn-ink: #fab219; --pause-ink: #f07aa6; --pause-soft: #3a1626;
     --grid: #2a2b31; --axis: #3d3e45;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
@@ -56,7 +57,7 @@
   --line: #2d2e35; --line-strong: #3b3c44;
   --chrome: #0b1020; --chrome-2: #141b31; --chrome-ink: #dfe4f2; --chrome-muted: #7f8aab;
   --accent: #8b84ff; --accent-ink: #0b0b14; --accent-soft: #26244a;
-  --good-ink: #3fcf3f; --warn-ink: #fab219; --pause-ink: #f07aa6;
+  --good-ink: #3fcf3f; --warn-ink: #fab219; --pause-ink: #f07aa6; --pause-soft: #3a1626;
   --grid: #2a2b31; --axis: #3d3e45;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
   --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
