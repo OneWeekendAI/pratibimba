@@ -12,6 +12,7 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("../migrations/0001_init.sql")),
     ("0002_phase1", include_str!("../migrations/0002_phase1.sql")),
+    ("0003_mcp", include_str!("../migrations/0003_mcp.sql")),
 ];
 
 /// Arbitrary constant: "prb" in ASCII.

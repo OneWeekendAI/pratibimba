@@ -16,7 +16,7 @@ async fn seed_slot(pool: &PgPool) -> i64 {
 #[sqlx::test(migrations = false)]
 async fn fresh_database_gets_all_tables(pool: PgPool) {
     db::migrate(&pool).await.unwrap();
-    for t in ["sites", "slots", "variants", "models", "decisions", "events", "pending_events", "approvals", "model_versions", "learnings"] {
+    for t in ["sites", "slots", "variants", "models", "decisions", "events", "pending_events", "approvals", "model_versions", "learnings", "mcp_tokens", "mcp_calls"] {
         assert!(table_exists(&pool, t).await, "missing table {t}");
     }
 }
