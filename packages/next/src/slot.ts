@@ -8,6 +8,7 @@ import { createElement, cache, type ReactNode } from 'react';
 import { PrbBeacon } from './beacon.ts';
 import { decideBatch, isDecision, type Ctx, type Decision, type Fetch } from './core.ts';
 import { CTX_HEADER, SUBJECT_HEADER, decodeCtx } from './context.ts';
+import { TZ_HEADER, validTimeZone } from './timezone.ts';
 
 export interface Visitor {
   subject: string;
@@ -85,6 +86,8 @@ export function createSlot(config: SlotConfig) {
     const h = await (config.headers ?? defaultHeaders)();
     const subject = h.get(SUBJECT_HEADER);
     const ctx = decodeCtx(h.get(CTX_HEADER));
+    const tz = h.get(TZ_HEADER);
+    if (ctx && validTimeZone(tz)) ctx.tz = tz;
     return subject && ctx ? { subject, ctx } : null;
   }
 

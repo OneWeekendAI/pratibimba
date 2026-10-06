@@ -56,3 +56,17 @@ test('beacon_reports_one_exposure_per_decision', async () => {
   await mount('d-3');
   assert.equal(posts.filter((p) => p.body.events[0].name === 'exposure').length, 1);
 });
+
+test('beacon_remembers_the_browsers_time_zone_in_a_cookie', async () => {
+  // The next server render has no clock of its own; this first-party cookie is its fallback.
+  document.cookie = '_prb_tz=; max-age=0; path=/';
+  await mount('d-tz');
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.ok(document.cookie.split('; ').includes(`_prb_tz=${encodeURIComponent(zone)}`), document.cookie);
+});
+
+test('beacon_events_carry_the_browsers_offset', async () => {
+  // So insights rollups put a server-rendered visit at its local hour.
+  await mount('d-off');
+  assert.equal(posts[0].body.tz_offset, -new Date().getTimezoneOffset());
+});

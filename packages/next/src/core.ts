@@ -4,6 +4,8 @@ export interface Ctx {
   returning: boolean;
   mobile: boolean;
   from_ad: boolean;
+  /** The visitor's IANA time zone, when the proxy could name it (see timezone.ts). */
+  tz?: string;
 }
 
 export interface Decision {

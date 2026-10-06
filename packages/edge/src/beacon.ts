@@ -9,9 +9,18 @@ export const BEACON_JS = `(function () {
   var cfg = JSON.parse(me.getAttribute('data-prb') || '{}');
   function send(name, d) {
     var body = JSON.stringify({ site: cfg.site, subject: cfg.subject,
-      events: [{ id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: name, slot: d.slot, decision_id: d.id }] });
+      events: [{ id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: name, slot: d.slot, decision_id: d.id }],
+      tz_offset: -new Date().getTimezoneOffset() });
     try { fetch('/_prb/e', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }); } catch (e) {}
   }
+  // The edge has no clock of the visitor's: this first-party session cookie is its fallback
+  // when the platform sends no geolocation time zone.
+  try {
+    var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    var pair = '_prb_tz=' + encodeURIComponent(zone);
+    if (zone && document.cookie.split('; ').indexOf(pair) < 0)
+      document.cookie = pair + '; Path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+  } catch (e) {}
   function markers(slot) {
     var w = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_COMMENT);
     var start = null, n;

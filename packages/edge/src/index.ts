@@ -8,8 +8,10 @@
 
 import { BEACON_JS } from './beacon.ts';
 import { beforeBodyEnd, rewriter, type Replacement } from './markers.ts';
+import { GEO_TZ_HEADERS, TZ_COOKIE, validTimeZone, visitorTimeZone } from './timezone.ts';
 
 export { rewriter, beforeBodyEnd, BEACON_JS };
+export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone };
 export const VERSION = '0.1.0';
 export const SUBJECT_COOKIE = '_prb_subject';
 export const SESSION_COOKIE = '_prb_s';
@@ -25,12 +27,20 @@ export interface EdgeOptions {
   /** How long one slot waits for Core before keeping its baseline. Default 300 ms. */
   timeoutMs?: number;
   fetch?: typeof fetch;
+  /**
+   * Geolocation headers trusted to name the visitor's time zone, first match wins. Default:
+   * Vercel's, Cloudflare's and CloudFront's. Pass `[]` off those platforms, so a client-sent
+   * copy is ignored. Cloudflare's `request.cf.timezone` is always read: a client cannot set it.
+   */
+  timeZoneHeaders?: readonly string[];
 }
 
 interface Ctx {
   returning: boolean;
   mobile: boolean;
   from_ad: boolean;
+  /** The visitor's IANA zone; Core derives the local hour, night, weekend and business hours. */
+  tz?: string;
 }
 
 const MOBILE = /Mobi|Android|iPhone|iPad|iPod/i;
@@ -107,13 +117,17 @@ export function createEdge(opts: EdgeOptions) {
       mobile: MOBILE.test(request.headers.get('user-agent') ?? ''),
       from_ad: AD_PARAMS.some((p) => url.searchParams.has(p)),
     };
+    // The local clock is read on every request, never fixed in the session cookie.
+    const cf = (request as Request & { cf?: { timezone?: unknown } }).cf?.timezone;
+    const tz = typeof cf === 'string' && validTimeZone(cf) ? cf : visitorTimeZone(request.headers, jar.get(TZ_COOKIE), opts.timeZoneHeaders ?? GEO_TZ_HEADERS);
+    const decideCtx: Ctx = tz ? { ...ctx, tz } : ctx;
 
     const decided: { slot: string; id: string }[] = [];
     async function decide(slot: string): Promise<Replacement> {
       const r = await f(`${core}/decide`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ site: opts.site, slot, subject, ctx }),
+        body: JSON.stringify({ site: opts.site, slot, subject, ctx: decideCtx }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 300),
       });
       if (!r.ok) return { html: null };

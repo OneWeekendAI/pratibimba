@@ -15,6 +15,7 @@ import {
   encodeCtx,
   validSubject,
 } from './context.ts';
+import { GEO_TZ_HEADERS, TZ_COOKIE, TZ_HEADER, visitorTimeZone } from './timezone.ts';
 
 export interface ProxyOptions {
   /**
@@ -22,6 +23,12 @@ export interface ProxyOptions {
    * Collect consent first. Default: a session cookie, so `returning` is always false.
    */
   persist?: boolean;
+  /**
+   * The edge geolocation headers trusted to name the visitor's time zone, first match wins.
+   * Default: Vercel's, Cloudflare's and CloudFront's. Pass `[]` when the app does not run
+   * behind one of them, so a client-sent copy is ignored and only the browser's cookie counts.
+   */
+  timeZoneHeaders?: readonly string[];
 }
 
 const YEAR = 60 * 60 * 24 * 365;
@@ -36,6 +43,10 @@ export function createProxy(opts: ProxyOptions = {}) {
     const headers = new Headers(request.headers);
     headers.set(SUBJECT_HEADER, subject);
     headers.set(CTX_HEADER, encodeCtx(ctx));
+    // The local clock is not part of the visit's fixed context: it is read on every request.
+    const tz = visitorTimeZone(request.headers, request.cookies.get(TZ_COOKIE)?.value, opts.timeZoneHeaders ?? GEO_TZ_HEADERS);
+    if (tz) headers.set(TZ_HEADER, tz);
+    else headers.delete(TZ_HEADER);
     const res = NextResponse.next({ request: { headers } });
 
     const secure = request.nextUrl.protocol === 'https:';
