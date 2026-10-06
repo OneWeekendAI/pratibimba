@@ -12,6 +12,7 @@ looking at it.
 > bandit with a holdout and auto-rollback, three installs (`@pratibimba/next`, the
 > `@pratibimba/edge` worker and a script-tag fallback) and a dashboard with an approval gate.
 > Phase 2 has started: an open MCP server at `/mcp` and an agent instruction pack are in.
+> Phase 3 backend: the simulator with time-travel, and Stripe and generic conversion webhooks.
 > Expect breaking changes.
 
 ## How it works
@@ -248,6 +249,80 @@ It ships as an npm package rather than a `pratibimba agent` subcommand because i
 site's repo, where Node is already installed. The Core binary runs on a server next to
 Postgres.
 
+## The simulator and time-travel
+
+Test personalisation locally without waiting for real visitors. The simulator copies a site
+into a **sandbox**, `<site>~sim`, sends it synthetic visitors with a conversion rate you plant
+per variant, and moves the sandbox's own clock forward, so "skip 30 days" runs thirty days of
+traffic and learning in seconds.
+
+```sh
+pratibimba simulate demo --days 30 --visitors 200 --rate hero.gift=0.12 --rate hero.baseline=0.04
+# day   1  2026-10-06  conv    9  hero: baseline 55%, gift 45%
+# day   2  2026-10-07  conv   14  hero: baseline 18%, gift 82%
+# ...
+pratibimba simulate demo --days 7 --visitors 0 --keep   # just move the clock a week
+```
+
+Options: `--days`, `--visitors` (per day; `0` only moves the clock), `--rate slot.variant=p`
+(repeatable), `--default-rate`, `--returning` (fraction of returning visitors), `--seed`, and
+`--keep` to continue the sandbox instead of resetting it. The same engine is on the admin API:
+
+| Method and path | What it does |
+|---|---|
+| `POST /api/sites/:site/sim` | Create or wipe the sandbox. `{at?}` sets its clock (default now). |
+| `GET /api/sites/:site/sim` | The clock, decision and conversion counts, and results as of the clock. |
+| `POST /api/sites/:site/sim/visitors` | One cohort at the current clock: `{visitors, seed, rates: {slot: {variant: p}}, returning_rates?, default_rate?, returning?, mobile?, from_ad?}`. |
+| `POST /api/sites/:site/sim/advance` | `{days \| seconds, cohort?}`. With a cohort, it arrives once per simulated day. |
+| `DELETE /api/sites/:site/sim` | Drop the sandbox and everything simulated in it. |
+
+**Simulated traffic never reaches the real site.** The sandbox is its own site row with its
+own slots, variants and models, copied from the real site's configuration; it starts with a
+fresh model. Every simulated decision, event and model update is keyed by the sandbox's ids,
+and results and models are read per site and per slot, so nothing can mix. A sandbox id is not
+a valid site slug, so no real site can be named like one. The real worker never touches
+sandbox rows; each sandbox learns in its own worker pass at its own clock. `/decide` and `/e`
+stamp a sandbox's rows with its clock, so you can also point a local SDK at `<site>~sim` and
+see what the simulated month taught it. Sandboxes are left out of the site list.
+
+## Conversion webhooks
+
+For checkouts you control, the platform is the source of truth for a sale, not the browser.
+
+**Stripe.** Add an endpoint in Stripe for `checkout.session.completed` (and
+`checkout.session.async_payment_succeeded` if you take delayed payment methods) pointing at
+`https://<core>/webhook/stripe/<site>`. When you create the Checkout Session, set
+`client_reference_id` to the visitor's Pratibimba subject, and optionally
+`metadata.prb_decision_id` (the decision to credit) and `metadata.prb_event` (the goal,
+default `purchase`). Core verifies the `Stripe-Signature` header with your endpoint's signing
+secret (HMAC-SHA256 over `t.body`, five-minute tolerance), counts only paid sessions, and
+answers 200 to events it ignores so Stripe stops retrying.
+
+**Anything else.** `POST /webhook/conversion/<site>` with
+`{id, subject, event?, decision_id?, occurred_at?}`, signed exactly like Stripe: header
+`Pratibimba-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>.<raw body>")>`. `id` is
+your order or conversion id.
+
+Configure both with the admin API (secrets are write-only):
+
+```sh
+curl -X POST https://<core>/api/sites/demo/conversion-sources -H "Authorization: Bearer $PRB_ADMIN_TOKEN" \
+  -d '{"stripe_signing_secret": "whsec_…", "conversion_signing_secret": "…", "goals": ["purchase"], "grace_secs": 3600}'
+```
+
+The rules:
+
+- **Duplicates count once.** A webhook's event id is derived from the site, the source and the
+  platform's id (the checkout session, your order id), so a retry, a resend, or the same
+  checkout reported by two Stripe event types is absorbed.
+- **Platform conversions are authoritative.** For a goal listed in `goals`, a browser event of
+  that name is a hint, never a conversion: only a webhook credits it. When the webhook names
+  no decision, it credits the decision the visitor's latest browser hint named, else the last
+  touch. A decision on such a goal waits `grace_secs` past its attribution window before it
+  settles as a miss, so a late webhook still lands; the webhook is judged at the time the
+  platform says the sale happened.
+- A request with a missing, wrong or stale signature gets 400 and writes nothing.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -272,11 +347,14 @@ Postgres.
 | `POST /decide/batch` | Several slots for one subject in one call: `{site, subject, slots, ctx}`. |
 | `GET /health` | 200 when the database answers. |
 | `POST /mcp` | The MCP server (JSON-RPC), behind a per-site `prb_mcp_…` token. See above. |
+| `POST /webhook/stripe/:site` | Stripe Checkout conversions, verified with the site's signing secret. See above. |
+| `POST /webhook/conversion/:site` | Generic signed conversions. See above. |
 
 The dashboard API lives under `/api` and needs `Authorization: Bearer $PRB_ADMIN_TOKEN` (or the
 session cookie that `POST /api/session` sets). It covers each site's overview and live stream,
 results, slots, decisions (with replay and the counterfactual), drafts, the approve, reject
-and comment actions, install probes, and model versions with manual rollback.
+and comment actions, install probes, model versions with manual rollback, the simulator and
+conversion sources.
 
 ## Development
 
