@@ -48,6 +48,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/models/{slot}/rollback", post(rollback))
         .route("/models/{slot}/versions", get(versions))
         .merge(super::sim::routes())
+        .merge(super::webhooks::admin_routes())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }

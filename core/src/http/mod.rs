@@ -4,6 +4,8 @@
 //!   `/manifest/:site`, `/sdk.js`, `/health`. Browsers reach these through the site's own
 //!   origin, so the decision path stays first-party. CORS exists only for dev setups where the
 //!   page and Core sit on different origins (`PRB_SITE_ORIGIN`).
+//! - **Webhooks** (`/webhook/stripe/:site`, `/webhook/conversion/:site`): signed platform
+//!   conversions. See `webhooks`.
 //! - **Admin** (`/api/*`): the dashboard's API, behind `PRB_ADMIN_TOKEN`. See `admin`.
 //! - **MCP** (`/mcp`): the open MCP server for coding agents, behind per-site tokens. See `mcp`.
 //! - **Dashboard** (`/app/*`): the static export of `dashboard/`, from `PRB_DASHBOARD_DIR`.
@@ -13,6 +15,7 @@ pub mod decide;
 pub mod events;
 pub mod manifest;
 pub mod sim;
+pub mod webhooks;
 
 use axum::{
     Json, Router,
@@ -81,6 +84,8 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
         .route("/decide/batch", post(decide::batch_handler))
         .route("/e", post(events::handler))
         .route("/manifest/{site}", get(manifest::handler))
+        .route("/webhook/stripe/{site}", post(webhooks::stripe))
+        .route("/webhook/conversion/{site}", post(webhooks::conversion))
         .route("/sdk.js", get(sdk_js))
         .route("/health", get(health))
         .route("/mcp", post(crate::mcp::handler))

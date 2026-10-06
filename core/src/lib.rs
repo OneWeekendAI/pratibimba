@@ -1,6 +1,7 @@
 //! Pratibimba Core: decides, learns, serves variants.
 pub mod bandit;
 pub mod checks;
+pub mod conversions;
 pub mod db;
 pub mod explain;
 pub mod guard;

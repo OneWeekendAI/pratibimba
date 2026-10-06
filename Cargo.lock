@@ -1161,6 +1161,7 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "hmac",
  "http-body-util",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
