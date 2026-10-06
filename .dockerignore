@@ -2,3 +2,6 @@ target
 **/node_modules
 .git
 examples
+dashboard/.next
+dashboard/out
+dashboard/test-results

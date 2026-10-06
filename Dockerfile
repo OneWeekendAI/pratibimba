@@ -1,8 +1,17 @@
 # One image, several entry points: `serve` (HTTP) and `worker` (learning loop) share the binary,
 # so they can never disagree about schema or policy.
-#   docker run -e PRB_DB=postgres://... -p 8080:8080 pratibimba            # serve
+#   docker run -e PRB_DB=postgres://... -e PRB_ADMIN_TOKEN=... -p 8080:8080 pratibimba   # serve + /app
 #   docker run -e PRB_DB=postgres://... pratibimba worker                   # learn
 #   docker run -e PRB_DB=postgres://... -v $PWD/site.json:/site.json pratibimba apply /site.json
+
+# The dashboard is a static export; Core serves it at /app.
+FROM node:24-trixie-slim AS dashboard
+WORKDIR /dash
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY dashboard ./
+RUN npm run build
+
 
 FROM rust:1-trixie AS build
 WORKDIR /src
@@ -25,8 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --no-create-home pratibimba
 COPY --from=build /src/target/release/pratibimba /usr/local/bin/pratibimba
+COPY --from=dashboard /dash/out /usr/share/pratibimba/dashboard
 USER pratibimba
-ENV PRB_BIND=0.0.0.0:8080
+# The dashboard API stays off (503) until PRB_ADMIN_TOKEN is set.
+ENV PRB_BIND=0.0.0.0:8080 PRB_DASHBOARD_DIR=/usr/share/pratibimba/dashboard
 EXPOSE 8080
 ENTRYPOINT ["pratibimba"]
 CMD ["serve"]
