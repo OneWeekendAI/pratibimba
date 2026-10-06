@@ -109,7 +109,7 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<RollupStats> {
     };
     let mut dirty: BTreeSet<(String, DateTime<Utc>)> = sqlx::query_as::<_, (String, DateTime<Utc>)>(
         "SELECT DISTINCT site_id, date_trunc('hour', exposed_at, 'UTC') FROM decisions
-          WHERE exposed_at IS NOT NULL AND (exposed_at >= $1 OR settled_at >= $1 OR outcome_at >= $1)
+          WHERE exposed_at IS NOT NULL AND (exposed_at >= $1 OR settled_at >= $1 OR outcome_at >= $1 OR corrected_at >= $1)
             AND site_id IN (SELECT id FROM sites WHERE sandbox_of IS NULL)",
     )
     .bind(since)

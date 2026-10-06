@@ -264,3 +264,109 @@ async fn conversion_sources_never_echo_their_secrets(pool: PgPool) {
     assert_eq!(r.json()["goals"], json!(["purchase"]));
     assert_eq!(post(&app, "/api/sites/demo/conversion-sources", json!({})).await.status, StatusCode::UNAUTHORIZED);
 }
+
+// ---- late platform conversions: a webhook after the decision settled as a miss ----
+
+/// The decision's arm in the current model: (mean, cov, n).
+async fn arm_of(pool: &PgPool, decision: &str) -> (Vec<f64>, Vec<Vec<f64>>, u64) {
+    let (state, vid): (Value, i64) = sqlx::query_as("SELECT m.state, d.variant_id FROM decisions d JOIN models m ON m.slot_id = d.slot_id WHERE d.id = $1::uuid")
+        .bind(decision)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let m: pratibimba::bandit::LinTs = serde_json::from_value(state).unwrap();
+    let a = m.arm(vid);
+    (a.mean.to_vec(), a.cov.iter().map(|r| r.to_vec()).collect(), m.n)
+}
+
+/// Exposed, then settled as a miss: window (30 min) and grace (1 h) both over.
+async fn missed(pool: &PgPool, app: &axum::Router, subject: &str) -> String {
+    let d = exposed(app, subject).await;
+    pratibimba::worker::run_once(pool, Utc::now() + Duration::hours(2)).await.unwrap();
+    assert_eq!(outcome(pool, &d).await, Some(0));
+    d
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_platform_conversion_after_the_miss_corrects_the_record_and_the_model(pool: PgPool) {
+    let app = setup(&pool).await;
+    let d = missed(&pool, &app, "s1").await;
+    let (mean, cov, n) = arm_of(&pool, &d).await;
+    let v0 = model_version(&pool).await;
+    // The purchase happened inside the window; the webhook only arrived now.
+    let occurred = Utc::now().to_rfc3339();
+    generic(&app, &json!({ "id": "order-9", "subject": "s1", "event": "purchase", "decision_id": d, "occurred_at": occurred })).await;
+    let stats = pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(2)).await.unwrap();
+    assert_eq!(stats.corrected, 1, "{stats:?}");
+    assert_eq!(outcome(&pool, &d).await, Some(1));
+    let corrected: Option<chrono::DateTime<Utc>> = sqlx::query_scalar("SELECT corrected_at FROM decisions WHERE id = $1::uuid").bind(&d).fetch_one(&pool).await.unwrap();
+    assert!(corrected.is_some(), "the record must say it was corrected");
+    let detail = api_get(&app, &format!("/api/decisions/{d}")).await.json();
+    assert_eq!(detail["corrected_at"], json!(corrected), "{detail}");
+    // The model: flipping a miss to a conversion adds exactly w.x to the log-likelihood, so the
+    // precision is unchanged and the mean moves by cov.x. Same observation count.
+    let (mean2, cov2, n2) = arm_of(&pool, &d).await;
+    let x = [1.0, 0.0, 0.0, 0.0];
+    for i in 0..4 {
+        let shift: f64 = (0..4).map(|j| cov[i][j] * x[j]).sum();
+        assert!((mean2[i] - (mean[i] + shift)).abs() < 1e-12, "mean[{i}] {} vs {}", mean2[i], mean[i] + shift);
+    }
+    assert_eq!(cov2, cov);
+    assert_eq!(n2, n);
+    assert_eq!(model_version(&pool).await, v0 + 1);
+    let reason: String = sqlx::query_scalar("SELECT reason FROM model_versions ORDER BY version DESC LIMIT 1").fetch_one(&pool).await.unwrap();
+    assert_eq!(reason, "learn: late conversion corrects a miss");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_correction_happens_once(pool: PgPool) {
+    let app = setup(&pool).await;
+    let d = missed(&pool, &app, "s1").await;
+    let v0 = model_version(&pool).await;
+    let occurred = Utc::now().to_rfc3339();
+    for order in ["order-1", "order-2"] {
+        generic(&app, &json!({ "id": order, "subject": "s1", "event": "purchase", "decision_id": d, "occurred_at": occurred })).await;
+    }
+    pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(2)).await.unwrap();
+    assert_eq!(outcome(&pool, &d).await, Some(1));
+    assert_eq!(model_version(&pool).await, v0 + 1, "two orders, one correction");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_late_conversion_outside_the_window_changes_nothing(pool: PgPool) {
+    let app = setup(&pool).await;
+    let d = missed(&pool, &app, "s1").await;
+    // The decision was made two hours before the purchase: far outside its 30-minute window.
+    sqlx::query("UPDATE decisions SET created_at = created_at - interval '2 hours'").execute(&pool).await.unwrap();
+    let v0 = model_version(&pool).await;
+    let occurred = Utc::now().to_rfc3339();
+    generic(&app, &json!({ "id": "order-1", "subject": "s1", "event": "purchase", "decision_id": d, "occurred_at": occurred })).await;
+    let stats = pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(2)).await.unwrap();
+    assert_eq!(stats.corrected, 0);
+    assert_eq!(outcome(&pool, &d).await, Some(0));
+    assert_eq!(model_version(&pool).await, v0);
+}
+
+/// A browser event cannot rewrite history: only a platform's word corrects a settled miss.
+#[sqlx::test(migrations = false)]
+async fn a_late_browser_event_corrects_nothing(pool: PgPool) {
+    let app = setup(&pool).await;
+    sqlx::query("UPDATE sites SET authoritative_goals = '{}'").execute(&pool).await.unwrap();
+    let d = missed(&pool, &app, "s1").await;
+    event(&app, "s1", "purchase", Some(&d)).await;
+    pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(2)).await.unwrap();
+    assert_eq!(outcome(&pool, &d).await, Some(0));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_holdout_miss_is_corrected_without_teaching(pool: PgPool) {
+    let app = setup(&pool).await;
+    set_holdout(&pool, 0.5).await;
+    let held = (0..).map(|i| format!("h{i}")).find(|s| pratibimba::hash::in_holdout("demo", s, 0.5)).unwrap();
+    let d = missed(&pool, &app, &held).await;
+    let v0 = model_version(&pool).await;
+    generic(&app, &json!({ "id": "order-1", "subject": held, "event": "purchase", "decision_id": d, "occurred_at": Utc::now().to_rfc3339() })).await;
+    pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(2)).await.unwrap();
+    assert_eq!(outcome(&pool, &d).await, Some(1), "the control group's measurement is corrected too");
+    assert_eq!(model_version(&pool).await, v0, "a holdout outcome never teaches");
+}

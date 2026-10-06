@@ -156,6 +156,8 @@ pub struct Detail {
     pub outcome: Option<i16>,
     pub outcome_at: Option<DateTime<Utc>>,
     pub settled_at: Option<DateTime<Utc>>,
+    /// Set when a late platform conversion turned a settled miss into a conversion.
+    pub corrected_at: Option<DateTime<Utc>>,
     pub window_closes_at: DateTime<Utc>,
     pub in_holdout: bool,
     pub policy: String,
@@ -205,13 +207,14 @@ struct Row {
     outcome_at: Option<DateTime<Utc>>,
     settled_at: Option<DateTime<Utc>>,
     audiences: Option<Value>,
+    corrected_at: Option<DateTime<Utc>>,
 }
 
 pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Option<Detail>> {
     let row: Option<Row> = sqlx::query_as(
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
-                d.outcome, d.outcome_at, d.settled_at, d.audiences
+                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at
            FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1",
     )
     .bind(id)
@@ -239,6 +242,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         outcome_at,
         settled_at: settled,
         audiences,
+        corrected_at,
     }) = row
     else {
         return Ok(None);
@@ -379,6 +383,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         outcome,
         outcome_at,
         settled_at: settled,
+        corrected_at,
         window_closes_at,
         in_holdout: held,
         policy,

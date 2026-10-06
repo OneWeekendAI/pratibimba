@@ -116,6 +116,16 @@ impl Arm {
         }
     }
 
+    /// Turn an absorbed miss at `x` into a conversion. The log-likelihood changes by
+    /// `log sigmoid(w.x) - log(1 - sigmoid(w.x)) = w.x`, a linear term, so in the Gaussian
+    /// posterior the covariance is unchanged and the mean moves by `cov x`.
+    pub fn flip_miss(&mut self, x: &Vector) {
+        let sx = mat_vec(&self.cov, x);
+        for i in 0..DIM {
+            self.mean[i] += sx[i];
+        }
+    }
+
     /// One Thompson draw of `P(convert | x)`.
     pub fn sample_score(&self, x: &Vector, rng: &mut ChaCha8Rng) -> f64 {
         let l = cholesky(&self.cov);

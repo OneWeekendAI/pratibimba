@@ -143,6 +143,14 @@ impl DynArm {
         }
     }
 
+    /// The twin of [`bandit::Arm::flip_miss`]: the mean moves by `cov x`.
+    pub fn flip_miss(&mut self, x: &[f64]) {
+        let sx: Vec<f64> = self.cov.iter().map(|r| dot(r, x)).collect();
+        for (m, s) in self.mean.iter_mut().zip(&sx) {
+            *m += s;
+        }
+    }
+
     pub fn update(&mut self, x: &[f64], y: bool) {
         let n = x.len();
         let y = if y { 1.0 } else { 0.0 };
@@ -303,6 +311,21 @@ pub fn learn(model: &mut LinTs, arm: i64, x: &Vector, features: &Value, converte
         model.stated = Some(m);
     }
     model.update(arm, x, converted);
+}
+
+/// A settled miss turned out to be a conversion (a late platform webhook): flip it in the base
+/// arm and, when the decision carried extension features, in the extension arm. The
+/// observation count does not change; it is the same observation, corrected.
+pub fn correct_miss(model: &mut LinTs, arm: i64, x: &Vector, features: &Value) {
+    let ext = ext_from_features(features);
+    if !ext.is_empty() {
+        let mut m = model_for(model, &ext.keys().cloned().collect::<Vec<_>>());
+        let mut a = m.arm(model, arm);
+        a.flip_miss(&m.vector(x, &ext));
+        m.arms.insert(arm, a);
+        model.stated = Some(m);
+    }
+    model.arms.entry(arm).or_default().flip_miss(x);
 }
 
 /// Posterior-mean weights per arm, by feature name: what the on-device scorer ships with.
@@ -573,5 +596,22 @@ mod tests {
         assert!(ext_from_features(&feat(1.0)).contains_key("time:is_night_local"));
         assert_eq!(feature_name("time:cos_hour"), "cos_hour");
         assert_eq!(feature_name("garden"), "stated:garden");
+    }
+
+    #[test]
+    fn a_corrected_miss_moves_the_extension_arm_too() {
+        let mut model = LinTs::default();
+        let f = json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0, "sin_hour": 0.5, "cos_hour": 0.8, "is_night_local": 1 });
+        learn(&mut model, 1, &X, &f, false);
+        let before = model.stated.clone().unwrap();
+        let v = before.vector(&X, &ext_from_features(&f));
+        let a = &before.arms[&1];
+        correct_miss(&mut model, 1, &X, &f);
+        let after = &model.stated.as_ref().unwrap().arms[&1];
+        for i in 0..v.len() {
+            let shift: f64 = a.cov[i].iter().zip(&v).map(|(c, x)| c * x).sum();
+            assert!((after.mean[i] - a.mean[i] - shift).abs() < 1e-12, "dim {i}");
+        }
+        assert_eq!(after.cov, a.cov);
     }
 }

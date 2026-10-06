@@ -8,3 +8,9 @@ ALTER TABLE variants ADD CONSTRAINT variants_baseline_is_ungated CHECK (NOT (is_
 -- The audiences a decision evaluated: [{id, name, matched, variants}] (backend.md, "decisions":
 -- "audience match set"). NULL on decisions made before audiences could gate.
 ALTER TABLE decisions ADD COLUMN audiences JSONB;
+
+-- Late platform conversions. A platform webhook (Stripe, the generic conversion webhook) that
+-- arrives after its decision settled as a miss, for a purchase that happened inside the
+-- attribution window, flips the outcome to 1 and stamps `corrected_at`. Only a platform's word
+-- corrects history; a late browser event never does.
+ALTER TABLE decisions ADD COLUMN corrected_at TIMESTAMPTZ;

@@ -52,6 +52,8 @@ pub struct Stats {
     pub skipped: u64,
     /// Browser events for an authoritative goal: recorded, never credited.
     pub hints: u64,
+    /// Settled misses a late platform conversion turned into conversions.
+    pub corrected: u64,
 }
 
 impl Stats {
@@ -61,6 +63,7 @@ impl Stats {
         self.settled_negative += o.settled_negative;
         self.skipped += o.skipped;
         self.hints += o.hints;
+        self.corrected += o.corrected;
     }
 }
 
@@ -187,6 +190,8 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
                 for d in candidates(&mut tx, site, subject, goal, decision_id, *received_at).await? {
                     if credit(&mut tx, d, *received_at, now).await? {
                         local.credited += 1;
+                    } else if *platform && correct(&mut tx, d, *received_at, now).await? {
+                        local.corrected += 1;
                     }
                 }
             }
@@ -280,6 +285,41 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
         }
         None => Ok(false),
     }
+}
+
+/// A platform conversion for a decision that already settled as a miss, at a time inside its
+/// attribution window: the platform's word wins. The record flips to converted and says when it
+/// was corrected; the model turns the absorbed miss into a conversion (see
+/// [`crate::bandit::Arm::flip_miss`]); the `conversion` webhook fires with `late: true`. At most
+/// once per decision (`corrected_at`), and never for a browser event, so a late or replayed
+/// browser click cannot rewrite history.
+async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) -> Result<bool> {
+    #[allow(clippy::type_complexity)]
+    let row: Option<(i64, i64, Value, bool, String, String, String, String, String)> = sqlx::query_as(
+        "UPDATE decisions d SET outcome = 1, outcome_at = $2, corrected_at = $3
+           FROM slots s, variants v
+          WHERE d.id = $1 AND s.id = d.slot_id AND v.id = d.variant_id
+            AND d.settled_at IS NOT NULL AND d.outcome = 0 AND d.corrected_at IS NULL AND d.exposed_at IS NOT NULL
+            AND $2 >= d.created_at AND $2 <= d.created_at + make_interval(secs => s.attribution_window_secs)
+          RETURNING d.slot_id, d.variant_id, d.features, d.in_holdout, d.site_id, s.key, v.key, s.metric, d.subject",
+    )
+    .bind(decision)
+    .bind(at)
+    .bind(now)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject)) = row else { return Ok(false) };
+    let data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
+                       "subject": subject, "in_holdout": held, "converted_at": at, "late": true });
+    webhooks::enqueue(&mut **tx, &site, "conversion", data).await?;
+    if !held {
+        let x = from_named(&features).context("decision features are missing a named feature")?;
+        let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1 FOR UPDATE").bind(slot).fetch_one(&mut **tx).await?;
+        let mut model: LinTs = serde_json::from_value(state)?;
+        crate::stated::correct_miss(&mut model, variant, &x, &features);
+        write_model(tx, slot, &serde_json::to_value(&model)?, "learn: late conversion corrects a miss").await?;
+    }
+    Ok(true)
 }
 
 async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option<&str>) -> Result<(u64, Stats)> {
