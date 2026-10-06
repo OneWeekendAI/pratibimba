@@ -1,0 +1,70 @@
+//! Connection and migrations.
+//!
+//! Migrations are embedded with `include_str!` so `serve` and `worker` carry the same schema
+//! and need no files beside the binary. A `schema_migrations` ledger records what ran; each
+//! file runs in its own transaction together with its ledger row, so a failed file leaves no
+//! trace. A session advisory lock serialises concurrent starts (a `serve` and a `worker`
+//! booting together must not both try to create the same tables).
+
+use anyhow::{Context, Result};
+use sqlx::{PgPool, postgres::PgPoolOptions};
+
+pub const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+
+/// Arbitrary constant: "prb" in ASCII.
+const MIGRATION_LOCK: i64 = 0x707262;
+
+pub fn database_url() -> Result<String> {
+    std::env::var("PRB_DB")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .context("set PRB_DB (or DATABASE_URL) to a Postgres URL")
+}
+
+pub async fn connect(url: &str) -> Result<PgPool> {
+    let max = std::env::var("PRB_DB_MAX_CONNECTIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+    PgPoolOptions::new().max_connections(max).connect(url).await.context("failed to connect to Postgres")
+}
+
+pub async fn migrate(pool: &PgPool) -> Result<()> {
+    migrate_with(pool, MIGRATIONS).await
+}
+
+pub async fn migrate_with(pool: &PgPool, migrations: &[(&str, &str)]) -> Result<()> {
+    // The lock is session-level: one held connection owns it while the migrations themselves
+    // run on other pooled connections. A second migrator blocks here until the first is done.
+    let mut lock = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)").bind(MIGRATION_LOCK).execute(&mut *lock).await?;
+    let result = apply(pool, migrations).await;
+    sqlx::query("SELECT pg_advisory_unlock($1)").bind(MIGRATION_LOCK).execute(&mut *lock).await?;
+    result
+}
+
+async fn apply(pool: &PgPool, migrations: &[(&str, &str)]) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+             version     TEXT PRIMARY KEY,
+             applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+         )",
+    )
+    .execute(pool)
+    .await
+    .context("failed to create schema_migrations")?;
+
+    let applied: Vec<String> =
+        sqlx::query_scalar("SELECT version FROM schema_migrations").fetch_all(pool).await?;
+
+    for &(version, sql) in migrations {
+        if applied.iter().any(|v| v == version) {
+            continue;
+        }
+        let mut tx = pool.begin().await?;
+        // A bare &str with no bind arguments goes over the simple-query protocol, so a file may
+        // hold several statements. (`sqlx::raw_sql` does the same but its future is not
+        // provably Send, which breaks spawning `migrate`.)
+        sqlx::Executor::execute(&mut *tx, sql).await.with_context(|| format!("migration {version} failed"))?;
+        sqlx::query("INSERT INTO schema_migrations (version) VALUES ($1)").bind(version).execute(&mut *tx).await?;
+        tx.commit().await?;
+        tracing::info!(version, "migrated");
+    }
+    Ok(())
+}
