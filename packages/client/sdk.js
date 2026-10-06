@@ -108,7 +108,7 @@
     var ev = { id: newId(), name: name };
     if (slotKey) ev.slot = slotKey;
     if (decisionId) ev.decision_id = decisionId;
-    post('e', { site: site, subject: subject, events: [ev] })['catch'](function () { /* best effort */ });
+    post('e', { site: site, subject: subject, events: [ev], tz_offset: -new Date().getTimezoneOffset() })['catch'](function () { /* best effort */ });
   }
 
   function onReady(fn) {
