@@ -9,6 +9,7 @@ pub mod hash;
 pub mod mcp;
 pub mod probes;
 pub mod http;
+pub mod insights;
 pub mod results;
 pub mod sim;
 pub mod site_file;

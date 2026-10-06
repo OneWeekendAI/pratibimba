@@ -365,6 +365,9 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
             }
             last_guard = Some(std::time::Instant::now());
         }
+        if let Err(e) = crate::insights::maybe_run(&pool, Utc::now()).await {
+            tracing::error!(error = %e, "insights pass failed");
+        }
         tokio::select! {
             r = listener.recv() => if let Err(e) = r {
                 tracing::warn!(error = %e, "listener dropped; it reconnects on the next recv");
