@@ -341,7 +341,7 @@ The rules:
 | Method and path | What it does |
 |---|---|
 | `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. |
-| `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}]}`. Accepts up to 100 events per call. `id` is your idempotency key. |
+| `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}], tz_offset?}`. Accepts up to 100 events per call. `id` is your idempotency key. `tz_offset` is the visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`, -720 to 840); the script sends it. |
 | `GET /manifest/:site` | Slots and approved variant keys. Append `.js` for the script form. Edge-cacheable. |
 | `GET /sdk.js` | The client script. |
 | `POST /decide/batch` | Several slots for one subject in one call: `{site, subject, slots, ctx}`. |
@@ -355,6 +355,39 @@ session cookie that `POST /api/session` sets). It covers each site's overview an
 results, slots, decisions (with replay and the counterfactual), drafts, the approve, reject
 and comment actions, install probes, model versions with manual rollback, the simulator and
 conversion sources.
+
+### Visitor insights
+
+The worker rolls exposed decisions up into `rollup_hourly` (keyed on UTC hour, local hour and
+weekday, segment, slot, variant, context and outcome), `rollup_daily`, `rollup_journey` and
+`rollup_retention`, every minute, with retention and segment discovery once a night. The
+insight routes read **only** those rollups, never `events` or `decisions`; a test renames both
+raw tables away and calls every route. Hourly and daily rollups are partitioned by month.
+
+| Method and path (under `/api`) | What it does |
+|---|---|
+| `GET /sites/:site/insights/heatmap?axis=local\|utc&by=hour\|dow_hour&segment=&slot=&days=28` | Exposures, conversions and rate per hour (and weekday) per variant. `tz_known_share` says how much of the local axis rests on a reported offset. |
+| `GET /sites/:site/insights/journeys?outcome=converted\|bounced&days=28&limit=10` | The top (slot, variant) paths per visitor-day that ended in a conversion, or in none. |
+| `GET /sites/:site/insights/retention?segment=&weeks=12` | Cohort retention: per first-seen week, its size and how many came back n weeks later. |
+| `GET /sites/:site/insights/status` | When each insight job last ran, and any segment backfill still in progress. |
+| `GET /sites/:site/segments` | Segments with their last-28-day numbers; discovered drafts carry their evidence. |
+| `POST /sites/:site/segments` | `{predicate, actor, name?}`: a hand-authored segment, active at once, backfilled in day chunks. |
+| `POST /segments/:id/promote` | `{actor}`: a draft or active segment becomes an audience, with the promoter recorded. |
+| `POST /segments/:id/archive` | `{actor}`: drop a segment from the list and the rollups. |
+
+A predicate is a conjunction over `returning`, `mobile`, `from_ad`, `is_night_local`,
+`is_weekend_local`, `is_business_hours_local` (booleans) and `hour_local: [from, to]`.
+Demographic names (`gender`, `age`, `income`, ...) and anything else are refused. Segment 0 is
+everyone. Discovery scores every one- and two-feature predicate over the last 28 days of
+rollups, keeps those whose conversion rate, or whose variant lift over the baseline, differs
+from everyone else's at z >= 4, and writes them as drafts. Nothing is used in a decision until
+an owner promotes it.
+
+**Local time comes from the browser's offset, not IP geolocation.** Core ships no GeoIP
+database, and behind the `/_prb/*` proxy the IP it sees is often the proxy's. The offset is
+coarse, DST-correct at the moment of the event, and spoofing it only mislabels the spoofer's
+own hour. An event with no offset counts as UTC. The night window is per site
+(`sites.night_start_hour` / `night_end_hour`, default 22:00-05:00). Raw events are not pruned.
 
 ## Development
 
