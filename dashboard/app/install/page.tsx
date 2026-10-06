@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Suspense, useEffect, useState } from 'react';
 import { Shell } from '@/components/shell';
 import { Button, Card, Chip, Empty, Loading, Prose, type ChipTone } from '@/components/ui';
+import { ConnectAgentCard } from '@/components/agent';
 import { api, type ProbeStep } from '@/lib/api';
 import { useParam } from '@/lib/page';
 
@@ -126,7 +127,7 @@ function Wizard() {
         </p>
       </Step>
       <Step n={5} title="Connect your coding agent" step={s.agent}>
-        <p className="text-[13px] text-muted">The MCP endpoint and the instruction pack arrive in Phase 2. Until then, write drafts on the Approvals page.</p>
+        <ConnectAgentCard site={site} bare />
       </Step>
       <Step n={6} title="Add a second variant and turn it on" step={s.live}>
         <p className="text-[13px] text-ink-2">Write a draft on the Approvals page and approve it; this step is done when a visitor has seen it.</p>

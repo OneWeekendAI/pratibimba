@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Suspense, useEffect, useState } from 'react';
 import { LiftPill, Sparkline, TrafficBar } from '@/components/charts';
+import { ConnectAgentCard, McpTailCard } from '@/components/agent';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, type ChipTone } from '@/components/ui';
 import { api, type Overview, type ProbeStep } from '@/lib/api';
@@ -143,6 +144,10 @@ function Home() {
           </Link>
         </p>
       )}
+      <div className="mt-8 space-y-8">
+        <ConnectAgentCard site={site} />
+        <McpTailCard site={site} />
+      </div>
     </>
   );
 }
