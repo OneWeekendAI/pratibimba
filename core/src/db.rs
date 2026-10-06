@@ -15,6 +15,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0003_mcp", include_str!("../migrations/0003_mcp.sql")),
     ("0004_kill_switch", include_str!("../migrations/0004_kill_switch.sql")),
     ("0005_grounding", include_str!("../migrations/0005_grounding.sql")),
+    ("0006_webhooks", include_str!("../migrations/0006_webhooks.sql")),
     ("0010_insights", include_str!("../migrations/0010_insights.sql")),
     ("0030_sim_conversions", include_str!("../migrations/0030_sim_conversions.sql")),
 ];
