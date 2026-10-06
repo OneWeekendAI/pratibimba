@@ -122,6 +122,7 @@ export function Shell({ site, title, actions, children }: { site: string | null;
         { href: `/results/?site=${site}`, label: 'Results', match: ['/results'] },
         { href: `/approvals/?site=${site}`, label: 'Approvals', match: ['/approvals', '/audit'], dot: (current?.pending ?? 0) > 0 },
         { href: `/install/?site=${site}`, label: 'Install', match: ['/install'] },
+        { href: `/webhooks/?site=${site}`, label: 'Webhooks', match: ['/webhooks'] },
       ]
     : [];
   return (

@@ -66,6 +66,19 @@ for (const theme of ['light', 'dark']) {
   await page.waitForTimeout(300);
   await page.getByTestId('connect-agent').screenshot({ path: `${out}/${theme}-8-connect-agent.png` });
   await page.getByTestId('mcp-tail').screenshot({ path: `${out}/${theme}-9-mcp-tail.png` });
+  // Webhooks: one endpoint that receives (the stand-in site answers 200), with deliveries open.
+  if (theme === 'light') {
+    const H = { 'content-type': 'application/json', authorization: 'Bearer dash-admin-token' };
+    await fetch(`${BASE}/api/sites/shop/webhooks`, { method: 'POST', headers: H, body: JSON.stringify({ url: 'http://127.0.0.1:3400/hooks/pratibimba', events: ['decision', 'conversion', 'auto_rollback'] }) });
+    for (let i = 0; i < 3; i++) {
+      await fetch(`${BASE}/decide`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ site: 'shop', slot: 'hero', subject: `shot-${i}`, ctx: { returning: false } }) });
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  await shot('10-webhooks', '/app/webhooks/?site=shop', async () => {
+    await page.getByRole('button', { name: 'Deliveries' }).first().click();
+    await page.waitForTimeout(800);
+  });
   await ctx.close();
 }
 await b.close();

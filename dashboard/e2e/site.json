@@ -2,6 +2,7 @@
   "site": "shop",
   "origin": "http://localhost:3400",
   "holdout_fraction": 0.2,
+  "facts": "Kaapi Co. roasts in Chikmagalur. Gift sets hold three roasts and a tasting card. Orders ship in 2 days.",
   "slots": [
     {
       "key": "hero",

@@ -548,3 +548,62 @@ test('draft_written_here_waits_for_review', async ({ page }) => {
   const s = await api('/sites/shop/slots/hero');
   expect(s.variants.find((x: any) => x.key === 'autumn_hero').status).toBe('draft');
 });
+
+// ---- webhooks ----
+
+async function subscribe(url: string, events: string[]): Promise<number> {
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const r = await (await c.post('/api/sites/shop/webhooks', { data: { url, events } })).json();
+  await c.dispose();
+  return r.id;
+}
+
+test('webhook_secret_is_shown_once', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/webhooks/?site=shop');
+  await page.getByLabel('Endpoint URL').fill('https://example.com/once');
+  await page.getByLabel('decision').check();
+  await page.getByRole('button', { name: 'Add endpoint' }).click();
+  await expect(page.getByTestId('webhook-secret-value')).toHaveText(/^whsec_[0-9a-f]{64}$/);
+  const secret = await page.getByTestId('webhook-secret-value').textContent();
+  await page.reload();
+  await expect(page.getByText('https://example.com/once')).toBeVisible();
+  await expect(page.getByTestId('webhook-secret')).toHaveCount(0);
+  expect(await page.content()).not.toContain(secret!);
+});
+
+test('webhook_add_needs_an_event', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/webhooks/?site=shop');
+  await page.getByLabel('Endpoint URL').fill('https://example.com/none');
+  await expect(page.getByRole('button', { name: 'Add endpoint' })).toBeDisabled();
+});
+
+test('webhook_delivery_record_shows_a_real_delivery', async ({ page }) => {
+  await signIn(page);
+  // The stand-in owner site answers 200 to any path, so it serves as the receiver here.
+  const id = await subscribe('http://127.0.0.1:3400/hook', ['decision']);
+  const c = await pwRequest.newContext({ baseURL: CORE });
+  await c.post('/decide', { data: { site: 'shop', slot: 'hero', subject: `wh-${Date.now()}`, ctx: { returning: false } } });
+  await c.dispose();
+  await page.goto('/app/webhooks/?site=shop');
+  const card = page.getByTestId(`webhook-${id}`);
+  await expect(card.getByTestId('webhook-counts')).toContainText('1 delivered', { timeout: 10_000 });
+  await card.getByRole('button', { name: 'Deliveries' }).click();
+  const row = card.getByTestId('webhook-deliveries').locator('tbody tr').first();
+  await expect(row).toContainText('decision');
+  await expect(row).toContainText('delivered');
+  await expect(row).toContainText('200');
+});
+
+test('webhook_delete_asks_to_confirm', async ({ page }) => {
+  await signIn(page);
+  const id = await subscribe('https://example.com/gone', ['conversion']);
+  await page.goto('/app/webhooks/?site=shop');
+  const card = page.getByTestId(`webhook-${id}`);
+  await card.getByRole('button', { name: 'Delete' }).click();
+  await expect(card).toBeVisible();
+  await card.getByRole('button', { name: 'Confirm delete' }).click();
+  await expect(card).toHaveCount(0);
+  expect((await api('/sites/shop/webhooks')).subscriptions.some((s: any) => s.id === id)).toBe(false);
+});

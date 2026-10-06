@@ -39,6 +39,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 export const api = {
   get: <T>(p: string) => call<T>('GET', p),
   post: <T>(p: string, b: unknown) => call<T>('POST', p, b),
+  del: (p: string) => call<void>('DELETE', p),
   login: (token: string) => call<void>('POST', '/session', { token }),
   logout: () => call<void>('DELETE', '/session'),
 };
@@ -258,4 +259,36 @@ export interface McpCallDetail extends McpCall {
   site: string;
   arguments: Record<string, unknown>;
   variants: { id: number; slot: string; key: string; status: string }[];
+}
+
+export type WebhookEvent = 'decision' | 'exposure' | 'conversion' | 'variant.approved' | 'variant.retired' | 'auto_rollback';
+export interface WebhookSubscription {
+  id: number;
+  url: string;
+  events: WebhookEvent[];
+  created_at: string;
+  counts: { pending: number; delivered: number; failed: number };
+  last_delivered_at: string | null;
+}
+export interface WebhookList {
+  subscriptions: WebhookSubscription[];
+  event_types: WebhookEvent[];
+}
+export interface WebhookCreated {
+  id: number;
+  url: string;
+  events: WebhookEvent[];
+  secret: string;
+}
+export interface WebhookDelivery {
+  id: number;
+  event: WebhookEvent;
+  idempotency_key: string;
+  status: 'pending' | 'delivered' | 'failed';
+  attempts: number;
+  last_status: number | null;
+  last_error: string | null;
+  next_attempt_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
 }
