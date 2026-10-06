@@ -1,0 +1,367 @@
+// The dashboard, driven in Chromium against real Core and a seeded history. One test per
+// behaviour; the gate tests run last because they change data.
+import { test, expect, request as pwRequest, type Page } from '@playwright/test';
+
+const CORE = 'http://127.0.0.1:18083';
+const TOKEN = 'dash-admin-token';
+
+async function api<T = any>(path: string): Promise<T> {
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const r = await (await c.get(`/api${path}`)).json();
+  await c.dispose();
+  return r;
+}
+async function apiPost(path: string, body: unknown) {
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const r = await c.post(path, { data: body });
+  await c.dispose();
+  return r;
+}
+async function signIn(page: Page) {
+  await page.request.post(`${CORE}/api/session`, { data: { token: TOKEN } });
+}
+const pp = (x: number) => `${x >= 0 ? '+' : '−'}${Math.abs(x * 100).toFixed(1)} pp`;
+
+test('login_refuses_a_wrong_token', async ({ page }) => {
+  await page.goto('/app/login/');
+  await page.getByLabel('Admin token').fill('not-the-token');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.locator('p[role=alert]')).toHaveText('That token was not accepted.');
+  await expect(page).toHaveURL(/\/app\/login\//);
+});
+
+test('login_lands_on_the_site_home', async ({ page }) => {
+  await page.goto('/app/login/');
+  await page.getByLabel('Admin token').fill(TOKEN);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/\/app\/site\/\?id=shop/);
+  await expect(page.getByRole('heading', { name: 'shop' })).toBeVisible();
+});
+
+test('signed_out_pages_send_you_to_login', async ({ page }) => {
+  await page.goto('/app/results/?site=shop');
+  await expect(page).toHaveURL(/\/app\/login\/\?next=/);
+});
+
+test('site_home_tiles_match_the_api', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  const o = await api('/sites/shop/overview');
+  await expect(page.getByTestId('tile-Conversions in the last hour')).toContainText(String(o.conversions_last_hour));
+  await expect(page.getByTestId('tile-Lift today vs holdout')).toContainText(pp(o.lift_today.estimate));
+  await expect(page.getByTestId('slot-row-hero')).toContainText('hero');
+});
+
+test('live_tile_updates_over_sse_without_reload', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  const tile = page.getByTestId('tile-Decisions in the last minute');
+  await expect(page.getByText('live', { exact: true })).toBeVisible();
+  const before = Number((await tile.locator('div').nth(1).innerText()).replace(/,/g, ''));
+  for (let i = 0; i < 7; i++) {
+    await (await pwRequest.newContext()).post(`${CORE}/decide`, { data: { site: 'shop', slot: 'hero', subject: `sse-${Date.now()}-${i}` } });
+  }
+  await expect.poll(async () => Number((await tile.locator('div').nth(1).innerText()).replace(/,/g, '')), { timeout: 10_000 }).toBeGreaterThanOrEqual(before + 7);
+});
+
+test('slot_row_opens_the_workbench', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  await page.getByTestId('slot-row-hero').click();
+  await expect(page).toHaveURL(/\/app\/slot\/\?site=shop&slot=hero/);
+  await expect(page.getByRole('heading', { name: 'hero' })).toBeVisible();
+});
+
+test('workbench_shows_each_variant_with_share_and_lift', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  const s = await api('/sites/shop/slots/hero');
+  for (const key of ['baseline', 'gift', 'free_ship']) await expect(page.getByTestId(`variant-${key}`)).toBeVisible();
+  const gift = s.variants.find((v: any) => v.key === 'gift');
+  await expect(page.getByTestId('variant-gift')).toContainText(pp(gift.lift.estimate));
+  await expect(page.getByTestId('variant-gift')).toContainText(`${Math.round(gift.share * 100)}% of traffic`);
+});
+
+test('paused_variant_shows_its_death_certificate', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  const card = page.getByTestId('variant-free_ship');
+  await expect(card).toContainText('paused by rollback');
+  await expect(card.getByTestId('death-certificate')).toContainText('Model restored to v');
+});
+
+test('decisions_filter_by_variant', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await page.getByLabel('Filter by variant').selectOption('gift');
+  const cells = page.locator('[data-testid=decisions-table] tbody tr td:nth-child(3)');
+  await expect(cells.first()).toHaveText('gift');
+  const texts = await cells.allInnerTexts();
+  expect(texts.length).toBeGreaterThan(10);
+  expect(new Set(texts)).toEqual(new Set(['gift']));
+});
+
+test('decision_row_opens_the_why_sentence', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await page.locator('[data-testid=decisions-table] tbody tr').nth(3).click();
+  await expect(page).toHaveURL(/\/app\/decision\/\?id=/);
+  const id = new URL(page.url()).searchParams.get('id')!;
+  const d = await api(`/decisions/${id}`);
+  await expect(page.getByTestId('why')).toHaveText(d.sentence.replace(/`/g, ''));
+  await expect(page.getByText('replay reproduces the scores')).toBeVisible();
+});
+
+test('counterfactual_reveals_the_other_variant', async ({ page }) => {
+  await signIn(page);
+  // A holdout visitor the policy would have shown something else: then the two sides differ.
+  const rows = await api('/sites/shop/decisions?slot=hero&outcome=holdout&limit=40');
+  let d: any = null;
+  for (const r of rows) {
+    const x = await api(`/decisions/${r.id}`);
+    if (x.counterfactual && x.counterfactual.variant !== x.variant) {
+      d = x;
+      break;
+    }
+  }
+  expect(d, 'no holdout decision whose policy pick differs from the baseline').not.toBeNull();
+  await page.goto(`/app/decision/?id=${d.id}&site=shop`);
+  await expect(page.getByTestId('counterfactual')).toHaveCount(0);
+  await page.getByRole('button', { name: 'What would the policy have shown them?' }).click();
+  await expect(page.getByTestId('counterfactual')).toContainText(`${d.counterfactual.variant} (the policy’s pick)`);
+});
+
+test('results_headline_matches_the_api', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/results/?site=shop');
+  const r = await api('/sites/shop/results');
+  await expect(page.getByTestId('headline')).toContainText(pp(r.results.lift.estimate));
+  await expect(page.getByTestId('headline')).toContainText(`${pp(r.results.lift.lo)} to ${pp(r.results.lift.hi)}`);
+});
+
+test('learnings_feed_lists_the_rollback', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/results/?site=shop');
+  await expect(page.getByTestId('learning').filter({ hasText: 'rollback' })).toContainText('free_ship on hero was paused by auto-rollback');
+});
+
+test('install_steps_are_probes', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/install/?site=shop');
+  await expect(page.getByTestId('step-reach')).toContainText('observed');
+  await (await pwRequest.newContext()).get('http://127.0.0.1:3400/__mode?reach=off');
+  try {
+    await page.getByRole('button', { name: 'Check now' }).click();
+    await expect(page.getByTestId('step-reach')).toContainText('waiting');
+    await expect(page.getByTestId('detail-reach')).toContainText('route.ts');
+    await expect(page.getByTestId('step-package')).toContainText('observed');
+  } finally {
+    await (await pwRequest.newContext()).get('http://127.0.0.1:3400/__mode?reach=on');
+  }
+});
+
+test('dark_mode_toggle_persists', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  await page.getByRole('button', { name: /Dark mode/ }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('install_strip_shows_the_observed_sdk', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  const strip = page.getByTestId('install-strip');
+  // The stand-in site answers with x-prb-sdk: next/0.1.0; the strip shows what the probe saw.
+  await expect(strip).toContainText('SDK next/0.1.0');
+  await strip.click();
+  await expect(page).toHaveURL(/\/app\/install\/\?site=shop/);
+});
+
+test('traffic_bar_colours_match_the_workbench', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  // hero's variants are baseline, free_ship (paused), gift: gift is third of all, second of the live.
+  const segs = page.getByTestId('slot-row-hero').locator('[role=img] > div');
+  await expect(segs.first()).toBeVisible();
+  const bar = await segs.evaluateAll((els) => els.map((e) => [e.getAttribute('title')!.split(':')[0], (e as HTMLElement).style.background]));
+  expect(bar.map((b) => b[0])).toContain('gift');
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  for (const [key, bg] of bar) {
+    const stripe = await page.getByTestId(`variant-${key}`).locator('div.h-1').first().evaluate((e) => (e as HTMLElement).style.background);
+    expect(stripe, key).toBe(bg);
+  }
+});
+
+test('lift_curve_draws_a_line_per_variant', async ({ page }) => {
+  await signIn(page);
+  const s = await api('/sites/shop/slots/hero');
+  const n = s.variants.filter((v: any) => s.curve.some((p: any) => p.variants[v.key])).length;
+  expect(n).toBeGreaterThanOrEqual(2);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await expect(page.locator('.recharts-line')).toHaveCount(n);
+});
+
+test('decisions_filter_by_outcome', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await page.getByLabel('Filter by outcome').selectOption('converted');
+  const cells = page.locator('[data-testid=decisions-table] tbody tr td:nth-child(6)');
+  await expect(cells.first()).toHaveText('converted');
+  const texts = await cells.allInnerTexts();
+  expect(texts.length).toBeGreaterThan(10);
+  expect(new Set(texts)).toEqual(new Set(['converted']));
+});
+
+test('decision_detail_shows_features_scores_and_timeline', async ({ page }) => {
+  await signIn(page);
+  const [row] = await api('/sites/shop/decisions?slot=hero&outcome=converted&limit=1');
+  const d = await api(`/decisions/${row.id}`);
+  await page.goto(`/app/decision/?id=${d.id}&site=shop`);
+  for (const [k, v] of Object.entries(d.features)) {
+    await expect(page.locator('tr', { has: page.locator(`td:text-is("${k}")`) }).locator('td').last()).toHaveText(String(v));
+  }
+  const rows = page.getByRole('table', { name: 'Arm scores' }).getByRole('row');
+  await expect(rows).toHaveCount(d.scores.length);
+  for (const [i, s] of d.scores.entries()) await expect(rows.nth(i)).toContainText(`${s.variant}${s.score.toFixed(3)}`);
+  const tl = page.getByTestId('timeline');
+  // The decision, then every event in order, then the outcome.
+  const names = d.timeline.map((e: any) => e.name);
+  expect(names.indexOf('exposure')).toBeGreaterThanOrEqual(0);
+  // One batch carries both, with one received_at: the exposure still reads first.
+  expect(names.indexOf('exposure')).toBeLessThan(names.indexOf('click'));
+  await expect(tl.locator('li > span.font-mono')).toHaveText([d.variant, ...d.timeline.map((e: any) => e.name)]);
+  await expect(tl.locator('li').last()).toContainText('credited as a conversion (click)');
+});
+
+test('decision_detail_carries_the_reviewer_comment', async ({ page }) => {
+  await signIn(page);
+  const [won] = await api('/sites/shop/decisions?slot=banner&variant=ten_off&limit=1');
+  await page.goto(`/app/decision/?id=${won.id}&site=shop`);
+  await expect(page.getByTestId('review')).toContainText('Ritwik approved ten_off');
+  await expect(page.getByTestId('review')).toContainText('Copy checked against the pricing page');
+  // The baseline was never reviewed, so its decisions carry no gate section.
+  const [plain] = await api('/sites/shop/decisions?slot=banner&variant=plain&limit=1');
+  await page.goto(`/app/decision/?id=${plain.id}&site=shop`);
+  await expect(page.getByTestId('why')).toBeVisible();
+  await expect(page.getByTestId('review')).toHaveCount(0);
+});
+
+test('results_slots_are_ranked_by_contribution', async ({ page }) => {
+  await signIn(page);
+  const r = await api('/sites/shop/results');
+  // The API lists slots by key (banner, hero); hero's lift on as many visitors must put it first.
+  expect(r.results.slots.map((s: any) => s.key)).toEqual(['banner', 'hero']);
+  const c = (s: any) => (s.lift?.estimate ?? -Infinity) * s.treated.n;
+  expect(c(r.results.slots[1])).toBeGreaterThan(c(r.results.slots[0]));
+  await page.goto('/app/results/?site=shop');
+  const cards = page.locator('[data-testid^=result-]');
+  await expect(cards).toHaveCount(2);
+  expect(await cards.evaluateAll((es) => es.map((e) => e.getAttribute('data-testid')))).toEqual(['result-hero', 'result-banner']);
+});
+
+test('install_path_switches_the_snippet', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/install/?site=shop');
+  const pkg = page.getByTestId('step-package');
+  await expect(pkg).toContainText('npm install @pratibimba/next@0.1.0');
+  await page.getByRole('radio', { name: /Another code-based framework/ }).check();
+  await expect(pkg).toContainText('npm install @pratibimba/edge@0.1.0');
+  await expect(pkg).not.toContainText('@pratibimba/next');
+  await page.getByRole('radio', { name: /Script tag fallback/ }).check();
+  await expect(pkg).toContainText('<script src="/_prb/sdk.js" data-site="shop">');
+  await expect(pkg).toContainText('can flicker');
+  await page.reload();
+  await expect(page.getByRole('radio', { name: /Script tag fallback/ })).toBeChecked();
+});
+
+test('approval_card_diffs_against_the_champion', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  const card = page.getByTestId('card-gift_ribbon');
+  await expect(card).toContainText('Current champion: gift');
+  const diff = card.getByTestId('diff');
+  await expect(diff).toBeVisible();
+  const ins = (await diff.locator('ins').allInnerTexts()).join(' ');
+  const del = (await diff.locator('del').allInnerTexts()).join(' ');
+  expect(ins).toContain('kraft');
+  expect(ins).toContain('Choose');
+  expect(del).toContain('ready');
+  expect(ins + del).not.toContain('Three roasts');
+  await expect(diff).toContainText('Three roasts, a tasting card');
+});
+
+test('no_bulk_approve_control', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  const cards = page.locator('[data-testid^=card-]');
+  await expect(cards.first()).toBeVisible();
+  // One approve button per card, and nothing that selects or approves several.
+  expect(await page.getByRole('button', { name: /^Approve/ }).count()).toBe(await cards.count());
+  expect(await page.getByRole('checkbox').count()).toBe(0);
+  expect(await page.getByRole('button', { name: /all|selected|bulk/i }).count()).toBe(0);
+});
+
+test('share_slider_stops_at_fifty', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  const card = page.getByTestId('card-gift_ribbon');
+  const thumb = card.getByRole('slider');
+  await thumb.focus();
+  await page.keyboard.press('End');
+  await page.keyboard.press('ArrowRight');
+  await expect(card.getByTestId('share')).toHaveText('50%');
+  await expect(card.getByRole('button', { name: /^Approve/ })).toHaveText('Approve gift_ribbon at 50%');
+});
+
+test('failing_check_disables_approve', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  await page.getByLabel('Reviewer name').fill('Ritwik');
+  const card = page.getByTestId('card-popup_offer');
+  await expect(card.getByTestId('checks')).toContainText('technical · fail');
+  await expect(card.getByRole('button', { name: /^Approve/ })).toBeDisabled();
+});
+
+test('approve_takes_one_card_and_leaves_the_other', async ({ page }) => {
+  await apiPost('/api/sites/shop/slots/banner/variants', { key: 'spring_beans', html: '<p>Spring harvest is in.</p>' });
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  await page.getByLabel('Reviewer name').fill('Ritwik');
+  const card = page.getByTestId('card-gift_ribbon');
+  await card.getByRole('slider').focus();
+  for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowRight');
+  await card.getByRole('button', { name: 'Approve gift_ribbon at 15%' }).click();
+  await expect(page.getByTestId('card-gift_ribbon')).toHaveCount(0);
+  await expect(page.getByTestId('card-spring_beans')).toBeVisible();
+  const s = await api('/sites/shop/slots/hero');
+  const v = s.variants.find((x: any) => x.key === 'gift_ribbon');
+  expect([v.status, v.approved_by, Math.round(v.traffic_share * 100)]).toEqual(['approved', 'Ritwik', 15]);
+  const banner = await api('/sites/shop/slots/banner');
+  expect(banner.variants.find((x: any) => x.key === 'spring_beans').status).toBe('draft');
+});
+
+test('reject_needs_a_comment', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  await page.getByLabel('Reviewer name').fill('Ritwik');
+  const card = page.getByTestId('card-popup_offer');
+  await expect(card.getByRole('button', { name: 'Reject' })).toBeDisabled();
+  await card.getByLabel('Comment (stays on the variant)').fill('Popups are off brand');
+  await card.getByRole('button', { name: 'Reject' }).click();
+  await expect(page.getByTestId('card-popup_offer')).toHaveCount(0);
+  const s = await api('/sites/shop/slots/hero');
+  expect(s.variants.find((x: any) => x.key === 'popup_offer').status).toBe('rejected');
+});
+
+test('draft_written_here_waits_for_review', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop&slot=hero');
+  await page.getByLabel('Key').fill('autumn_hero');
+  await page.getByLabel('HTML').fill('<h1>Autumn roasts are here</h1>');
+  await page.getByRole('button', { name: 'Save as draft' }).click();
+  await expect(page.getByTestId('card-autumn_hero')).toBeVisible();
+  const s = await api('/sites/shop/slots/hero');
+  expect(s.variants.find((x: any) => x.key === 'autumn_hero').status).toBe('draft');
+});

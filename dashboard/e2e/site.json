@@ -1,0 +1,37 @@
+{
+  "site": "shop",
+  "origin": "http://localhost:3400",
+  "holdout_fraction": 0.2,
+  "slots": [
+    {
+      "key": "hero",
+      "selector": "[data-prb-slot=hero]",
+      "metric": "click",
+      "variants": [
+        {
+          "key": "baseline",
+          "baseline": true
+        },
+        {
+          "key": "free_ship",
+          "html": "<h1>Free shipping on everything</h1><p>No minimum this week.</p><a href=\"#shop\">Shop now</a>"
+        },
+        {
+          "key": "gift",
+          "html": "<h1>Gift sets, wrapped and ready</h1><p>Three roasts, a tasting card and a note in your words.</p><a href=\"#gifts\">Shop gifts</a>"
+        }
+      ]
+    },
+    {
+      "key": "banner",
+      "selector": "[data-prb-slot=banner]",
+      "metric": "click",
+      "variants": [
+        {
+          "key": "plain",
+          "baseline": true
+        }
+      ]
+    }
+  ]
+}

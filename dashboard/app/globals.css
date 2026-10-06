@@ -1,0 +1,92 @@
+@import 'tailwindcss';
+
+/* A studio drafting kit, lit from above: warm paper for the canvas, cool navy for the
+   chrome, one indigo accent for actions. Tokens first; components read roles, not hex. */
+:root {
+  --font-plex: 'IBM Plex Sans';
+  --font-fraunces: 'Fraunces Variable';
+  --font-jetbrains: 'JetBrains Mono';
+  color-scheme: light;
+  --paper: #f5f0e6;
+  --surface: #fcfaf5;
+  --surface-2: #f1ebdf;
+  --ink: #1d1b16;
+  --ink-2: #54504a;
+  --muted: #847f75;
+  --line: #e2dacb;
+  --line-strong: #cfc5b2;
+  --chrome: #172038;
+  --chrome-2: #212c49;
+  --chrome-ink: #dfe4f2;
+  --chrome-muted: #8f9abb;
+  --accent: #4f46e5;
+  --accent-ink: #ffffff;
+  --accent-soft: #e6e4fb;
+  --good: #0ca30c;
+  --good-ink: #006300;
+  --warn: #fab219;
+  --warn-ink: #8a5a00;
+  --pause: #d6417a;
+  --pause-ink: #a3245a;
+  --critical: #d03b3b;
+  /* Chart chrome and the categorical series (dataviz reference palette, light steps). */
+  --grid: #e6e0d3;
+  --axis: #c3bcab;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --paper: #111216; --surface: #1a1b20; --surface-2: #22232a;
+    --ink: #f3f0e9; --ink-2: #c3c0b6; --muted: #8d8a82;
+    --line: #2d2e35; --line-strong: #3b3c44;
+    --chrome: #0b1020; --chrome-2: #141b31; --chrome-ink: #dfe4f2; --chrome-muted: #7f8aab;
+    --accent: #8b84ff; --accent-ink: #0b0b14; --accent-soft: #26244a;
+    --good-ink: #3fcf3f; --warn-ink: #fab219; --pause-ink: #f07aa6;
+    --grid: #2a2b31; --axis: #3d3e45;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #111216; --surface: #1a1b20; --surface-2: #22232a;
+  --ink: #f3f0e9; --ink-2: #c3c0b6; --muted: #8d8a82;
+  --line: #2d2e35; --line-strong: #3b3c44;
+  --chrome: #0b1020; --chrome-2: #141b31; --chrome-ink: #dfe4f2; --chrome-muted: #7f8aab;
+  --accent: #8b84ff; --accent-ink: #0b0b14; --accent-soft: #26244a;
+  --good-ink: #3fcf3f; --warn-ink: #fab219; --pause-ink: #f07aa6;
+  --grid: #2a2b31; --axis: #3d3e45;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-chrome: var(--chrome);
+  --color-chrome-2: var(--chrome-2);
+  --color-chrome-ink: var(--chrome-ink);
+  --color-chrome-muted: var(--chrome-muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-good-ink: var(--good-ink);
+  --color-warn-ink: var(--warn-ink);
+  --color-pause-ink: var(--pause-ink);
+  --font-sans: var(--font-plex), system-ui, sans-serif;
+  --font-serif: var(--font-fraunces), Georgia, serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+}
+
+html, body { background: var(--paper); color: var(--ink); }
+body { font-family: var(--font-plex), system-ui, sans-serif; font-size: 14px; }
+.tabular { font-variant-numeric: tabular-nums; }
+::selection { background: var(--accent-soft); }
