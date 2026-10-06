@@ -268,13 +268,28 @@ pub async fn write_model(tx: &mut Transaction<'_, Postgres>, slot: i64, state: &
 /// Run forever: wake on `NOTIFY prb_events` from the ingestor, and on a timer so windows close
 /// even when no events arrive.
 pub async fn run_loop(pool: PgPool, tick: Duration) -> Result<()> {
+    run_loop_with(pool, tick, GUARD_EVERY).await
+}
+
+/// How often the loop runs the auto-rollback guard. It reads every closed decision of every
+/// site, so it runs on a clock, not on every event.
+pub const GUARD_EVERY: Duration = Duration::from_secs(30);
+
+pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) -> Result<()> {
     let mut listener = PgListener::connect_with(&pool).await?;
     listener.listen(CHANNEL).await?;
+    let mut last_guard: Option<std::time::Instant> = None;
     loop {
         match run_once(&pool, Utc::now()).await {
             Ok(s) if s != Stats::default() => tracing::info!(?s, "worker pass"),
             Ok(_) => {}
             Err(e) => tracing::error!(error = %e, "worker pass failed"),
+        }
+        if last_guard.is_none_or(|t| t.elapsed() >= guard_every) {
+            if let Err(e) = crate::guard::run(&pool, Utc::now()).await {
+                tracing::error!(error = %e, "guard pass failed");
+            }
+            last_guard = Some(std::time::Instant::now());
         }
         tokio::select! {
             r = listener.recv() => if let Err(e) = r {

@@ -132,3 +132,29 @@ pub async fn insert_variant(pool: &PgPool, key: &str, status: &str) {
         .await
         .unwrap();
 }
+
+pub async fn variant_id(pool: &PgPool, key: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM variants WHERE key = $1").bind(key).fetch_one(pool).await.unwrap()
+}
+
+/// Insert `n` exposed decisions for `variant` on the demo hero slot, `conversions` of them
+/// converted, created `age_minutes` ago (so a window of 30 minutes has closed when age > 30).
+pub async fn seed_decisions(pool: &PgPool, variant: &str, in_holdout: bool, n: i64, conversions: i64, age_minutes: i64) {
+    sqlx::query(
+        "INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed,
+                                in_holdout, created_at, exposed_at, outcome, outcome_at, settled_at)
+         SELECT gen_random_uuid(), 'demo', v.slot_id, v.id, 'seed-' || $1 || '-' || $2::text || '-' || i, '{}',
+                '{\"bias\":1,\"returning\":0,\"mobile\":0,\"from_ad\":0}', '{}', 'lints', 0, 0,
+                $2, now() - make_interval(mins => $5::int), now() - make_interval(mins => $5::int),
+                CASE WHEN i <= $4 THEN 1 ELSE NULL END, CASE WHEN i <= $4 THEN now() END, CASE WHEN i <= $4 THEN now() END
+           FROM variants v, generate_series(1, $3::int) i WHERE v.key = $1",
+    )
+    .bind(variant)
+    .bind(in_holdout)
+    .bind(n)
+    .bind(conversions)
+    .bind(age_minutes)
+    .execute(pool)
+    .await
+    .unwrap();
+}
