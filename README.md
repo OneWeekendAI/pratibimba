@@ -22,7 +22,8 @@ looking at it.
   against the same Postgres.
 - **Decisions** come from a LinTS bandit per slot: Thompson sampling over a Bayesian logistic
   regression, one per variant. It uses three visitor features (`returning`, `mobile`,
-  `from_ad`) plus a bias. No LLM sits on the decision path. Each decision is stored with its
+  `from_ad`) plus a bias, and, when the visitor reports a UTC offset, the local clock
+  (`sin_hour`, `cos_hour`, `is_night_local`; see below). No LLM sits on the decision path. Each decision is stored with its
   features, every variant's sampled score, the policy version and the random seed, so it can be
   replayed exactly.
 - **Learning** happens once per decision, and only when the visitor actually saw it. A goal
@@ -35,7 +36,13 @@ looking at it.
   you look.
 - **Auto-rollback.** When the top of a variant's confidence sequence sits below the holdout
   by more than the site's margin, the worker pauses it, restores the slot's model to the
-  version current when the variant was approved, and writes a sentence saying why.
+  version current when the variant was approved, and writes a sentence saying why. In a
+  simulator sandbox it runs on the sandbox's clock after every simulated day.
+- **Audiences gate variants.** A segment an owner promotes to an audience can restrict a
+  variant (never the baseline): visitors outside it never get that variant, and every
+  explanation lists the audiences it evaluated, whether the visitor matched, and what each kept
+  out. The gate fails closed: an archived audience, or one that reads a local clock the visitor
+  did not report, matches nobody.
 - **Only approved variants are ever served.** Variants in the site file you apply are approved
   by you. A draft written in the dashboard waits at the approval gate until someone approves it,
   one at a time, with a planned traffic share capped at 50%.
@@ -255,6 +262,9 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
 | `get_results` | Per-slot and per-variant results with lift against the holdout. |
 | `list_decisions`, `explain_decision` | Recent decisions, and why one visitor saw what they saw. |
 | `propose_variant` | Submits a variant as a **draft**, with an optional note to the reviewer. Returns the constraint checks. |
+| `list_audiences`, `create_audience` | The site's segments and what each audience gates; a new segment lands as a **draft** that a person promotes. |
+| `simulate` | Runs a synthetic cohort (optionally for N simulated days) in the site's **sandbox**, creating it on first use. |
+| `fast_forward_visitor` | Moves the sandbox's clock forward (its worker and auto-rollback run) and decides every slot for one subject at the new time. |
 
 - **An agent cannot approve.** There is no approve tool, `propose_variant` writes `draft`
   whatever it is sent (a `status` or `traffic_share` argument fails the call), and an MCP
@@ -263,6 +273,10 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
   `on_behalf_of`); a call without them is refused. Every call, refused or not, writes a row
   to `mcp_calls`, and each result returns that row as `audit`. A draft links to the call that
   wrote it, so the approvals API shows the agent and its justification.
+- **The simulator tools are sandbox-only.** `simulate` and `fast_forward_visitor` take no
+  site argument; the sandbox id comes from the token's site, so no call can reach real
+  decisions, events or models. The sandbox has one clock, so fast-forwarding one visitor moves
+  every simulated visitor with it.
 
 ### The agent instruction pack
 
@@ -371,6 +385,13 @@ The rules:
   touch. A decision on such a goal waits `grace_secs` past its attribution window before it
   settles as a miss, so a late webhook still lands; the webhook is judged at the time the
   platform says the sale happened.
+- **A late webhook corrects a settled miss.** If the webhook arrives after the decision
+  settled as a miss (past the grace period) but the sale happened inside the attribution
+  window, the decision flips to converted and records `corrected_at`, the `conversion` webhook
+  fires with `late: true`, and the model is corrected exactly: turning a miss into a
+  conversion adds `w.x` to the log-likelihood, so the posterior mean moves by `cov.x` and the
+  covariance is unchanged. Once per decision, never for a browser event, and a holdout
+  decision's record is corrected without teaching the model.
 - A request with a missing, wrong or stale signature gets 400 and writes nothing.
 
 ## Configuration
@@ -390,7 +411,7 @@ The rules:
 
 | Method and path | What it does |
 |---|---|
-| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. |
+| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?, tz_offset?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. `explanation.audiences` lists the audiences evaluated. |
 | `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}], tz_offset?}`. Accepts up to 100 events per call. A `pick` adds `picks: [option keys]`. A `rescore` adds `variant`, `features` and `score`. `id` is your idempotency key. `tz_offset` is the visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`, -720 to 840); the script sends it. |
 | `GET /manifest/:site` | Slots and approved variant keys. Append `.js` for the script form. Edge-cacheable. |
 | `GET /sdk.js` | The client script. |
@@ -404,7 +425,8 @@ The dashboard API lives under `/api` and needs `Authorization: Bearer $PRB_ADMIN
 session cookie that `POST /api/session` sets). It covers each site's overview and live stream,
 results, slots, decisions (with replay and the counterfactual), drafts, the approve, reject
 and comment actions, install probes, model versions with manual rollback, the simulator and
-conversion sources.
+conversion sources. `POST /api/variants/:id/audience {audience: <segment id> | null, actor}`
+restricts a variant to a promoted audience, or lifts the restriction.
 
 ### Visitor insights
 
@@ -438,6 +460,16 @@ database, and behind the `/_prb/*` proxy the IP it sees is often the proxy's. Th
 coarse, DST-correct at the moment of the event, and spoofing it only mislabels the spoofer's
 own hour. An event with no offset counts as UTC. The night window is per site
 (`sites.night_start_hour` / `night_end_hour`, default 22:00-05:00). Raw events are not pruned.
+
+**The local clock is also a decision feature.** The script sends `ctx.tz_offset` on
+`/decide`; with it, the decision carries `sin_hour`, `cos_hour` (so 23:00 sits next to 00:00)
+and `is_night_local`, and the bandit learns whether the hour predicts a variant's lift. No
+offset, no time features: an unknown clock is never guessed as UTC on the decision path. The
+time features are extra named dimensions after the base four (beside any `stated` tastes), and
+the list of names is stored with the model and only appended to, so a model saved before them
+keeps everything it learned and gains the new dimensions at the prior. The server-side
+`@pratibimba/next` and `@pratibimba/edge` SDKs do not know the visitor's offset yet, so their
+decisions carry no time features.
 
 ## Webhooks out
 
