@@ -1,0 +1,17 @@
+{
+  "site": "demo",
+  "origin": "http://localhost:5173",
+  "slots": [
+    {
+      "key": "hero",
+      "selector": "#hero",
+      "metric": "click",
+      "attribution_window_secs": 1800,
+      "decision_ttl_secs": 60,
+      "variants": [
+        { "key": "baseline", "baseline": true },
+        { "key": "gift", "html": "<h1>Gift sets, wrapped and ready</h1><a href=\"#shop\">Shop gifts</a>" }
+      ]
+    }
+  ]
+}
