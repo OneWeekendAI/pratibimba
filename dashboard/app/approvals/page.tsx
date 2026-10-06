@@ -2,45 +2,79 @@
 // The approval gate. Each draft takes one deliberate click: there is no bulk approve, no
 // select-all, nothing that approves more than the card it sits on.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
+import clsx from 'clsx';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Preview } from '@/components/preview';
-import { Shell } from '@/components/shell';
+import { Shell, useActor } from '@/components/shell';
 import { ShareSlider } from '@/components/slider';
 import { Button, Card, Chip, Empty, Field, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
 import { api, ApiError, type ApprovalCard, type Approvals, type Check, type Overview } from '@/lib/api';
-import { diff } from '@/lib/diff';
+import { diff, lineDiff, looksLikeCode } from '@/lib/diff';
 import { ago } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
 const CHECK_TONE: Record<Check['status'], [ChipTone, string]> = { pass: ['live', 'pass'], warn: ['warn', 'warn'], fail: ['paused', 'fail'], not_applicable: ['off', 'n/a'] };
 
-function useApprover(): [string, (v: string) => void] {
-  const [name, setName] = useState('');
-  useEffect(() => {
-    try {
-      setName(localStorage.getItem('prb-approver') ?? '');
-    } catch {}
-  }, []);
-  return [
-    name,
-    (v) => {
-      setName(v);
-      try {
-        localStorage.setItem('prb-approver', v);
-      } catch {}
-    },
-  ];
+/** Token-level for an inline payload, line-level (a code diff) for a component or any source. */
+function Diff({ before, after }: { before: string | null; after: string }) {
+  const [mode, setMode] = useState<'words' | 'code'>(() => (looksLikeCode(after) ? 'code' : 'words'));
+  const parts = useMemo(() => diff(before ?? '', after), [before, after]);
+  const lines = useMemo(() => lineDiff(before ?? '', after), [before, after]);
+  if (before === null) return <p className="text-xs text-muted">The champion is the baseline, which lives in your code, so there is nothing to diff against; the whole draft is new.</p>;
+  const added = lines.filter((l) => l.kind === 'add').length;
+  const removed = lines.filter((l) => l.kind === 'del').length;
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-3">
+        <div role="tablist" aria-label="Diff mode" className="inline-flex rounded-md border border-line-strong p-0.5 text-xs">
+          {(['words', 'code'] as const).map((m) => (
+            <button key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)} className={clsx('rounded px-2 py-0.5', mode === m ? 'bg-surface-2 font-medium text-ink' : 'text-muted hover:text-ink')}>
+              {m === 'words' ? 'Words' : 'Code'}
+            </button>
+          ))}
+        </div>
+        {mode === 'code' && <span className="text-xs text-muted tabular"><span className="text-good-ink">+{added}</span> <span className="text-pause-ink">−{removed}</span> lines</span>}
+      </div>
+      {mode === 'words' ? (
+        <pre className="max-h-48 overflow-auto rounded-md border border-line bg-surface-2/50 p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap" data-testid="diff">
+          {parts.map((p, i) =>
+            p.kind === 'same' ? <span key={i}>{p.text}</span> : p.kind === 'add' ? <ins key={i} className="bg-[color:var(--accent-soft)] text-ink no-underline">{p.text}</ins> : <del key={i} className="text-pause-ink">{p.text}</del>,
+          )}
+        </pre>
+      ) : (
+        <div className="max-h-72 overflow-auto rounded-md border border-line bg-surface-2/50 py-1.5 font-mono text-[12px] leading-relaxed" data-testid="code-diff">
+          <table className="w-full border-collapse">
+            <tbody>
+              {lines.map((l, i) => (
+                <tr key={i} data-kind={l.kind} className={l.kind === 'add' ? 'bg-[color:var(--accent-soft)]' : l.kind === 'del' ? 'bg-[color:var(--pause-soft)]' : ''}>
+                  <td className="w-8 pr-1 text-right text-muted select-none tabular">{l.a ?? ''}</td>
+                  <td className="w-8 pr-2 text-right text-muted select-none tabular">{l.b ?? ''}</td>
+                  <td className={clsx('w-4 select-none', l.kind === 'add' ? 'text-good-ink' : l.kind === 'del' ? 'text-pause-ink' : 'text-muted')}>{l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ''}</td>
+                  <td className={clsx('pr-3 whitespace-pre-wrap', l.kind === 'del' && 'text-pause-ink line-through decoration-1')}>{l.text}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
-function Diff({ before, after }: { before: string | null; after: string }) {
-  const parts = useMemo(() => diff(before ?? '', after), [before, after]);
-  if (before === null) return <p className="text-xs text-muted">The champion is the baseline, which lives in your code, so there is nothing to diff against; the whole draft is new.</p>;
+/** Who wrote a draft over MCP, why, and where the tool call is recorded. */
+function AgentBadge({ agent }: { agent: NonNullable<ApprovalCard['agent']> }) {
   return (
-    <pre className="max-h-48 overflow-auto rounded-md border border-line bg-surface-2/50 p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap" data-testid="diff">
-      {parts.map((p, i) =>
-        p.kind === 'same' ? <span key={i}>{p.text}</span> : p.kind === 'add' ? <ins key={i} className="bg-[color:var(--accent-soft)] text-ink no-underline">{p.text}</ins> : <del key={i} className="text-pause-ink">{p.text}</del>,
-      )}
-    </pre>
+    <div className="mb-4 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent-soft)]/50 px-3 py-2.5 text-[13px]" data-testid="agent-badge">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-accent px-2 py-0.5 text-[11.5px] font-semibold text-accent-ink">
+          <span aria-hidden>◆</span> {agent.name}
+        </span>
+        <span className="text-ink-2">wrote this over MCP{agent.on_behalf_of ? <> for <b className="font-medium">{agent.on_behalf_of}</b></> : null} with token <span className="font-mono">{agent.token}</span> · {ago(agent.at)}</span>
+        <Link href={`/audit/?id=${agent.audit_id}`} className="ml-auto text-xs text-accent underline" data-testid="audit-link">Tool call #{agent.audit_id} in the audit log →</Link>
+      </div>
+      <p className="mt-1.5 text-ink"><span className="text-muted">Justification: </span><span data-testid="agent-justification">“{agent.justification}”</span></p>
+    </div>
   );
 }
 
@@ -77,9 +111,10 @@ function DraftCard({ card, site, approver, max }: { card: ApprovalCard; site: st
         <span className="font-mono text-[15px] font-semibold">{card.key}</span>
         <span className="text-xs text-muted">for slot <span className="font-mono">{card.slot}</span></span>
         <Chip tone="warn">review</Chip>
-        <span className="text-xs text-muted">written by a {card.author === 'human' ? 'person' : card.author} · {ago(card.created_at)}</span>
+        <span className="text-xs text-muted">written by {card.agent ? `the agent ${card.agent.name}` : `a ${card.author === 'human' ? 'person' : card.author}`} · {ago(card.created_at)}</span>
         <span className="ml-auto text-xs text-muted">audience: everyone</span>
       </div>
+      {card.agent && <AgentBadge agent={card.agent} />}
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
           <div className="mb-1 text-xs text-muted">Current champion: <span className="font-mono">{card.champion?.key ?? '—'}</span></div>
@@ -187,7 +222,7 @@ function NewDraft({ site, slots, initial }: { site: string; slots: string[]; ini
 function View() {
   const site = useParam('site')!;
   const initialSlot = useParam('slot');
-  const [approver, setApprover] = useApprover();
+  const [approver, setApprover] = useActor();
   const q = useQuery({ queryKey: ['approvals', site], queryFn: () => api.get<Approvals>(`/sites/${site}/approvals`) });
   const ov = useQuery({ queryKey: ['overview', site], queryFn: () => api.get<Overview>(`/sites/${site}/overview`) });
   if (q.isLoading || !q.data) return <Loading />;
