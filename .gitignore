@@ -1,3 +1,10 @@
 target/
 node_modules/
 .env
+dist/
+.next/
+out/
+test-results/
+playwright-report/
+*.tsbuildinfo
+next-env.d.ts

@@ -1,0 +1,23 @@
+{
+  "name": "pratibimba-example-next",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start -p 3100",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@pratibimba/next": "file:../../packages/next",
+    "next": "16.3.8",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "typescript": "^5.9"
+  }
+}

@@ -76,7 +76,7 @@ pub async fn reach(http: &reqwest::Client, origin: &str, site: &str) -> Step {
         Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => step(
             State::Pending,
             format!(
-                "{url} returned 404: the /_prb route is not mounted. In Next.js add app/_prb/[...path]/route.ts; elsewhere proxy /_prb/* to Core."
+                "{url} returned 404: the /_prb route is not mounted. In Next.js add app/%5Fprb/[...path]/route.ts (a plain _prb folder is private in the App Router); elsewhere proxy /_prb/* to Core."
             ),
         ),
         Ok(r) if !r.status().is_success() => step(State::Failed, format!("{url} returned {}", r.status())),
