@@ -8,9 +8,10 @@ do, keeps the data on your own Postgres, and can tell you why it showed what it 
 *Pratibimba* (प्रतिबिम्ब, Sanskrit) means reflection: the page takes the shape of whoever is
 looking at it.
 
-> **Status: Phase 0 (walking skeleton).** One Rust binary, Postgres, a per-slot contextual
-> bandit and the script-tag install. It has no dashboard, no Next.js package and no MCP server
-> yet. Those are the next phases. Expect breaking changes.
+> **Status: Phase 1 (developer-first).** One Rust binary on Postgres, a per-slot contextual
+> bandit with a holdout and auto-rollback, three installs (`@pratibimba/next`, the
+> `@pratibimba/edge` worker and a script-tag fallback) and a dashboard with an approval gate.
+> There is no MCP server yet; that is Phase 2. Expect breaking changes.
 
 ## How it works
 
@@ -26,8 +27,16 @@ looking at it.
   event that matches the slot's metric (for example `click`) inside the attribution window
   (default 30 minutes) counts as a conversion. An exposure whose window closes without one
   counts as a miss. A decision that was never shown teaches nothing.
-- **Only approved variants are ever served.** In Phase 0 the variants are the ones in the site
-  file you apply yourself. Phase 1 adds the dashboard approval gate.
+- **A holdout keeps it honest.** Each site sends a fixed share of visitors (default 10%,
+  `holdout_fraction` in the site file, at most 50%) the baseline regardless. Lift is always the
+  policy against that holdout, with a 95% confidence sequence that stays valid however often
+  you look.
+- **Auto-rollback.** When the top of a variant's confidence sequence sits below the holdout
+  by more than the site's margin, the worker pauses it, restores the slot's model to the
+  version current when the variant was approved, and writes a sentence saying why.
+- **Only approved variants are ever served.** Variants in the site file you apply are approved
+  by you. A draft written in the dashboard waits at the approval gate until someone approves it,
+  one at a time, with a planned traffic share capped at 50%.
 - **No demographic inference.** The decision context is a closed set of named fields. Sending
   `gender`, `age` or any other undeclared field gets a 4xx response.
 
@@ -43,9 +52,12 @@ export PRB_DB=postgres://user:pass@your-db:5432/pratibimba
 docker run --rm -e PRB_DB -v $PWD/examples/plain/site.json:/site.json:ro pratibimba apply /site.json
 
 # 2. Run the server and the learning worker.
-docker run -d -e PRB_DB -p 8080:8080 pratibimba            # serve (the default command)
+docker run -d -e PRB_DB -e PRB_ADMIN_TOKEN=change-me -p 8080:8080 pratibimba   # serve (the default command)
 docker run -d -e PRB_DB pratibimba worker
 ```
+
+Open `http://localhost:8080/app/` and sign in with the admin token. Without
+`PRB_ADMIN_TOKEN` the dashboard API answers 503 and only the public endpoints run.
 
 Without Docker, use `cargo build --release` and then `./target/release/pratibimba serve` (or
 `worker`, `migrate`, or `apply <file>`). Both `serve` and `worker` apply the database
@@ -75,7 +87,38 @@ Each slot has exactly one `baseline`: the content your page already renders, wit
 Re-applying the file updates the site in place. A variant you remove from the file is retired,
 not deleted.
 
-### Install on a page: the script fallback
+### Install on a page
+
+The dashboard's install wizard (`/app/install/?site=<id>`) walks through these and checks each
+step itself: it probes your site for the SDK header, the `/_prb` route and the first exposure,
+rather than asking you to tick a box.
+
+**Next.js** (`@pratibimba/next`) decides during the server render, so the first byte already
+carries the variant:
+
+```ts
+// lib/prb.ts
+import { createPratibimba } from '@pratibimba/next';
+export const prb = createPratibimba({ core: process.env.PRB_CORE_URL!, site: 'demo' });
+// proxy.ts (Next.js 16 renamed middleware to proxy)
+export const proxy = prb.proxy;
+// app/%5Fprb/[...path]/route.ts (a plain _prb folder is private in the App Router)
+export const { GET, POST } = prb.route;
+// any server component
+<prb.Slot id="hero" variants={{ gift: <GiftHero /> }}><Hero /></prb.Slot>
+```
+
+**Any other origin** (`@pratibimba/edge`) sits in front of it as an edge worker and rewrites
+`<!-- prb:slot="hero" -->...<!-- /prb:slot -->` regions as the HTML streams:
+
+```js
+const prb = createEdge({ core: 'https://core.internal', site: 'demo' });
+export default { fetch: (req) => prb.handleRequest(req) };   // Cloudflare; Deno and Vercel Edge take the same handler
+```
+
+See `examples/next` and `examples/edge`.
+
+#### The script fallback
 
 Proxy `/_prb/*` on your own origin to Core, so the browser only ever talks to your domain.
 Then add both tags to `<head>`, without `defer` or `async`:
@@ -94,8 +137,8 @@ A hard 400 ms timeout (`data-timeout`) puts the original content back if the dec
 A decision that arrives after that is not swapped in. It is reported as `missed` instead.
 
 **Be honest with yourself about this path.** On a slow network a slot can stay blank for up to
-the timeout. The server-side installs planned for Phase 1 (`@pratibimba/next` and the edge
-worker) decide before any HTML is sent, so they have no flicker at all.
+the timeout. The two server-side installs above decide before any HTML is sent, so they have
+no flicker at all.
 
 Clicks inside a slot are reported automatically. For other goals, call
 `window.prb.track('purchase')`. The subject id lives in `sessionStorage` by default. Add
@@ -104,6 +147,29 @@ Clicks inside a slot are reported automatically. For other goals, call
 
 To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, then serve
 `examples/plain/` on port 5173.
+
+## The dashboard
+
+Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
+`PRB_DASHBOARD_DIR`; the Docker image includes it). Sign in with `PRB_ADMIN_TOKEN`.
+
+- **Site home**: live tiles over server-sent events (decisions in the last minute,
+  conversions in the last hour, lift today against the holdout), an install-status strip, and
+  the slot list with each slot's champion, 7-day lift and traffic split. The decisions tile
+  turns amber when a busy site goes quiet.
+- **Slot workbench**: a card per variant with its share, its lift and, if auto-rollback paused
+  it, why; the cumulative lift curve with its confidence band; and the last 500 decisions,
+  filterable by variant and outcome.
+- **Decision detail**: one plain-English sentence on why this visitor saw this variant, then
+  the features the bandit saw, every arm's score, whether replaying the stored seed
+  reproduces them, a counterfactual (what the baseline or the policy would have shown), the
+  event timeline and what reviewers wrote at the approval gate.
+- **Results**: the site-level lift headline, slots ranked by lift times traffic, and a
+  learnings feed written when the evidence crosses a threshold.
+- **Approvals**: each draft with its diff against the champion, the constraint checks, a
+  planned-traffic slider capped at 50% and a comment box. A failing check blocks approval.
+  There is no bulk approve. You can write a draft by hand here too.
+- **Install**: the six-step wizard above, for Next.js, the edge worker or the script tag.
 
 ## Configuration
 
@@ -114,9 +180,11 @@ To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, the
 | `PRB_SITE_ORIGIN` | (none) | comma-separated CORS origins; only needed when the page is not same-origin with Core |
 | `PRB_WORKER_TICK_MS` | `1000` | how often `worker` closes attribution windows (events wake it immediately) |
 | `PRB_DB_MAX_CONNECTIONS` | `10` | pool size |
+| `PRB_ADMIN_TOKEN` | (none) | turns on the dashboard API at `/api`; without it `/api` answers 503 |
+| `PRB_DASHBOARD_DIR` | (none; set in the Docker image) | the built dashboard (`dashboard/out`), served at `/app` |
 | `RUST_LOG` | `info` | log filter |
 
-## HTTP API (Phase 0)
+## HTTP API
 
 | Method and path | What it does |
 |---|---|
@@ -124,7 +192,13 @@ To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, the
 | `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}]}`. Accepts up to 100 events per call. `id` is your idempotency key. |
 | `GET /manifest/:site` | Slots and approved variant keys. Append `.js` for the script form. Edge-cacheable. |
 | `GET /sdk.js` | The client script. |
+| `POST /decide/batch` | Several slots for one subject in one call: `{site, subject, slots, ctx}`. |
 | `GET /health` | 200 when the database answers. |
+
+The dashboard API lives under `/api` and needs `Authorization: Bearer $PRB_ADMIN_TOKEN` (or the
+session cookie that `POST /api/session` sets). It covers each site's overview and live stream,
+results, slots, decisions (with replay and the counterfactual), drafts, the approve, reject
+and comment actions, install probes, and model versions with manual rollback.
 
 ## Development
 
@@ -133,7 +207,16 @@ To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, the
 export DATABASE_URL=postgres://postgres@localhost:5432/postgres
 cargo test                                  # bandit math, migrations, HTTP, worker, scripted cohorts
 cd packages/client && npm install && npm test   # the client script, in jsdom
+
+# The dashboard, in headless Chromium against real Core and a seeded history.
+cargo build && cd dashboard && npm install && npx playwright install chromium
+npm run build && PRB_E2E_ADMIN_DB=$DATABASE_URL npm run e2e
+node e2e/stack.mjs & node e2e/shots.mjs /tmp/prb-shots   # screenshots of every screen, light and dark
 ```
+
+The dashboard's end-to-end stack (`dashboard/e2e/stack.mjs`) seeds 8,000 visitors with a
+planted ground truth in two halves, so the bandit learns from the first and the history shows
+it, then runs the real worker. Each test checks the screen against the API it reads from.
 
 The scripted-cohort tests (`core/tests/cohort.rs`) push 2,000 synthetic visitors with a
 planted ground truth through the real decide, event and worker loop. They check that the
