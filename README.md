@@ -154,10 +154,15 @@ To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, the
 Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
 `PRB_DASHBOARD_DIR`; the Docker image includes it). Sign in with `PRB_ADMIN_TOKEN`.
 
+- **Every site page** opens with a *Live* banner and a kill switch: one click pauses every
+  slot on the site (each serves only its baseline, the page's own content) and records who
+  pulled it; one click resumes.
 - **Site home**: live tiles over server-sent events (decisions in the last minute,
   conversions in the last hour, lift today against the holdout), an install-status strip, and
   the slot list with each slot's champion, 7-day lift and traffic split. The decisions tile
-  turns amber when a busy site goes quiet.
+  turns amber when a busy site goes quiet. Below them, *Connect your coding agent* (the MCP
+  endpoint, how to mint a token, a config block for Claude Code, Cursor or any MCP client,
+  and the instruction-pack command) and a live tail of the site's MCP tool calls.
 - **Slot workbench**: a card per variant with its share, its lift and, if auto-rollback paused
   it, why; the cumulative lift curve with its confidence band; and the last 500 decisions,
   filterable by variant and outcome.
@@ -167,10 +172,16 @@ Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
   event timeline and what reviewers wrote at the approval gate.
 - **Results**: the site-level lift headline, slots ranked by lift times traffic, and a
   learnings feed written when the evidence crosses a threshold.
-- **Approvals**: each draft with its diff against the champion, the constraint checks, a
+- **Approvals**: each draft with its diff against the champion (word by word for an inline
+  payload, line by line as a code diff for a component or any multi-line source; switchable),
+  and, for a draft an agent wrote over MCP, a badge with the agent's name, who it ran for, its
+  justification and a link to the tool call's audit record. Then the constraint checks, a
   planned-traffic slider capped at 50% and a comment box. A failing check blocks approval.
   There is no bulk approve. You can write a draft by hand here too.
 - **Install**: the six-step wizard above, for Next.js, the edge worker or the script tag.
+  The agent step is done once an MCP tool call has run on the site.
+- **Audit record** (`/app/audit/?id=<n>`): one MCP tool call: agent, tool, outcome,
+  justification, token, the arguments as sent and any draft it wrote.
 
 ## The MCP server
 

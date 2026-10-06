@@ -131,5 +131,30 @@ while (Number(psql("SELECT count(*) FROM variants WHERE status = 'paused'", DB))
 // Two drafts for the approvals view: an edit of the champion, and one that fails a check.
 await call('/api/sites/shop/slots/hero/variants', { key: 'gift_ribbon', html: '<h1>Gift sets, wrapped in kraft and ribbon</h1><p>Three roasts, a tasting card and a note in your words.</p><a href="#gifts">Choose a gift</a>', note: 'Warmer wording for the holiday weeks', author_name: 'Asha' }, true);
 await call('/api/sites/shop/slots/hero/variants', { key: 'popup_offer', html: '<h1 onmouseover="openPopup()">Wait! 15% off</h1>' }, true);
+
+// A coding agent over MCP: a read, a refused call (no justification), and a multi-line draft
+// the approvals card shows with the agent badge and the code diff.
+const { token: mcpToken } = await call('/api/sites/shop/mcp-tokens', { name: 'ritwik-laptop' }, true);
+let rpc = 0;
+async function tool(name, args) {
+  const r = await fetch(CORE + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${mcpToken}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: ++rpc, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  if (!r.ok) throw new Error(`mcp ${name} ${r.status} ${await r.text()}`);
+  return r.json();
+}
+const who = { agent: 'Claude Code', on_behalf_of: 'Ritwik' };
+await tool('get_results', { ...who, justification: 'Read the hero results before proposing a variant' });
+await tool('list_variants', { agent: 'Claude Code', slot: 'hero' });
+await tool('propose_variant', {
+  ...who,
+  justification: 'gift leads on hero; a box-builder CTA should lift clicks from returning buyers',
+  slot: 'hero',
+  key: 'gift_box',
+  html: '<section class="hero">\n  <h1>Gift sets, wrapped and ready</h1>\n  <p>Three roasts, a tasting card and a note in your words.</p>\n  <a href="#gifts">Build a gift box</a>\n</section>',
+  note: 'Same headline and copy as gift; only the call to action changes.',
+});
 ready = true;
 console.log('stack ready');

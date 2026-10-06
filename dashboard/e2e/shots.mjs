@@ -50,7 +50,22 @@ for (const theme of ['light', 'dark']) {
   // Chromium leaves iframes below the first viewport blank in a full-page capture; take the
   // second card on its own so its previews are visible.
   await page.getByTestId('card-popup_offer').screenshot({ path: `${out}/${theme}-5b-approvals-blocked-card.png` });
+  await page.getByTestId('card-gift_box').screenshot({ path: `${out}/${theme}-5c-approvals-agent-card.png` });
+  const audit = await page.getByTestId('card-gift_box').getByTestId('audit-link').getAttribute('href');
+  await shot('5d-audit', audit);
   await shot('6-install', '/app/install/?site=shop');
+  // The kill switch, pulled and then put back.
+  await shot('7-paused', '/app/site/?id=shop', async () => {
+    const banner = page.getByTestId('live-banner');
+    const name = banner.getByLabel('Your name for the kill switch');
+    if (await name.count()) await name.fill('Ritwik');
+    await banner.getByRole('button', { name: 'Pause all slots' }).click();
+    await page.waitForTimeout(500);
+  });
+  await page.getByRole('button', { name: 'Resume all slots' }).click();
+  await page.waitForTimeout(300);
+  await page.getByTestId('connect-agent').screenshot({ path: `${out}/${theme}-8-connect-agent.png` });
+  await page.getByTestId('mcp-tail').screenshot({ path: `${out}/${theme}-9-mcp-tail.png` });
   await ctx.close();
 }
 await b.close();

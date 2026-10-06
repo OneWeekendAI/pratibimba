@@ -276,6 +276,188 @@ test('install_path_switches_the_snippet', async ({ page }) => {
   await expect(page.getByRole('radio', { name: /Script tag fallback/ })).toBeChecked();
 });
 
+// ---- Phase 2: the agent affordances, and the Phase 1 leftovers ----
+
+async function mcpCall(token: string, name: string, args: Record<string, unknown>) {
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${token}` } });
+  const r = await c.post('/mcp', { data: { jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name, arguments: args } } });
+  expect(r.ok()).toBe(true);
+  await c.dispose();
+}
+
+test('agent_badge_names_the_agent_and_its_justification', async ({ page }) => {
+  await signIn(page);
+  const a = await api('/sites/shop/approvals');
+  const draft = a.drafts.find((d: any) => d.key === 'gift_box');
+  expect(draft.agent.name).toBe('Claude Code');
+  await page.goto('/app/approvals/?site=shop');
+  const badge = page.getByTestId('card-gift_box').getByTestId('agent-badge');
+  await expect(badge).toContainText('Claude Code');
+  await expect(badge).toContainText('for Ritwik');
+  await expect(badge.getByTestId('agent-justification')).toHaveText(`“${draft.agent.justification}”`);
+  // A person's draft carries no badge.
+  await expect(page.getByTestId('card-gift_ribbon').getByTestId('agent-badge')).toHaveCount(0);
+});
+
+test('agent_badge_links_to_the_audit_record', async ({ page }) => {
+  await signIn(page);
+  const a = await api('/sites/shop/approvals');
+  const id = a.drafts.find((d: any) => d.key === 'gift_box').agent.audit_id;
+  await page.goto('/app/approvals/?site=shop');
+  await page.getByTestId('card-gift_box').getByTestId('audit-link').click();
+  await expect(page).toHaveURL(new RegExp(`/app/audit/\\?id=${id}$`));
+  const rec = await api(`/mcp-calls/${id}`);
+  await expect(page.getByRole('heading', { name: `Tool call #${id}` })).toBeVisible();
+  const record = page.getByTestId('audit-record');
+  await expect(record).toContainText('propose_variant');
+  await expect(record).toContainText('on behalf of Ritwik');
+  await expect(record).toContainText('ritwik-laptop');
+  await expect(page.getByTestId('audit-justification')).toHaveText(`“${rec.justification}”`);
+  await expect(page.getByTestId('audit-arguments')).toContainText('"key": "gift_box"');
+  await expect(page.getByText('What it wrote')).toBeVisible();
+});
+
+test('component_draft_gets_a_code_diff', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  const code = page.getByTestId('card-gift_box').getByTestId('code-diff');
+  await expect(code).toBeVisible();
+  const added = await code.locator('tr[data-kind=add]').allInnerTexts();
+  const removed = await code.locator('tr[data-kind=del]').allInnerTexts();
+  // Only the call to action changed; the wrapper is new; headline and copy are unchanged lines.
+  expect(added.join('\n')).toContain('Build a gift box');
+  expect(removed.join('\n')).toContain('Shop gifts');
+  expect(removed).toHaveLength(1);
+  expect((await code.locator('tr[data-kind=same]').allInnerTexts()).join('\n')).toContain('Gift sets, wrapped and ready');
+  expect(added.join('\n')).not.toContain('Gift sets');
+});
+
+test('inline_draft_diffs_by_word_and_can_switch_to_code', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/approvals/?site=shop');
+  const card = page.getByTestId('card-gift_ribbon');
+  await expect(card.getByTestId('diff')).toBeVisible();
+  await expect(card.getByTestId('code-diff')).toHaveCount(0);
+  await card.getByRole('tab', { name: 'Code' }).click();
+  const code = card.getByTestId('code-diff');
+  await expect(code.locator('tr[data-kind=same]')).toContainText(['Three roasts, a tasting card']);
+  await expect(code.locator('tr[data-kind=add]').first()).toContainText('kraft');
+});
+
+test('connect_card_shows_endpoint_mint_command_and_pack', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  const card = page.getByTestId('connect-agent');
+  await expect(card.getByTestId('copy-endpoint')).toHaveText(`${CORE}/mcp`);
+  await expect(card.getByTestId('copy-mint')).toHaveText('pratibimba mcp-token shop <name>');
+  await expect(card.getByTestId('copy-pack')).toContainText(`npx @pratibimba/agent install --url ${CORE}`);
+  await expect(card.getByTestId('copy-pack')).toContainText('PRATIBIMBA_MCP_TOKEN=');
+  await expect(card.getByTestId('copy-config')).toContainText(`claude mcp add --transport http pratibimba ${CORE}/mcp`);
+  await card.getByRole('tab', { name: 'Cursor' }).click();
+  await expect(card.getByTestId('copy-config')).toContainText('"mcpServers"');
+  await expect(card.getByTestId('agent-status')).toContainText('token last used');
+  await expect(card.getByTestId('agent-status')).toContainText('agent connected');
+});
+
+test('connect_card_mints_a_token_that_works', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  const card = page.getByTestId('connect-agent');
+  await card.getByLabel('Token name').fill('e2e-cursor');
+  await card.getByRole('button', { name: 'Or mint one here' }).click();
+  await expect(card.getByTestId('minted')).toBeVisible();
+  const token = /Bearer (prb_mcp_\S+?)"/.exec(await card.getByTestId('copy-config').innerText())?.[1];
+  expect(token).toBeTruthy();
+  await expect(card.getByTestId('copy-pack')).toContainText(`PRATIBIMBA_MCP_TOKEN=${token}`);
+  await mcpCall(token!, 'list_slots', { agent: 'Cursor', justification: 'check the minted token' });
+  const t = await api('/sites/shop/mcp-calls');
+  expect(t.calls[0]).toMatchObject({ token: 'e2e-cursor', agent: 'Cursor', outcome: 'ok' });
+});
+
+test('mcp_tail_shows_new_calls_without_reload', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  const tail = page.getByTestId('mcp-tail');
+  const t = await api('/sites/shop/mcp-calls');
+  await expect(tail.getByTestId('mcp-call').first()).toContainText(t.calls[0].tool);
+  await expect(tail).toContainText('refused');
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const { token } = await (await c.post('/api/sites/shop/mcp-tokens', { data: { name: 'e2e-tail' } })).json();
+  await c.dispose();
+  const why = `tail check ${Date.now()}`;
+  await mcpCall(token, 'get_site', { agent: 'Tail Agent', justification: why });
+  await expect(tail.getByTestId('mcp-call').first()).toContainText('Tail Agent', { timeout: 8000 });
+  await expect(tail.getByTestId('mcp-call').first()).toContainText(why);
+  await tail.getByTestId('mcp-call').first().click();
+  await expect(page.getByTestId('audit-justification')).toHaveText(`“${why}”`);
+});
+
+test('install_agent_step_is_observed', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/install/?site=shop');
+  await expect(page.getByTestId('step-agent')).toContainText('observed');
+  await expect(page.getByTestId('detail-agent')).toContainText('called');
+  await expect(page.getByTestId('step-agent').getByTestId('connect-agent')).toBeVisible();
+});
+
+test('kill_switch_pauses_every_slot_and_resumes', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/results/?site=shop');
+  const banner = page.getByTestId('live-banner');
+  await expect(banner).toHaveAttribute('data-state', 'live');
+  await expect(banner).toContainText('Live');
+  try {
+    await banner.getByLabel('Your name for the kill switch').fill('Ritwik');
+    await banner.getByRole('button', { name: 'Pause all slots' }).click();
+    await expect(banner).toHaveAttribute('data-state', 'paused');
+    await expect(banner).toContainText('Paused by Ritwik');
+    expect((await api('/sites/shop/overview')).paused.by).toBe('Ritwik');
+    const c = await pwRequest.newContext({ baseURL: CORE });
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const r = await (await c.post('/decide/batch', { data: { site: 'shop', subject: `kill-${Date.now()}-${i}`, slots: ['hero', 'banner'] } })).json();
+      for (const d of r.decisions) seen.add(`${d.slot}:${d.variant}`);
+    }
+    await c.dispose();
+    expect([...seen].sort()).toEqual(['banner:plain', 'hero:baseline']);
+    await banner.getByRole('button', { name: 'Resume all slots' }).click();
+    await expect(banner).toHaveAttribute('data-state', 'live');
+    expect((await api('/sites/shop/overview')).paused).toBeNull();
+  } finally {
+    await apiPost('/api/sites/shop/pause', { actor: 'e2e', paused: false });
+  }
+});
+
+test('lift_axis_ticks_sit_on_round_values', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await expect(page.locator('.recharts-line').first()).toBeVisible();
+  // Recharts 3 draws tick labels in a layer outside the axis group; the y labels are the signed
+  // integers (the x labels are dates).
+  await expect(page.locator('.recharts-cartesian-axis-tick-value').first()).toBeVisible();
+  const labels = (await page.locator('.recharts-cartesian-axis-tick-value').allTextContents()).filter((l) => /^[+−]?\d+(\.\d+)?$/.test(l));
+  const ticks = labels.map((l) => Number(l.replace('−', '-').replace('+', '')));
+  expect(ticks.length).toBeGreaterThanOrEqual(3);
+  expect(ticks).toContain(0);
+  const step = ticks[1] - ticks[0];
+  const mag = 10 ** Math.floor(Math.log10(step));
+  expect([1, 2, 5]).toContain(Math.round(step / mag));
+  for (let i = 1; i < ticks.length; i++) expect(ticks[i] - ticks[i - 1]).toBeCloseTo(step, 6);
+  for (const t of ticks) expect(Math.abs(t / step - Math.round(t / step))).toBeLessThan(1e-6);
+});
+
+test('sidebar_runs_the_full_height_of_a_long_page', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/site/?id=shop');
+  await expect(page.getByTestId('mcp-tail')).toBeVisible();
+  const total = await page.evaluate(() => document.documentElement.scrollHeight);
+  expect(total).toBeGreaterThan(1200);
+  const box = (await page.getByTestId('sidebar').boundingBox())!;
+  expect(box.y + box.height).toBeGreaterThanOrEqual(total - 1);
+  await page.evaluate(() => scrollTo(0, document.body.scrollHeight));
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeInViewport();
+});
+
 test('approval_card_diffs_against_the_champion', async ({ page }) => {
   await signIn(page);
   await page.goto('/app/approvals/?site=shop');
@@ -300,7 +482,8 @@ test('no_bulk_approve_control', async ({ page }) => {
   // One approve button per card, and nothing that selects or approves several.
   expect(await page.getByRole('button', { name: /^Approve/ }).count()).toBe(await cards.count());
   expect(await page.getByRole('checkbox').count()).toBe(0);
-  expect(await page.getByRole('button', { name: /all|selected|bulk/i }).count()).toBe(0);
+  // Scoped to the page body: the site banner's "Pause all slots" kill switch is not an approval.
+  expect(await page.getByRole('main').getByRole('button', { name: /all|selected|bulk/i }).count()).toBe(0);
 });
 
 test('share_slider_stops_at_fifty', async ({ page }) => {
