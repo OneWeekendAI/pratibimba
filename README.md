@@ -11,7 +11,7 @@ looking at it.
 > **Status: Phase 1 (developer-first).** One Rust binary on Postgres, a per-slot contextual
 > bandit with a holdout and auto-rollback, three installs (`@pratibimba/next`, the
 > `@pratibimba/edge` worker and a script-tag fallback) and a dashboard with an approval gate.
-> Phase 2 has started: an open MCP server at `/mcp` and an agent instruction pack are in.
+> Phase 2 is in: an open MCP server at `/mcp`, an agent instruction pack, and signed webhooks out.
 > Phase 3 backend: the simulator with time-travel, and Stripe and generic conversion webhooks.
 > Expect breaking changes.
 
@@ -84,6 +84,11 @@ migrations on start.
   }]
 }
 ```
+
+An optional `"facts"` string is the site's facts.md: what an agent may claim. The grounding
+check flags any figure (a number, a percentage, a price) in an agent-written draft that the
+facts do not contain; with no facts, agent drafts warn that their claims are unchecked.
+Human drafts skip grounding.
 
 Each slot has exactly one `baseline`: the content your page already renders, with no `html`.
 Re-applying the file updates the site in place. A variant you remove from the file is retired,
@@ -181,6 +186,8 @@ Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
   There is no bulk approve. You can write a draft by hand here too.
 - **Install**: the six-step wizard above, for Next.js, the edge worker or the script tag.
   The agent step is done once an MCP tool call has run on the site.
+- **Webhooks**: add an endpoint (a URL and the events it wants; the signing secret is shown
+  once), see its delivered, pending and failed counts and its recent deliveries, delete it.
 - **Audit record** (`/app/audit/?id=<n>`): one MCP tool call: agent, tool, outcome,
   justification, token, the arguments as sent and any draft it wrote.
 
@@ -388,6 +395,35 @@ database, and behind the `/_prb/*` proxy the IP it sees is often the proxy's. Th
 coarse, DST-correct at the moment of the event, and spoofing it only mislabels the spoofer's
 own hour. An event with no offset counts as UTC. The night window is per site
 (`sites.night_start_hour` / `night_end_hour`, default 22:00-05:00). Raw events are not pruned.
+
+## Webhooks out
+
+Core POSTs six event types to the endpoints a site subscribes: `decision`, `exposure` (the
+first one per decision), `conversion` (a credited conversion), `variant.approved`,
+`variant.retired` and `auto_rollback`. An endpoint gets only the types it asked for.
+
+```json
+{ "id": "…", "idempotency_key": "…", "type": "conversion", "site": "demo",
+  "created_at": "…", "data": { "decision_id": "…", "slot": "hero", "variant": "gift", "metric": "click", … } }
+```
+
+- **Signed.** `Pratibimba-Signature: t=<unix seconds>,v1=<hex>`, where `<hex>` is
+  HMAC-SHA256 of `"<t>.<raw body>"` keyed with the endpoint's secret. Verify it on the raw
+  body and reject an old `t`. `Pratibimba-Event` and `Pratibimba-Idempotency-Key` are also sent.
+- **Never lost, never invented.** Each event is written to an outbox in the same transaction
+  as the change it reports. The worker sends it.
+- **Retried.** Any 2xx is delivered. Anything else (a non-2xx, a timeout, a refused
+  connection) is retried after 10 s, doubling to at most an hour; after 8 attempts it is
+  `failed`. A retry keeps its idempotency key, so drop repeats on your side.
+- **Recorded.** Each delivery keeps its status, attempts and last response. Delivered rows
+  are pruned after 7 days.
+
+| Method and path (admin token) | What it does |
+|---|---|
+| `GET /api/sites/:site/webhooks` | Endpoints with delivery counts, and the event types. |
+| `POST /api/sites/:site/webhooks` | `{url, events}`. Returns the endpoint and its `secret`, the only time it is shown. |
+| `DELETE /api/webhooks/:id` | Removes the endpoint and its pending deliveries. |
+| `GET /api/webhooks/:id/deliveries` | The last 50 delivery records. |
 
 ## Development
 
