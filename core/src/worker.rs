@@ -7,6 +7,8 @@
 //!   event names the decision (`decision_id`) or falls back to last-touch: the subject's latest
 //!   exposed decision per slot in the window.
 //! - **Negative.** An exposed decision whose window closes with no conversion settles as 0.
+//! - **Holdout.** A decision in the holdout gets its outcome recorded like any other (it is the
+//!   control group's measurement) but never updates the model.
 //! - **Skipped.** An unexposed decision (decided but never shown, e.g. it arrived after the
 //!   client's timeout) settles with no outcome and teaches nothing.
 //!
@@ -178,13 +180,13 @@ async fn candidates(
 /// Credit one decision as converted, at most once, and teach its model. Returns whether it
 /// was credited.
 async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) -> Result<bool> {
-    let row: Option<(i64, i64, Value)> = sqlx::query_as(
+    let row: Option<(i64, i64, Value, bool)> = sqlx::query_as(
         "UPDATE decisions d SET outcome = 1, outcome_at = $2, settled_at = $3
            FROM slots s
           WHERE d.id = $1 AND s.id = d.slot_id
             AND d.settled_at IS NULL AND d.exposed_at IS NOT NULL
             AND $2 >= d.created_at AND $2 <= d.created_at + make_interval(secs => s.attribution_window_secs)
-          RETURNING d.slot_id, d.variant_id, d.features",
+          RETURNING d.slot_id, d.variant_id, d.features, d.in_holdout",
     )
     .bind(decision)
     .bind(at)
@@ -192,8 +194,11 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
     .fetch_optional(&mut **tx)
     .await?;
     match row {
-        Some((slot, variant, features)) => {
-            learn(tx, slot, variant, &features, true).await?;
+        Some((slot, variant, features, held)) => {
+            // A holdout outcome is the control group's measurement, never a lesson.
+            if !held {
+                learn(tx, slot, variant, &features, true).await?;
+            }
             Ok(true)
         }
         None => Ok(false),
@@ -202,8 +207,8 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
 
 async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<(u64, Stats)> {
     let mut tx = pool.begin().await?;
-    let rows: Vec<(Uuid, i64, i64, Value, bool)> = sqlx::query_as(
-        "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL
+    let rows: Vec<(Uuid, i64, i64, Value, bool, bool)> = sqlx::query_as(
+        "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL, d.in_holdout
            FROM decisions d JOIN slots s ON s.id = d.slot_id
           WHERE d.settled_at IS NULL AND d.created_at + make_interval(secs => s.attribution_window_secs) < $1
           ORDER BY d.created_at LIMIT $2
@@ -214,10 +219,12 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<(
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();
-    for (id, slot, variant, features, exposed) in &rows {
+    for (id, slot, variant, features, exposed, held) in &rows {
         if *exposed {
             sqlx::query("UPDATE decisions SET outcome = 0, settled_at = $2 WHERE id = $1").bind(id).bind(now).execute(&mut *tx).await?;
-            learn(&mut tx, *slot, *variant, features, false).await?;
+            if !*held {
+                learn(&mut tx, *slot, *variant, features, false).await?;
+            }
             local.settled_negative += 1;
         } else {
             sqlx::query("UPDATE decisions SET settled_at = $2 WHERE id = $1").bind(id).bind(now).execute(&mut *tx).await?;
@@ -233,13 +240,29 @@ async fn learn(tx: &mut Transaction<'_, Postgres>, slot: i64, variant: i64, feat
     let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1 FOR UPDATE").bind(slot).fetch_one(&mut **tx).await?;
     let mut model: LinTs = serde_json::from_value(state)?;
     model.update(variant, &x, converted);
-    sqlx::query("UPDATE models SET state = $2, version = $3, updated_at = now() WHERE slot_id = $1")
+    let reason = if converted { "learn: conversion" } else { "learn: miss" };
+    write_model(tx, slot, &serde_json::to_value(&model)?, reason).await?;
+    Ok(())
+}
+
+/// Write a new model state as the next version and append it to the history. The caller holds
+/// the `models` row lock. Returns the new version.
+pub async fn write_model(tx: &mut Transaction<'_, Postgres>, slot: i64, state: &Value, reason: &str) -> Result<i64> {
+    let version: i64 = sqlx::query_scalar(
+        "UPDATE models SET state = $2, version = version + 1, updated_at = now() WHERE slot_id = $1 RETURNING version",
+    )
+    .bind(slot)
+    .bind(state)
+    .fetch_one(&mut **tx)
+    .await?;
+    sqlx::query("INSERT INTO model_versions (slot_id, version, state, reason) VALUES ($1, $2, $3, $4)")
         .bind(slot)
-        .bind(serde_json::to_value(&model)?)
-        .bind(model.n as i64)
+        .bind(version)
+        .bind(state)
+        .bind(reason)
         .execute(&mut **tx)
         .await?;
-    Ok(())
+    Ok(version)
 }
 
 /// Run forever: wake on `NOTIFY prb_events` from the ingestor, and on a timer so windows close

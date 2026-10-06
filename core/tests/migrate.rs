@@ -16,7 +16,7 @@ async fn seed_slot(pool: &PgPool) -> i64 {
 #[sqlx::test(migrations = false)]
 async fn fresh_database_gets_all_tables(pool: PgPool) {
     db::migrate(&pool).await.unwrap();
-    for t in ["sites", "slots", "variants", "models", "decisions", "events", "pending_events"] {
+    for t in ["sites", "slots", "variants", "models", "decisions", "events", "pending_events", "approvals", "model_versions", "learnings"] {
         assert!(table_exists(&pool, t).await, "missing table {t}");
     }
 }
@@ -94,4 +94,20 @@ async fn migration_and_ledger_row_commit_together(pool: PgPool) {
     assert!(db::migrate_with(&pool, &migs).await.is_err());
     assert!(!table_exists(&pool, "half_t").await, "the file committed without its ledger row");
     assert!(table_exists(&pool, "schema_migrations").await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn traffic_share_is_capped_at_half_by_the_schema(pool: PgPool) {
+    db::migrate(&pool).await.unwrap();
+    let slot = seed_slot(&pool).await;
+    let over = sqlx::query("INSERT INTO variants (slot_id, key, payload, status, traffic_share) VALUES ($1, 'v', '<p>', 'draft', 0.6)")
+        .bind(slot)
+        .execute(&pool)
+        .await;
+    assert!(over.is_err(), "a 60% planned share was stored");
+    let ok = sqlx::query("INSERT INTO variants (slot_id, key, payload, status, traffic_share) VALUES ($1, 'w', '<p>', 'draft', 0.5)")
+        .bind(slot)
+        .execute(&pool)
+        .await;
+    assert!(ok.is_ok(), "{ok:?}");
 }

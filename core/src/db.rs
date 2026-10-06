@@ -9,7 +9,10 @@
 use anyhow::{Context, Result};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
-pub const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    ("0002_phase1", include_str!("../migrations/0002_phase1.sql")),
+];
 
 /// Arbitrary constant: "prb" in ASCII.
 const MIGRATION_LOCK: i64 = 0x707262;

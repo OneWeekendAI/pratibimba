@@ -40,7 +40,7 @@ fn dot(a: &[f64; 4], b: &[f64; 4]) -> f64 {
 
 #[sqlx::test(migrations = false)]
 async fn exposure_marks_decision_exposed(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     let n = count(&pool, &format!("SELECT count(*) FROM decisions WHERE id = '{d}' AND exposed_at IS NOT NULL")).await;
@@ -49,7 +49,7 @@ async fn exposure_marks_decision_exposed(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn goal_with_decision_id_credits_and_learns(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     event(&app, "v", "click", Some(&d.to_string())).await;
@@ -62,7 +62,7 @@ async fn goal_with_decision_id_credits_and_learns(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn second_goal_does_not_learn_twice(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     event(&app, "v", "click", Some(&d.to_string())).await;
@@ -73,7 +73,7 @@ async fn second_goal_does_not_learn_twice(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn goal_on_unexposed_decision_is_not_credited(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = decided(&app, "v").await;
     event(&app, "v", "click", Some(&d.to_string())).await;
@@ -84,7 +84,7 @@ async fn goal_on_unexposed_decision_is_not_credited(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn goal_after_window_is_not_credited(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     sqlx::query("UPDATE decisions SET created_at = now() - interval '2 hours'").execute(&pool).await.unwrap();
@@ -95,7 +95,7 @@ async fn goal_after_window_is_not_credited(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn goal_with_wrong_metric_is_not_credited(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     event(&app, "v", "add_to_cart", Some(&d.to_string())).await;
@@ -105,7 +105,7 @@ async fn goal_with_wrong_metric_is_not_credited(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn goal_from_other_subject_is_not_credited(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "victim").await;
     event(&app, "forger", "click", Some(&d.to_string())).await;
@@ -115,7 +115,7 @@ async fn goal_from_other_subject_is_not_credited(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn last_touch_credits_latest_exposed_decision(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let older = exposed(&app, &pool, "v").await;
     sqlx::query("UPDATE decisions SET created_at = now() - interval '10 minutes'").execute(&pool).await.unwrap();
@@ -129,7 +129,7 @@ async fn last_touch_credits_latest_exposed_decision(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn settle_expired_exposed_decision_learns_negative(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     worker::run_once(&pool, Utc::now() + Duration::hours(1)).await.unwrap();
@@ -141,7 +141,7 @@ async fn settle_expired_exposed_decision_learns_negative(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn settle_leaves_open_window_alone(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = exposed(&app, &pool, "v").await;
     worker::run_once(&pool, Utc::now() + Duration::minutes(29)).await.unwrap();
@@ -150,7 +150,7 @@ async fn settle_leaves_open_window_alone(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn settle_skips_unexposed_without_learning(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = decided(&app, "v").await;
     worker::run_once(&pool, Utc::now() + Duration::hours(1)).await.unwrap();
@@ -160,7 +160,7 @@ async fn settle_skips_unexposed_without_learning(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn late_processed_goal_inside_window_still_credits(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let d = decided(&app, "v").await;
     event(&app, "v", "exposure", Some(&d.to_string())).await;
@@ -172,7 +172,7 @@ async fn late_processed_goal_inside_window_still_credits(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn outbox_is_drained(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     event(&app, "v", "click", None).await;
     event(&app, "v", "missed", None).await;
@@ -186,7 +186,7 @@ async fn concurrent_workers_lose_no_updates() {
     for _ in 0..3 {
         let db = FreshDb::new().await;
         let pool = db.pool.clone();
-        setup_demo(&pool).await;
+        setup_learning(&pool).await;
         let app = app(&pool);
         let mut ids = vec![];
         for i in 0..N {
@@ -216,7 +216,7 @@ async fn concurrent_workers_lose_no_updates() {
 
 #[sqlx::test(migrations = false)]
 async fn notify_wakes_the_loop(pool: PgPool) {
-    setup_demo(&pool).await;
+    setup_learning(&pool).await;
     let app = app(&pool);
     let loop_pool = pool.clone();
     let handle = tokio::spawn(async move { worker::run_loop(loop_pool, std::time::Duration::from_secs(60)).await });
@@ -232,4 +232,20 @@ async fn notify_wakes_the_loop(pool: PgPool) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     handle.abort();
+}
+
+#[sqlx::test(migrations = false)]
+async fn every_update_appends_a_model_version(pool: PgPool) {
+    setup_learning(&pool).await;
+    let app = app(&pool);
+    let d = exposed(&app, &pool, "v").await;
+    event(&app, "v", "click", Some(&d.to_string())).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    let versions: Vec<(i64, serde_json::Value, String)> =
+        sqlx::query_as("SELECT version, state, reason FROM model_versions ORDER BY version").fetch_all(&pool).await.unwrap();
+    assert_eq!(versions.iter().map(|v| v.0).collect::<Vec<_>>(), vec![0, 1], "{versions:?}");
+    let (_, current) = model(&pool).await;
+    let stored: LinTs = serde_json::from_value(versions[1].1.clone()).unwrap();
+    assert_eq!(stored, current, "the history row is not the state that was written");
+    assert_eq!(versions[1].2, "learn: conversion");
 }

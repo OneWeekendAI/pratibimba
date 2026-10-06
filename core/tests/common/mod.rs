@@ -62,6 +62,17 @@ pub async fn setup_demo(pool: &PgPool) {
     pratibimba::site_file::apply(pool, &demo_file()).await.unwrap();
 }
 
+/// Learning tests need every decision to teach the model, so they switch the holdout off.
+pub async fn set_holdout(pool: &PgPool, fraction: f32) {
+    sqlx::query("UPDATE sites SET holdout_fraction = $1").bind(fraction).execute(pool).await.unwrap();
+}
+
+/// The demo site with no holdout: every exposed decision teaches the model.
+pub async fn setup_learning(pool: &PgPool) {
+    setup_demo(pool).await;
+    set_holdout(pool, 0.0).await;
+}
+
 pub async fn count(pool: &PgPool, sql: &str) -> i64 {
     sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
 }

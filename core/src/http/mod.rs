@@ -42,6 +42,7 @@ impl AppState {
 pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
     let app = Router::new()
         .route("/decide", post(decide::handler))
+        .route("/decide/batch", post(decide::batch_handler))
         .route("/e", post(events::handler))
         .route("/manifest/{site}", get(manifest::handler))
         .route("/sdk.js", get(sdk_js))

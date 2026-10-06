@@ -17,6 +17,9 @@ pub const APPROVER: &str = "cli:apply";
 pub struct SiteFile {
     pub site: String,
     pub origin: String,
+    /// Share of visitors (0 to 0.5) who always get the baseline. Omitted: keep the current value.
+    #[serde(default)]
+    pub holdout_fraction: Option<f32>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -69,6 +72,11 @@ impl SiteFile {
         if !is_slug(&self.site) {
             bail!("site {:?}: must be a lowercase slug", self.site);
         }
+        if let Some(h) = self.holdout_fraction {
+            if !(0.0..=0.5).contains(&h) {
+                bail!("holdout_fraction must be between 0 and 0.5");
+            }
+        }
         for slot in &self.slots {
             let k = &slot.key;
             if !is_slug(k) {
@@ -112,9 +120,13 @@ pub async fn apply_path(pool: &PgPool, path: &std::path::Path) -> Result<()> {
 pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
     let mut tx = pool.begin().await?;
-    sqlx::query("INSERT INTO sites (id, origin) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin")
+    sqlx::query(
+        "INSERT INTO sites (id, origin, holdout_fraction) VALUES ($1, $2, COALESCE($3, 0.10))
+         ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction)",
+    )
         .bind(&file.site)
         .bind(&file.origin)
+        .bind(file.holdout_fraction)
         .execute(&mut *tx)
         .await?;
     for slot in &file.slots {
@@ -134,15 +146,21 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO model_versions (slot_id, version, state, reason) SELECT slot_id, version, state, 'init' FROM models WHERE slot_id = $1 ON CONFLICT DO NOTHING")
+            .bind(slot_id)
+            .execute(&mut *tx)
+            .await?;
         // Clear the baseline flag first so moving it between variants never trips the
         // one-baseline index halfway through.
         sqlx::query("UPDATE variants SET is_baseline = false WHERE slot_id = $1").bind(slot_id).execute(&mut *tx).await?;
         for v in &slot.variants {
             sqlx::query(
-                "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at)
-                 VALUES ($1, $2, $3, $4, 'approved', $5, now())
+                "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at, approved_model_version)
+                 VALUES ($1, $2, $3, $4, 'approved', $5, now(), (SELECT version FROM models WHERE slot_id = $1))
                  ON CONFLICT (slot_id, key) DO UPDATE SET payload = EXCLUDED.payload, is_baseline = EXCLUDED.is_baseline,
-                     status = 'approved', approved_by = EXCLUDED.approved_by, approved_at = now()",
+                     status = 'approved', approved_by = EXCLUDED.approved_by, approved_at = now(),
+                     approved_model_version = COALESCE(variants.approved_model_version, EXCLUDED.approved_model_version),
+                     traffic_share = NULL",
             )
             .bind(slot_id)
             .bind(&v.key)
