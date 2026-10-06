@@ -1,0 +1,13 @@
+{
+  "name": "@pratibimba/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pratibimba script-tag fallback: hides only the slots, decides, swaps, reveals within a hard timeout",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test --test-reporter=tap test/*.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.0"
+  }
+}
