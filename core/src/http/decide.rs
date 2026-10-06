@@ -123,23 +123,30 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         return Err(ApiError::BadRequest("subject must be 1-256 printable ASCII characters".into()));
     }
     let pool = &state.pool;
-    let slot: Option<(i64, i32, f32)> = sqlx::query_as(
-        "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction FROM slots s JOIN sites t ON t.id = s.site_id
+    let slot: Option<(i64, i32, f32, bool)> = sqlx::query_as(
+        "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL FROM slots s JOIN sites t ON t.id = s.site_id
           WHERE s.site_id = $1 AND s.key = $2",
     )
     .bind(&req.site)
     .bind(&req.slot)
     .fetch_optional(pool)
     .await?;
-    let Some((slot_id, ttl, holdout_fraction)) = slot else {
+    let Some((slot_id, ttl, holdout_fraction, paused)) = slot else {
         return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", req.slot, req.site)));
     };
-    let arms: Vec<ArmRow> = sqlx::query_as(
+    let mut arms: Vec<ArmRow> = sqlx::query_as(
         "SELECT id, key, payload, is_baseline, traffic_share FROM variants WHERE slot_id = $1 AND status = 'approved' ORDER BY id",
     )
     .bind(slot_id)
     .fetch_all(pool)
     .await?;
+    // The kill switch: a paused site serves only the page's own content.
+    if paused {
+        arms.retain(|a| a.3);
+        if arms.is_empty() {
+            return Err(ApiError::Conflict(format!("site {:?} is paused", req.site)));
+        }
+    }
     if arms.is_empty() {
         return Err(ApiError::Conflict(format!("slot {:?} has no approved variants", req.slot)));
     }

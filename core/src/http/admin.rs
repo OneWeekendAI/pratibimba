@@ -38,6 +38,9 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/sites/{site}/approvals", get(approvals))
         .route("/sites/{site}/install", get(install))
         .route("/sites/{site}/mcp-tokens", post(issue_mcp_token))
+        .route("/sites/{site}/mcp-calls", get(mcp_calls))
+        .route("/sites/{site}/pause", post(pause_site))
+        .route("/mcp-calls/{id}", get(mcp_call))
         .route("/decisions/{id}", get(decision))
         .route("/variants/{id}/approve", post(approve))
         .route("/variants/{id}/reject", post(reject))
@@ -173,6 +176,10 @@ pub async fn overview(state: &AppState, site: &str, now: DateTime<Utc>) -> Resul
         .bind(site)
         .fetch_one(pool)
         .await?;
+    let paused: Option<(DateTime<Utc>, String)> = sqlx::query_as("SELECT paused_at, paused_by FROM sites WHERE id = $1 AND paused_at IS NOT NULL")
+        .bind(site)
+        .fetch_optional(pool)
+        .await?;
     let slots: Vec<Value> = r_week
         .slots
         .iter()
@@ -201,6 +208,7 @@ pub async fn overview(state: &AppState, site: &str, now: DateTime<Utc>) -> Resul
         "decisions_last_minute": last_minute, "conversions_last_hour": last_hour_conv,
         "lift_today": r_today.lift, "treated_today": r_today.treated, "holdout_today": r_today.holdout,
         "sparkline": sparkline, "stale": stale, "pending_approvals": pending, "slots": slots,
+        "paused": paused.map(|(at, by)| json!({ "at": at, "by": by })),
     }))
 }
 
@@ -422,7 +430,8 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>)> = sqlx::query_as(
         "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id,
                 CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
-                     'on_behalf_of', c.on_behalf_of, 'token', k.name, 'call_id', c.call_id, 'at', c.created_at) END
+                     'on_behalf_of', c.on_behalf_of, 'token', k.name, 'call_id', c.call_id, 'at', c.created_at,
+                     'audit_id', c.id, 'tool', c.tool) END
            FROM variants v JOIN slots s ON s.id = v.slot_id
            LEFT JOIN mcp_calls c ON c.id = v.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
           WHERE s.site_id = $1 AND v.status = 'draft' ORDER BY v.created_at, v.id",
@@ -632,4 +641,95 @@ async fn issue_mcp_token(State(state): State<Arc<AppState>>, Path(site): Path<St
     site_origin(&state, &site).await?;
     let token = crate::mcp::issue_token(&state.pool, &site, &b.name).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(json!({ "site": site, "name": b.name.trim(), "token": token, "url": "/mcp" }))))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pause {
+    actor: String,
+    paused: bool,
+}
+
+/// The kill switch: pause every slot on the site (each serves only its baseline) or resume.
+async fn pause_site(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<Pause>) -> Result<Json<Value>, ApiError> {
+    site_origin(&state, &site).await?;
+    let who = actor(&b.actor)?;
+    let row: (Option<DateTime<Utc>>, Option<String>) = if b.paused {
+        sqlx::query_as("UPDATE sites SET paused_at = coalesce(paused_at, now()), paused_by = coalesce(paused_by, $2) WHERE id = $1 RETURNING paused_at, paused_by")
+    } else {
+        sqlx::query_as("UPDATE sites SET paused_at = NULL, paused_by = NULL WHERE id = $1 RETURNING paused_at, paused_by")
+    }
+    .bind(&site)
+    .bind(&who)
+    .fetch_one(&state.pool)
+    .await?;
+    tracing::info!(site, actor = who, paused = b.paused, "kill switch");
+    Ok(Json(json!({ "site": site, "paused": row.0.map(|at| json!({ "at": at, "by": row.1 })) })))
+}
+
+const CALL_COLUMNS: &str = "c.id, c.tool, c.agent, c.on_behalf_of, c.justification, c.outcome, c.error, c.call_id, k.name, c.created_at";
+type CallRow = (i64, String, String, Option<String>, Option<String>, String, Option<String>, Value, String, DateTime<Utc>);
+
+fn call_json(r: CallRow) -> Value {
+    let (id, tool, agent, on_behalf_of, justification, outcome, error, call_id, token, at) = r;
+    json!({ "id": id, "tool": tool, "agent": agent, "on_behalf_of": on_behalf_of, "justification": justification,
+            "outcome": outcome, "error": error, "call_id": call_id, "token": token, "at": at })
+}
+
+#[derive(Deserialize)]
+struct CallsQuery {
+    limit: Option<i64>,
+}
+
+/// The MCP tail for a site: its tokens (with when each was last used) and its newest tool calls.
+async fn mcp_calls(State(state): State<Arc<AppState>>, Path(site): Path<String>, Query(q): Query<CallsQuery>) -> Result<Json<Value>, ApiError> {
+    site_origin(&state, &site).await?;
+    let limit = q.limit.unwrap_or(25).clamp(1, 200);
+    let calls: Vec<CallRow> = sqlx::query_as(&format!(
+        "SELECT {CALL_COLUMNS} FROM mcp_calls c JOIN mcp_tokens k ON k.id = c.token_id
+          WHERE c.site_id = $1 ORDER BY c.created_at DESC, c.id DESC LIMIT $2"
+    ))
+    .bind(&site)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+    let tokens: Vec<(String, DateTime<Utc>, Option<DateTime<Utc>>, Option<DateTime<Utc>>, i64)> = sqlx::query_as(
+        "SELECT k.name, k.created_at, k.revoked_at, max(c.created_at), count(c.id) FROM mcp_tokens k
+           LEFT JOIN mcp_calls c ON c.token_id = k.id WHERE k.site_id = $1 GROUP BY k.id ORDER BY k.created_at",
+    )
+    .bind(&site)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(json!({
+        "site": site, "endpoint": "/mcp",
+        "tokens": tokens.into_iter().map(|(name, created, revoked, last, n)| json!({
+            "name": name, "created_at": created, "revoked_at": revoked, "last_used": last, "calls": n })).collect::<Vec<_>>(),
+        "calls": calls.into_iter().map(call_json).collect::<Vec<_>>(),
+    })))
+}
+
+/// One tool call's audit record: who called what, why, with which arguments, and what it wrote.
+async fn mcp_call(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
+    let row: Option<(CallRow, String, Value)> = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<String>, String, Option<String>, Value, String, DateTime<Utc>, String, Value)>(&format!(
+        "SELECT {CALL_COLUMNS}, c.site_id, c.arguments FROM mcp_calls c JOIN mcp_tokens k ON k.id = c.token_id WHERE c.id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .map(|r| ((r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9), r.10, r.11));
+    let Some((call, site, arguments)) = row else {
+        return Err(ApiError::NotFound(format!("no MCP call {id}")));
+    };
+    let wrote: Vec<(i64, String, String, String)> = sqlx::query_as(
+        "SELECT v.id, s.key, v.key, v.status FROM variants v JOIN slots s ON s.id = v.slot_id WHERE v.mcp_call_id = $1 ORDER BY v.id",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut v = call_json(call);
+    let o = v.as_object_mut().expect("object");
+    o.insert("site".into(), json!(site));
+    o.insert("arguments".into(), arguments);
+    o.insert("variants".into(), json!(wrote.into_iter().map(|(id, slot, key, status)| json!({ "id": id, "slot": slot, "key": key, "status": status })).collect::<Vec<_>>()));
+    Ok(Json(v))
 }
