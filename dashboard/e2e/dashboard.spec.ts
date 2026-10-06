@@ -95,10 +95,10 @@ test('decisions_filter_by_variant', async ({ page }) => {
   await page.goto('/app/slot/?site=shop&slot=hero');
   await page.getByLabel('Filter by variant').selectOption('gift');
   const cells = page.locator('[data-testid=decisions-table] tbody tr td:nth-child(3)');
-  await expect(cells.first()).toHaveText('gift');
-  const texts = await cells.allInnerTexts();
-  expect(texts.length).toBeGreaterThan(10);
-  expect(new Set(texts)).toEqual(new Set(['gift']));
+  // The table keeps the previous rows on screen while the filtered query loads, so wait for
+  // the filtered rows rather than reading whatever is drawn first.
+  await expect.poll(async () => [...new Set(await cells.allInnerTexts())]).toEqual(['gift']);
+  expect((await cells.allInnerTexts()).length).toBeGreaterThan(10);
 });
 
 test('decision_row_opens_the_why_sentence', async ({ page }) => {

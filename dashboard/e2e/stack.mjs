@@ -117,11 +117,16 @@ const now = () => psql('SELECT now()::text', DB);
 // Two halves, so the history shows learning: the first half is decided by the untrained model
 // (days 6 to 3 ago) and the worker learns from it; the second half (days 3 to 0) is decided by
 // what it learned. The newest 3% stay at "now", windows still open.
+// Auto-rollback waits for the second half. Pausing free_ship restores the slot's model to its
+// approval checkpoint (version 0, the prior); if that happened during the first settle, the
+// second half would be decided by an untrained model and the champion would be a coin flip.
+psql("UPDATE sites SET rollback_min_exposures = 1000000 WHERE id = 'shop'", DB);
 const t1 = now();
 await visits(0, VISITORS / 2);
 backdate(t1, 6, 3);
 kids.push(spawn(BIN, ['worker'], { env, stdio: 'inherit' }));
 await settled();
+psql("UPDATE sites SET rollback_min_exposures = 200 WHERE id = 'shop'", DB);
 const t2 = now();
 await visits(VISITORS / 2, VISITORS);
 backdate(t2, 3, 0, 0.03);
