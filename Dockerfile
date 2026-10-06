@@ -1,0 +1,32 @@
+# One image, several entry points: `serve` (HTTP) and `worker` (learning loop) share the binary,
+# so they can never disagree about schema or policy.
+#   docker run -e PRB_DB=postgres://... -p 8080:8080 pratibimba            # serve
+#   docker run -e PRB_DB=postgres://... pratibimba worker                   # learn
+#   docker run -e PRB_DB=postgres://... -v $PWD/site.json:/site.json pratibimba apply /site.json
+
+FROM rust:1-trixie AS build
+WORKDIR /src
+
+# Dependencies first, so a source-only change does not rebuild the tree.
+COPY Cargo.toml Cargo.lock ./
+COPY core/Cargo.toml core/Cargo.toml
+RUN mkdir -p core/src && echo 'fn main() {}' > core/src/main.rs && touch core/src/lib.rs \
+ && cargo build --release -p pratibimba && rm -rf core/src
+
+COPY core core
+# The client script is embedded in the binary with include_str!.
+COPY packages/client/sdk.js packages/client/sdk.js
+# cargo decides on mtime; the stub files above are newer than the real ones would be.
+RUN touch core/src/main.rs core/src/lib.rs && cargo build --release -p pratibimba
+
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --no-create-home pratibimba
+COPY --from=build /src/target/release/pratibimba /usr/local/bin/pratibimba
+USER pratibimba
+ENV PRB_BIND=0.0.0.0:8080
+EXPOSE 8080
+ENTRYPOINT ["pratibimba"]
+CMD ["serve"]
