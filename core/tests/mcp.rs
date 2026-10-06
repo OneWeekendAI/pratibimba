@@ -139,7 +139,18 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
     names.sort();
     assert_eq!(
         names,
-        ["explain_decision", "get_results", "get_site", "list_decisions", "list_sites", "list_slots", "list_variants", "propose_variant"]
+        [
+            "explain_decision",
+            "fast_forward_visitor",
+            "get_results",
+            "get_site",
+            "list_decisions",
+            "list_sites",
+            "list_slots",
+            "list_variants",
+            "propose_variant",
+            "simulate"
+        ]
     );
     for tool in &tools {
         let req: Vec<&str> = tool["inputSchema"]["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
@@ -390,4 +401,75 @@ async fn admin_api_issues_a_working_token(pool: PgPool) {
     data(&call(&app, &t, "list_sites", why(json!({}))).await);
     let r = api_post(&app, "/api/sites/nope/mcp-tokens", json!({ "name": "x" })).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+// ---- the simulator: sandbox-only, audited ----
+
+fn cohort() -> Value {
+    json!({ "visitors": 40, "seed": 3, "rates": { "hero": { "baseline": 0.05, "gift": 0.4 } }, "returning": 0.5 })
+}
+
+/// What the real site holds: decisions, events, and its slot's model version.
+async fn real_footprint(pool: &PgPool) -> (i64, i64, i64) {
+    (
+        count(pool, "SELECT count(*) FROM decisions WHERE site_id = 'demo'").await,
+        count(pool, "SELECT count(*) FROM events WHERE site_id = 'demo'").await,
+        count(pool, "SELECT m.version FROM models m JOIN slots s ON s.id = m.slot_id WHERE s.site_id = 'demo'").await,
+    )
+}
+
+#[sqlx::test(migrations = false)]
+async fn simulate_runs_days_in_the_sandbox_and_never_touches_the_site(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let before = real_footprint(&pool).await;
+    let r = data(&call(&app, &t, "simulate", why(json!({ "cohort": cohort(), "days": 3 }))).await);
+    assert_eq!(r["sandbox"], "demo~sim");
+    assert_eq!(r["days"].as_array().unwrap().len(), 3, "{r}");
+    assert_eq!(r["status"]["decisions"], json!(120), "{r}");
+    assert_eq!(real_footprint(&pool).await, before, "the real site changed");
+    assert_eq!(count(&pool, "SELECT count(*) FROM decisions WHERE site_id = 'demo~sim'").await, 120);
+    // Audited like every tool, with the cohort it ran.
+    let (tool, outcome, args): (String, String, Value) =
+        sqlx::query_as("SELECT tool, outcome, arguments FROM mcp_calls ORDER BY id DESC LIMIT 1").fetch_one(&pool).await.unwrap();
+    assert_eq!((tool.as_str(), outcome.as_str()), ("simulate", "ok"));
+    assert_eq!(args["cohort"]["visitors"], json!(40));
+}
+
+#[sqlx::test(migrations = false)]
+async fn simulate_takes_no_site_argument(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let r = call(&app, &t, "simulate", why(json!({ "cohort": cohort(), "site": "demo" }))).await;
+    assert!(err_text(&r).contains("site"), "{r}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM sites WHERE id = 'demo~sim'").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn fast_forward_visitor_moves_the_sandbox_clock_and_decides_for_one_subject(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    data(&call(&app, &t, "simulate", why(json!({ "cohort": cohort() }))).await);
+    let clock: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT sim_now FROM sites WHERE id = 'demo~sim'").fetch_one(&pool).await.unwrap();
+    let before = real_footprint(&pool).await;
+    let r = data(&call(&app, &t, "fast_forward_visitor", why(json!({ "subject": "meera", "days": 7 }))).await);
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT sim_now FROM sites WHERE id = 'demo~sim'").fetch_one(&pool).await.unwrap();
+    assert_eq!(now - clock, chrono::Duration::days(7));
+    assert_eq!(r["clock"], json!(now), "{r}");
+    let d = &r["decisions"][0];
+    assert_eq!(d["slot"], "hero");
+    assert_eq!(d["explanation"]["features"]["returning"], json!(1.0), "a visitor coming back is returning: {r}");
+    // The decision is the subject's, in the sandbox, at the sandbox's clock.
+    let (site, at): (String, chrono::DateTime<chrono::Utc>) = sqlx::query_as("SELECT site_id, created_at FROM decisions WHERE subject = 'meera'").fetch_one(&pool).await.unwrap();
+    assert_eq!((site.as_str(), at), ("demo~sim", now));
+    assert_eq!(real_footprint(&pool).await, before, "the real site changed");
+    // The week closed every window the cohort opened: the sandbox's worker ran.
+    assert!(r["settled"].as_u64().unwrap() > 0, "{r}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn fast_forward_needs_a_sandbox(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let r = call(&app, &t, "fast_forward_visitor", why(json!({ "subject": "meera", "days": 1 }))).await;
+    assert!(err_text(&r).contains("sandbox"), "{r}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM decisions").await, 0);
+    let outcome: String = sqlx::query_scalar("SELECT outcome FROM mcp_calls ORDER BY id DESC LIMIT 1").fetch_one(&pool).await.unwrap();
+    assert_eq!(outcome, "error");
 }

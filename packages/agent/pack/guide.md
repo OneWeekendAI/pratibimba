@@ -154,9 +154,23 @@ A person approves. You do not, and you cannot.
   this. Do not ask for the admin token. Do not call the `/api` routes. Do not edit the site
   file to make it happen.
 
+## The simulator is a sandbox
+
+`simulate` and `fast_forward_visitor` run only in the site's sandbox, a copy of the site with
+its own clock and its own models. Real visitors never see it, and nothing it learns reaches the
+live site.
+
+- Use `simulate` to check a hypothesis against a planted truth before you propose, for example
+  "if returning visitors prefer reorder, does the policy find it in 14 days?" Say in your
+  summary that the numbers came from a simulation with the rates you chose.
+- `fast_forward_visitor` moves the sandbox's one clock for every simulated visitor, not just the
+  one you name.
+- Never quote a simulated number as a result of the live site.
+
 ## Other limits
 
-- Decisions describe anonymous visitors through three features only. Do not try to identify
+- Decisions describe anonymous visitors through a few behaviour and situation features only
+  (returning, mobile, from an ad, local time, stated tastes). Do not try to identify
   or profile anyone from them.
 - Do not propose for a slot whose results and variant history you have not read in this
   session, even when the brief says "just write a few."

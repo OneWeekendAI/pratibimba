@@ -8,6 +8,11 @@
 //!   `list_decisions`, `explain_decision`.
 //! - **One write:** `propose_variant`, which always lands as a draft. There is no approve tool,
 //!   and the `/api` approve route refuses an MCP token, so an agent cannot approve its own work.
+//! - **The simulator, sandbox only:** `simulate` sends synthetic cohorts through the site's
+//!   sandbox (`<site>~sim`, see [`crate::sim`]) and `fast_forward_visitor` moves the sandbox's
+//!   clock and shows what one subject would be served then. Neither takes a site argument: the
+//!   sandbox id is derived from the token's site, so no call can reach the real site's
+//!   decisions, events or models.
 //! - **Every tool call is audited** in `mcp_calls`: the token, the JSON-RPC id, the tool, the
 //!   agent's self-reported name, who it works for, and its justification. `agent` and
 //!   `justification` are required arguments of every tool; a call without them is refused and
@@ -135,12 +140,24 @@ pub async fn handler(State(state): State<Arc<AppState>>, headers: HeaderMap, bod
 const INSTRUCTIONS: &str = "Pratibimba personalises page slots with a bandit over approved variants. \
 This token sees one site. Read slots, variants, results and decision explanations freely. \
 propose_variant submits a DRAFT: a person approves it in the dashboard; you cannot. \
+simulate and fast_forward_visitor run only in the site's sandbox, never on real traffic. \
 Every tool needs `agent` (your name, e.g. \"Claude Code\") and a one-line `justification`; both are \
 recorded and shown to the reviewer. Reviewer comments come back on list_variants.";
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 8] = ["list_sites", "get_site", "list_slots", "list_variants", "get_results", "list_decisions", "explain_decision", "propose_variant"];
+const TOOLS: [&str; 10] = [
+    "list_sites",
+    "get_site",
+    "list_slots",
+    "list_variants",
+    "get_results",
+    "list_decisions",
+    "explain_decision",
+    "propose_variant",
+    "simulate",
+    "fast_forward_visitor",
+];
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
     let mut p = json!({
@@ -178,6 +195,17 @@ fn catalogue() -> Vec<Value> {
                      "html": { "type": "string", "description": "The HTML fragment that replaces the slot's content. No scripts or event handlers." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "html"]),
+        tool("simulate", "Run the simulator in this site's SANDBOX (a copy of the site with its own clock and models; the real site is never touched). Sends a synthetic cohort with a planted truth; with `days`, time-travels a day at a time with the cohort arriving each day. Creates the sandbox on first use. Returns each day and the sandbox's results as of its clock.",
+             json!({ "cohort": { "type": "object", "description": "{visitors (<= 5000), seed, rates: {slot: {variant: p}}, returning_rates, default_rate, returning, mobile, from_ad}" },
+                     "days": { "type": "number", "minimum": 0, "maximum": 366, "description": "Optional: simulated days to run. Omit for one batch at the current clock." },
+                     "fresh": { "type": "boolean", "description": "Optional: wipe the sandbox first and start its clock at now." } }),
+             &["cohort"]),
+        tool("fast_forward_visitor", "Time-travel one subject in this site's SANDBOX: move the sandbox's clock forward (closing attribution windows and training its models, as the worker would), then decide every slot for the subject at the new clock. The sandbox has one clock, so every simulated visitor moves with it. Never touches the real site.",
+             json!({ "subject": { "type": "string", "description": "The subject id, e.g. one from list_decisions on the sandbox or your own test visitor." },
+                     "days": { "type": "number", "description": "How far to move the clock (or use `seconds`)." },
+                     "seconds": { "type": "integer" },
+                     "ctx": { "type": "object", "description": "Optional decision context {returning, mobile, from_ad, tz_offset}. Default: a returning visitor." } }),
+             &["subject"]),
     ]
 }
 
@@ -351,6 +379,72 @@ struct Proposal {
     note: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SimulateArgs {
+    cohort: crate::sim::Cohort,
+    days: Option<f64>,
+    #[serde(default)]
+    fresh: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FastForwardArgs {
+    subject: String,
+    days: Option<f64>,
+    seconds: Option<i64>,
+    ctx: Option<crate::http::decide::Ctx>,
+}
+
+/// `simulate`: the sandbox of the token's site only.
+async fn simulate(pool: &PgPool, site: &str, a: SimulateArgs) -> Result<Value, ApiError> {
+    use crate::sim;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sites WHERE id = $1 AND sandbox_of = $2)")
+        .bind(sim::sandbox_id(site))
+        .bind(site)
+        .fetch_one(pool)
+        .await?;
+    if a.fresh || !exists {
+        sim::reset(pool, site, Utc::now()).await?;
+    }
+    let days = match a.days {
+        Some(d) if d.is_finite() && d > 0.0 => sim::advance(pool, site, (d * sim::DAY as f64).round() as i64, Some(&a.cohort)).await?,
+        Some(d) if d == 0.0 => vec![sim::visitors(pool, site, &a.cohort).await?],
+        Some(_) => return Err(ApiError::BadRequest("days must be a number from 0 to 366".into())),
+        None => vec![sim::visitors(pool, site, &a.cohort).await?],
+    };
+    Ok(json!({ "sandbox": sim::sandbox_id(site), "days": days, "status": sim::status(pool, site).await? }))
+}
+
+/// `fast_forward_visitor`: move the sandbox's clock, then decide every slot for one subject.
+async fn fast_forward(pool: &PgPool, site: &str, a: FastForwardArgs) -> Result<Value, ApiError> {
+    use crate::{http::decide, sim};
+    let secs = match (a.days, a.seconds) {
+        (Some(d), None) if d.is_finite() => (d * sim::DAY as f64).round() as i64,
+        (None, Some(s)) => s,
+        _ => return Err(ApiError::BadRequest("send exactly one of days or seconds".into())),
+    };
+    let before = sim::clock(pool, site).await?;
+    let days = sim::advance(pool, site, secs, None).await?;
+    let clock = sim::clock(pool, site).await?;
+    let sandbox = sim::sandbox_id(site);
+    let ctx = a.ctx.unwrap_or(decide::Ctx { returning: true, ..Default::default() });
+    let state = AppState::with_seed(pool.clone(), rand::rng().next_u64());
+    let slots: Vec<String> = sqlx::query_scalar("SELECT key FROM slots WHERE site_id = $1 ORDER BY id").bind(&sandbox).fetch_all(pool).await?;
+    let mut decisions = vec![];
+    for slot in slots {
+        let req = decide::DecideRequest { site: sandbox.clone(), slot: slot.clone(), subject: a.subject.clone(), ctx: ctx.clone() };
+        decisions.push(match decide::decide(&state, &req).await {
+            Ok(d) => json!(d),
+            Err(ApiError::Conflict(m) | ApiError::NotFound(m)) => json!({ "slot": slot, "error": m }),
+            Err(e) => return Err(e),
+        });
+    }
+    let settled: u64 = days.iter().map(|d| d.credited + d.settled_negative).sum();
+    Ok(json!({ "sandbox": sandbox, "subject": a.subject, "clock_before": before, "clock": clock, "settled": settled, "decisions": decisions }))
+}
+
 async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_row: i64, agent: &str) -> Result<Value, ApiError> {
     let pool = &state.pool;
     let site = caller.site.as_str();
@@ -409,6 +503,8 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
             let p: Proposal = parse(args)?;
             propose(pool, site, p, call_row, agent).await
         }
+        "simulate" => simulate(pool, site, parse(args)?).await,
+        "fast_forward_visitor" => fast_forward(pool, site, parse(args)?).await,
         _ => unreachable!("tools/call checks the catalogue first"),
     }
 }
