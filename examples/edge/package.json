@@ -1,0 +1,15 @@
+{
+  "name": "pratibimba-example-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node edge.mjs",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@pratibimba/edge": "file:../../packages/edge"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

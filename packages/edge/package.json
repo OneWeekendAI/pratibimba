@@ -1,0 +1,33 @@
+{
+  "name": "@pratibimba/edge",
+  "version": "0.1.0",
+  "description": "Pratibimba at the edge: rewrite marked slots in your origin's HTML as it streams, before the browser sees a byte",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "jsdom": "^29.1.1",
+    "typescript": "^7.0.2"
+  }
+}
