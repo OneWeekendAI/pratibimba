@@ -17,6 +17,19 @@
  *
  * The subject lives in sessionStorage (cookieless) unless the tag has data-cookie="on", which
  * sets a first-party `_prb_subject` cookie for a year. Get consent before turning that on.
+ *
+ * Picker slots (kind "picker"): when the decision is `picker`, the SDK renders the owner's
+ * options, 1 to max_picks of them, with Done and Skip. Done sends a `pick` event with the keys;
+ * the picks become `ctx.stated` on every later decide (sessionStorage, or localStorage only
+ * with data-cookie="on"). Skip sends `skip` and stores nothing.
+ *
+ * In-session slots (in_session: true) ship each variant's payload and linear weights. After a
+ * signal (a pick, or a click on an element with data-prb-intent="<option key>"; at least
+ * data-adapt-min of them, default 1) the SDK re-scores them on the device in one animation
+ * frame: a dot product per variant. Hard rule: it never swaps a slot that is in the viewport,
+ * holds focus, or is under the pointer. Those, and slots not on this page, are cached for the
+ * next page instead. Each on-device decision is posted as a `rescore` event. A holdout visitor
+ * is never re-scored.
  */
 (function () {
   'use strict';
@@ -28,6 +41,7 @@
   var base = script.getAttribute('data-base') || (script.src || '').replace(/sdk\.js(\?.*)?$/, '');
   var timeoutMs = parseInt(script.getAttribute('data-timeout') || '400', 10);
   var useCookie = script.getAttribute('data-cookie') === 'on';
+  var adaptMin = parseInt(script.getAttribute('data-adapt-min') || '1', 10);
   var slots = manifest.slots;
 
   var store = {
@@ -73,6 +87,36 @@
     from_ad: /[?&](utm_source|utm_medium|utm_campaign|gclid|fbclid|msclkid)=/.test(location.search || '')
   };
 
+  // --- stated preferences: picks by picker slot; only the owner's option keys -----------------
+  var optionKeys = {};
+  slots.forEach(function (s) {
+    if (s.kind === 'picker' && s.picker) s.picker.options.forEach(function (o) { optionKeys[o.key] = true; });
+  });
+  // Persistent only when the site has cookies on; otherwise it dies with the tab.
+  var prefs = {
+    get: function (k) { try { return (useCookie ? window.localStorage : window.sessionStorage).getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { (useCookie ? window.localStorage : window.sessionStorage).setItem(k, v); } catch (e) { /* private mode */ } }
+  };
+  function readJson(raw, fallback) {
+    try { var v = JSON.parse(raw); return v && typeof v === 'object' ? v : fallback; } catch (e) { return fallback; }
+  }
+  var statedBySlot = readJson(prefs.get('prb_stated'), {});
+  function statedKeys() {
+    var out = [];
+    Object.keys(statedBySlot).forEach(function (sk) {
+      (statedBySlot[sk] || []).forEach(function (k) { if (optionKeys[k] && out.indexOf(k) < 0) out.push(k); });
+    });
+    return out;
+  }
+  function refreshCtx() {
+    var st = statedKeys();
+    if (st.length) ctx.stated = st; else delete ctx.stated;
+  }
+  refreshCtx();
+  // Implicit intent from clicks: session-only, never sent as `stated`.
+  var intent = readJson(store.get('prb_intent'), {});
+  var signals = parseInt(store.get('prb_signals') || '0', 10) || 0;
+
   // --- 1. hide only the slots, before first paint -------------------------------------------
   var style = null;
   if (slots.length) {
@@ -104,11 +148,17 @@
     });
   }
 
-  function send(name, slotKey, decisionId) {
-    var ev = { id: newId(), name: name };
+  function sendAll(evs) {
+    evs.forEach(function (ev) { ev.id = newId(); });
+    post('e', { site: site, subject: subject, events: evs, tz_offset: -new Date().getTimezoneOffset() })['catch'](function () { /* best effort */ });
+  }
+
+  function send(name, slotKey, decisionId, extra) {
+    var ev = { name: name };
     if (slotKey) ev.slot = slotKey;
     if (decisionId) ev.decision_id = decisionId;
-    post('e', { site: site, subject: subject, events: [ev], tz_offset: -new Date().getTimezoneOffset() })['catch'](function () { /* best effort */ });
+    if (extra) Object.keys(extra).forEach(function (k) { ev[k] = extra[k]; });
+    sendAll([ev]);
   }
 
   function onReady(fn) {
@@ -133,13 +183,162 @@
       send('missed', slot.key, d.decision_id);
       return;
     }
+    current[slot.key] = d;
+    if (d.explanation && d.explanation.in_holdout === true) heldOut = true;
+    if (d.explanation && d.explanation.in_holdout === false) notHeld = true;
     each(slot, function (el) {
+      if (!('prbOrig' in el)) el.prbOrig = el.innerHTML;
       if (d.payload !== null && d.payload !== undefined) el.innerHTML = d.payload;
       el.setAttribute('data-prb-done', '');
       el.setAttribute('data-prb-variant', d.variant);
-      el.addEventListener('click', function () { send('click', slot.key, d.decision_id); }, true);
+      // Reads the slot's current decision: an on-device swap re-points it.
+      el.addEventListener('click', function () { send('click', slot.key, current[slot.key].decision_id); }, true);
+      if (slot.kind === 'picker' && d.variant === 'picker' && slot.picker) renderPicker(slot, d, el);
     });
     send('exposure', slot.key, d.decision_id);
+  }
+
+  // --- the taste picker ---------------------------------------------------------------------
+  function renderPicker(slot, d, el) {
+    var max = slot.picker.max_picks || 3;
+    var chosen = [];
+    var box = document.createElement('div');
+    box.className = 'prb-picker';
+    box.setAttribute('role', 'group');
+    var done = document.createElement('button');
+    done.type = 'button';
+    done.textContent = 'Done';
+    done.setAttribute('data-prb-submit', '');
+    done.disabled = true;
+    slot.picker.options.forEach(function (o) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = o.label;
+      b.setAttribute('data-prb-option', o.key);
+      b.setAttribute('aria-pressed', 'false');
+      b.addEventListener('click', function () {
+        var i = chosen.indexOf(o.key);
+        if (i >= 0) chosen.splice(i, 1);
+        else if (chosen.length < max) chosen.push(o.key);
+        b.setAttribute('aria-pressed', chosen.indexOf(o.key) >= 0 ? 'true' : 'false');
+        done.disabled = chosen.length === 0;
+      });
+      box.appendChild(b);
+    });
+    var skip = document.createElement('button');
+    skip.type = 'button';
+    skip.textContent = 'Skip';
+    skip.setAttribute('data-prb-skip', '');
+    function close() { if (box.parentNode) box.parentNode.removeChild(box); }
+    done.addEventListener('click', function () {
+      if (!chosen.length) return;
+      send('pick', slot.key, d.decision_id, { picks: chosen.slice() });
+      statedBySlot[slot.key] = chosen.slice();
+      prefs.set('prb_stated', JSON.stringify(statedBySlot));
+      refreshCtx();
+      close();
+      signal();
+    });
+    skip.addEventListener('click', function () {
+      send('skip', slot.key, d.decision_id);
+      close();
+    });
+    box.appendChild(done);
+    box.appendChild(skip);
+    el.appendChild(box);
+  }
+
+  // --- in-session re-scoring on the device --------------------------------------------------
+  var current = {};
+  var heldOut = false;
+  var notHeld = false;
+  var pointerAt = null;
+  document.addEventListener('mouseover', function (e) { pointerAt = e.target; }, true);
+  document.addEventListener('pointermove', function (e) { pointerAt = e.target; }, true);
+  document.addEventListener('click', function (e) {
+    var t = e.target && e.target.closest ? e.target.closest('[data-prb-intent]') : null;
+    var k = t && t.getAttribute('data-prb-intent');
+    if (!k || !optionKeys[k]) return;
+    intent[k] = Math.min(1, (intent[k] || 0) + 0.5);
+    store.set('prb_intent', JSON.stringify(intent));
+    signal();
+  }, true);
+
+  function signal() {
+    signals += 1;
+    store.set('prb_signals', String(signals));
+    var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); };
+    raf(rescore);
+  }
+
+  function features(names) {
+    var st = statedKeys();
+    var x = {};
+    names.forEach(function (n) {
+      if (n === 'bias') x[n] = 1;
+      else if (n === 'returning' || n === 'mobile' || n === 'from_ad') x[n] = ctx[n] ? 1 : 0;
+      else if (n.indexOf('stated:') === 0) {
+        var k = n.slice(7);
+        x[n] = st.indexOf(k) >= 0 ? 1 : (intent[k] || 0);
+      } else x[n] = 0;
+    });
+    return x;
+  }
+
+  // Never under the visitor's hand or eyes: not in the viewport, not focused, not hovered.
+  function safeToSwap(el) {
+    if (el.contains(document.activeElement) && document.activeElement !== document.body) return false;
+    if (pointerAt && el.contains(pointerAt)) return false;
+    try { if (el.matches(':hover')) return false; } catch (e) { /* no :hover support */ }
+    var r = el.getBoundingClientRect();
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    // A zero rect (unlaid-out, or a test DOM) counts as on screen: when in doubt, do not swap.
+    return r.top >= vh || r.bottom < 0 || r.left >= vw || r.right < 0;
+  }
+
+  function rescore() {
+    // A holdout visitor sees the baseline whatever happens; unknown status means wait.
+    if (heldOut || !notHeld || signals < adaptMin) return;
+    slots.forEach(function (slot) {
+      if (!slot.in_session || slot.kind === 'picker') return;
+      var vs = (slot.variants || []).filter(function (v) { return v.weights; });
+      if (!vs.length) return;
+      var x = features(Object.keys(vs[0].weights));
+      var best = null;
+      vs.forEach(function (v) {
+        var z = 0;
+        Object.keys(v.weights).forEach(function (n) { z += v.weights[n] * (x[n] || 0); });
+        if (!best || z > best.z) best = { v: v, z: z };
+      });
+      var els = document.querySelectorAll(slot.selector);
+      var now = current[slot.key];
+      if (els.length && !now) return; // its server decision has not landed yet
+      var shown = now ? now.variant : null;
+      if (best.v.key === shown) return;
+      var cachedNow = cached(slot);
+      if (!els.length && cachedNow && cachedNow.variant === best.v.key) return;
+      var d = {
+        decision_id: newId(), slot: slot.key, variant: best.v.key,
+        payload: best.v.payload === undefined ? null : best.v.payload,
+        explanation: { policy: 'on_device', features: x, in_holdout: false }
+      };
+      var score = 1 / (1 + Math.exp(-best.z));
+      var evs = [{ name: 'rescore', slot: slot.key, decision_id: d.decision_id, variant: d.variant, features: x, score: score }];
+      var all = els.length > 0;
+      for (var i = 0; i < els.length; i++) if (!safeToSwap(els[i])) all = false;
+      // Next navigation gets it either way; this page only when every copy is safe to swap.
+      store.set(cacheKey(slot), JSON.stringify({ subject: subject, at: Date.now(), d: d }));
+      if (all) {
+        for (var j = 0; j < els.length; j++) {
+          els[j].innerHTML = d.payload === null ? (els[j].prbOrig || '') : d.payload;
+          els[j].setAttribute('data-prb-variant', d.variant);
+        }
+        current[slot.key] = d;
+        evs.push({ name: 'exposure', slot: slot.key, decision_id: d.decision_id });
+      }
+      sendAll(evs);
+    });
   }
 
   // --- 2. decide (or reuse a cached decision) -----------------------------------------------

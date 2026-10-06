@@ -23,6 +23,7 @@ export const DECISION = { decision_id: 'd-1', slot: 'hero', variant: 'gift', pay
  * opts.attrs: extra attributes on the SDK tag
  * opts.url: page URL
  * opts.before: (window) => void, runs before parsing (seed storage, cookies)
+ * opts.body: the page body HTML (default: nav, hero, promo)
  */
 export function load(opts = {}) {
   const calls = [];
@@ -32,10 +33,11 @@ export function load(opts = {}) {
 <script>window.__prb_manifest = ${JSON.stringify(opts.manifest || MANIFEST)};</script>
 <script ${attrText}>${SDK}</script>
 <script>window.__hiddenAtParse = !!document.getElementById('prb-hide');</script>
-</head><body><nav id="nav">Nav</nav><div id="hero"><a id="cta">Original</a></div><div id="promo">Promo</div></body></html>`;
+</head><body>${opts.body || '<nav id="nav">Nav</nav><div id="hero"><a id="cta">Original</a></div><div id="promo">Promo</div>'}</body></html>`;
   const dom = new JSDOM(html, {
     url: opts.url || 'https://shop.test/',
     runScripts: 'dangerously',
+    pretendToBeVisual: true,
     beforeParse(window) {
       window.fetch = (url, init) => {
         const body = JSON.parse(init.body);

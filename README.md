@@ -155,6 +155,49 @@ Clicks inside a slot are reported automatically. For other goals, call
 To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, then serve
 `examples/plain/` on port 5173.
 
+### The taste picker
+
+A `picker` slot asks visitors what they are after and uses the answer. In the site file:
+
+```json
+{ "key": "taste", "selector": "#taste", "kind": "picker", "metric": "purchase",
+  "picker": { "max_picks": 3, "options": [ { "key": "kitchen", "label": "Kitchen" },
+                                            { "key": "garden", "label": "Garden" } ] },
+  "variants": [ { "key": "none", "baseline": true },
+                { "key": "picker", "html": "<p>What are you shopping for?</p>" } ] }
+```
+
+- **It tests itself.** `none` and `picker` are an ordinary two-variant slot. The bandit and
+  the holdout judge it on the slot's metric, so a picker that costs sales gets rolled back
+  like any losing variant.
+- **Picking.** On `picker` the script renders the options plus Done and Skip. A visitor picks
+  1 to `max_picks` (1-3). Done sends a `pick` event with the keys. Skip sends `skip` and
+  stores nothing.
+- **What a pick does.** Every later decision for that visitor on the site carries a `stated`
+  feature group, `stated:<key>` = 1 or 0, and the model learns a weight for each key. Without
+  cookies a pick lasts for the tab's session. With `data-cookie="on"` it persists.
+- **No demographics.** Option keys are your own slugs. Core refuses any key that names an
+  attribute of a person (`age`, `gender`, `women` and so on), and refuses `ctx.stated` keys
+  that are not one of your options.
+
+### In-session adaptation
+
+Mark a slot `"in_session": true` and the manifest ships each variant's payload and linear
+weights. After a signal, the script re-scores those slots on the device: a dot product per
+variant, batched into one animation frame. A signal is a pick, or a click on any element with
+`data-prb-intent="<option key>"` (worth half a pick, session only). `data-adapt-min` sets how
+many signals it waits for (default 1).
+
+**It never swaps what the visitor is touching.** A slot that is in the viewport, holds focus,
+or is under the pointer is left alone. So is every slot on a page whose layout the browser
+cannot report. Those slots, and slots not on this page, get the new choice on the next page
+view instead. Holdout visitors are never re-scored, and a paused site ships no weights.
+
+Each on-device choice is posted as a `rescore` event and recorded as a decision with
+`source = 'client'`, so the bandit learns from it. If the client's score and the server's
+posterior mean differ by more than 0.15, the weights were stale. That decision is then never
+reused as the sticky one, and the server's next full decision wins.
+
 ## The dashboard
 
 Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
@@ -347,8 +390,8 @@ The rules:
 
 | Method and path | What it does |
 |---|---|
-| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. |
-| `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}], tz_offset?}`. Accepts up to 100 events per call. `id` is your idempotency key. `tz_offset` is the visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`, -720 to 840); the script sends it. |
+| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. |
+| `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}], tz_offset?}`. Accepts up to 100 events per call. A `pick` adds `picks: [option keys]`. A `rescore` adds `variant`, `features` and `score`. `id` is your idempotency key. `tz_offset` is the visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`, -720 to 840); the script sends it. |
 | `GET /manifest/:site` | Slots and approved variant keys. Append `.js` for the script form. Edge-cacheable. |
 | `GET /sdk.js` | The client script. |
 | `POST /decide/batch` | Several slots for one subject in one call: `{site, subject, slots, ctx}`. |
