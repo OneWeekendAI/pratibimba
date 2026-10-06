@@ -140,10 +140,12 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
     assert_eq!(
         names,
         [
+            "create_audience",
             "explain_decision",
             "fast_forward_visitor",
             "get_results",
             "get_site",
+            "list_audiences",
             "list_decisions",
             "list_sites",
             "list_slots",
@@ -472,4 +474,43 @@ async fn fast_forward_needs_a_sandbox(pool: PgPool) {
     assert_eq!(count(&pool, "SELECT count(*) FROM decisions").await, 0);
     let outcome: String = sqlx::query_scalar("SELECT outcome FROM mcp_calls ORDER BY id DESC LIMIT 1").fetch_one(&pool).await.unwrap();
     assert_eq!(outcome, "error");
+}
+
+// ---- audiences: an agent may draft one, never promote it ----
+
+#[sqlx::test(migrations = false)]
+async fn create_audience_lands_as_a_draft_segment(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let r = data(&call(&app, &t, "create_audience", why(json!({ "predicate": { "is_night_local": true, "returning": true } }))).await);
+    assert_eq!(r["status"], "draft", "{r}");
+    let (status, origin, by): (String, String, Option<String>) =
+        sqlx::query_as("SELECT status, origin, created_by FROM segments WHERE id = $1").bind(r["id"].as_i64().unwrap()).fetch_one(&pool).await.unwrap();
+    assert_eq!((status.as_str(), origin.as_str()), ("draft", "authored"));
+    assert_eq!(by.as_deref(), Some("mcp:Claude Code"));
+    // A draft cannot gate a variant: promotion is the owner's, in the dashboard.
+    let gift = variant_id(&pool, "gift").await;
+    let g = api_post(&app, &format!("/api/variants/{gift}/audience"), json!({ "audience": r["id"], "actor": "owner" })).await;
+    assert_eq!(g.status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test(migrations = false)]
+async fn create_audience_refuses_a_demographic_predicate(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let r = call(&app, &t, "create_audience", why(json!({ "predicate": { "gender": "f" } }))).await;
+    assert!(err_text(&r).contains("demographic"), "{r}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM segments").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn list_audiences_shows_status_and_the_variants_each_gates(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let id = data(&call(&app, &t, "create_audience", why(json!({ "predicate": { "returning": true } }))).await)["id"].as_i64().unwrap();
+    api_post(&app, &format!("/api/segments/{id}/promote"), json!({ "actor": "owner" })).await;
+    let gift = variant_id(&pool, "gift").await;
+    api_post(&app, &format!("/api/variants/{gift}/audience"), json!({ "audience": id, "actor": "owner" })).await;
+    let r = data(&call(&app, &t, "list_audiences", why(json!({}))).await);
+    let a = &r["audiences"][0];
+    assert_eq!(a["status"], "audience", "{r}");
+    assert_eq!(a["predicate"], json!({ "returning": true }));
+    assert_eq!(a["gates"], json!([{ "slot": "hero", "variant": "gift" }]));
 }

@@ -8,6 +8,9 @@
 //!   `list_decisions`, `explain_decision`.
 //! - **One write:** `propose_variant`, which always lands as a draft. There is no approve tool,
 //!   and the `/api` approve route refuses an MCP token, so an agent cannot approve its own work.
+//! - **Audiences:** `list_audiences` reads the site's segments and what each gates;
+//!   `create_audience` writes a DRAFT segment. Promotion (the permission to gate a decision) is
+//!   the owner's, in the dashboard, exactly like approval.
 //! - **The simulator, sandbox only:** `simulate` sends synthetic cohorts through the site's
 //!   sandbox (`<site>~sim`, see [`crate::sim`]) and `fast_forward_visitor` moves the sandbox's
 //!   clock and shows what one subject would be served then. Neither takes a site argument: the
@@ -146,7 +149,7 @@ recorded and shown to the reviewer. Reviewer comments come back on list_variants
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 10] = [
+const TOOLS: [&str; 12] = [
     "list_sites",
     "get_site",
     "list_slots",
@@ -157,6 +160,8 @@ const TOOLS: [&str; 10] = [
     "propose_variant",
     "simulate",
     "fast_forward_visitor",
+    "list_audiences",
+    "create_audience",
 ];
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
@@ -195,6 +200,11 @@ fn catalogue() -> Vec<Value> {
                      "html": { "type": "string", "description": "The HTML fragment that replaces the slot's content. No scripts or event handlers." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "html"]),
+        tool("list_audiences", "The site's segments (draft, active, audience) with their predicates, and the variants each promoted audience restricts.", json!({}), &[]),
+        tool("create_audience", "Draft a segment from a predicate over behaviour and situation features (returning, mobile, from_ad, is_night_local, is_weekend_local, is_business_hours_local, hour_local: [from, to]). It lands as a DRAFT: a person promotes it to an audience in the dashboard before it can restrict any variant. Demographic attributes are refused.",
+             json!({ "predicate": { "type": "object", "description": "e.g. {\"returning\": true, \"is_night_local\": true}" },
+                     "name": { "type": "string", "description": "Optional; a plain description is generated from the predicate." } }),
+             &["predicate"]),
         tool("simulate", "Run the simulator in this site's SANDBOX (a copy of the site with its own clock and models; the real site is never touched). Sends a synthetic cohort with a planted truth; with `days`, time-travels a day at a time with the cohort arriving each day. Creates the sandbox on first use. Returns each day and the sandbox's results as of its clock.",
              json!({ "cohort": { "type": "object", "description": "{visitors (<= 5000), seed, rates: {slot: {variant: p}}, returning_rates, default_rate, returning, mobile, from_ad}" },
                      "days": { "type": "number", "minimum": 0, "maximum": 366, "description": "Optional: simulated days to run. Omit for one batch at the current clock." },
@@ -397,6 +407,61 @@ struct FastForwardArgs {
     ctx: Option<crate::http::decide::Ctx>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AudienceArgs {
+    predicate: Value,
+    name: Option<String>,
+}
+
+async fn list_audiences(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
+    let rows: Vec<(i64, String, Value, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, name, predicate, status, origin, promoted_by FROM segments WHERE site_id = $1 AND status <> 'archived' ORDER BY id",
+    )
+    .bind(site)
+    .fetch_all(pool)
+    .await?;
+    let gates: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT v.audience_id, s.key, v.key FROM variants v JOIN slots s ON s.id = v.slot_id
+          WHERE s.site_id = $1 AND v.audience_id IS NOT NULL AND v.status = 'approved' ORDER BY s.key, v.key",
+    )
+    .bind(site)
+    .fetch_all(pool)
+    .await?;
+    let audiences: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, name, predicate, status, origin, promoted_by)| {
+            let g: Vec<Value> = gates.iter().filter(|x| x.0 == id).map(|x| json!({ "slot": x.1, "variant": x.2 })).collect();
+            json!({ "id": id, "name": name, "predicate": predicate, "status": status, "origin": origin, "promoted_by": promoted_by, "gates": g })
+        })
+        .collect();
+    Ok(json!({ "audiences": audiences }))
+}
+
+/// A draft segment, authored by the agent. Never promoted here.
+async fn create_audience(pool: &PgPool, site: &str, a: AudienceArgs, agent: &str) -> Result<Value, ApiError> {
+    use crate::insights::segments::Predicate;
+    let p = Predicate::parse(&a.predicate).map_err(ApiError::BadRequest)?;
+    let name = a.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| p.describe());
+    if name.chars().count() > 200 {
+        return Err(ApiError::BadRequest("name is at most 200 characters".into()));
+    }
+    let row: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO segments (site_id, name, predicate, predicate_key, origin, status, created_by)
+         VALUES ($1, $2, $3, $4, 'authored', 'draft', $5) ON CONFLICT (site_id, predicate_key) DO NOTHING RETURNING id",
+    )
+    .bind(site)
+    .bind(&name)
+    .bind(p.to_json())
+    .bind(p.key())
+    .bind(format!("mcp:{agent}"))
+    .fetch_optional(pool)
+    .await?;
+    let (id,) = row.ok_or_else(|| ApiError::Conflict("a segment with this predicate already exists; see list_audiences".into()))?;
+    Ok(json!({ "id": id, "name": name, "predicate": p.to_json(), "status": "draft",
+               "next": "A person promotes it to an audience in the Pratibimba dashboard; until then it restricts nothing." }))
+}
+
 /// `simulate`: the sandbox of the token's site only.
 async fn simulate(pool: &PgPool, site: &str, a: SimulateArgs) -> Result<Value, ApiError> {
     use crate::sim;
@@ -504,6 +569,11 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
             propose(pool, site, p, call_row, agent).await
         }
         "simulate" => simulate(pool, site, parse(args)?).await,
+        "list_audiences" => {
+            parse::<NoArgs>(args)?;
+            list_audiences(pool, site).await
+        }
+        "create_audience" => create_audience(pool, site, parse(args)?, agent).await,
         "fast_forward_visitor" => fast_forward(pool, site, parse(args)?).await,
         _ => unreachable!("tools/call checks the catalogue first"),
     }
