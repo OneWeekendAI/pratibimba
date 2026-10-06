@@ -428,7 +428,8 @@ async fn create_draft(
 
 async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
     site_origin(&state, &site).await?;
-    let forbidden: Vec<String> = sqlx::query_scalar("SELECT forbidden_claims FROM sites WHERE id = $1").bind(&site).fetch_one(&state.pool).await?;
+    let (forbidden, facts): (Vec<String>, Option<String>) =
+        sqlx::query_as("SELECT forbidden_claims, facts FROM sites WHERE id = $1").bind(&site).fetch_one(&state.pool).await?;
     #[allow(clippy::type_complexity)]
     let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>)> = sqlx::query_as(
         "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id,
@@ -463,7 +464,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
                 .await?;
         cards.push(json!({
             "id": id, "slot": slot, "key": key, "html": payload, "author": author, "created_at": created, "agent": agent,
-            "champion": champion, "checks": checks::run(payload.as_deref().unwrap_or(""), &forbidden),
+            "champion": champion, "checks": checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() }),
             "comments": comments.into_iter().map(|(a, by, c, at)| json!({ "action": a, "actor": by, "comment": c, "at": at })).collect::<Vec<_>>(),
         }));
     }
@@ -505,20 +506,20 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
         return Err(ApiError::BadRequest("the planned traffic share must be above 0 and at most 50%".into()));
     }
     let mut tx = state.pool.begin().await?;
-    let row: Option<(i64, String, Option<String>, Vec<String>)> = sqlx::query_as(
-        "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
+    let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>)> = sqlx::query_as(
+        "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims, v.author, t.facts FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
           WHERE v.id = $1 FOR UPDATE OF v",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((slot_id, status, payload, forbidden)) = row else {
+    let Some((slot_id, status, payload, forbidden, author, facts)) = row else {
         return Err(ApiError::NotFound(format!("unknown variant {id}")));
     };
     if status != "draft" {
         return Err(ApiError::Conflict(format!("variant {id} is {status}; only a draft can be approved")));
     }
-    let report = checks::run(payload.as_deref().unwrap_or(""), &forbidden);
+    let report = checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() });
     if checks::blocks(&report) {
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "a constraint check failed", "checks": report }))).into_response());
     }

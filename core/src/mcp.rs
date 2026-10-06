@@ -159,7 +159,7 @@ fn catalogue() -> Vec<Value> {
     let slot = json!({ "type": "string", "description": "The slot key, e.g. \"hero\"." });
     vec![
         tool("list_sites", "The site this token is scoped to, with its slot count and pending drafts.", json!({}), &[]),
-        tool("get_site", "The site's origin, holdout fraction, forbidden claims and slots.",
+        tool("get_site", "The site's origin, holdout fraction, forbidden claims, facts (its facts.md: the only figures your copy may use) and slots.",
              json!({ "site": { "type": "string", "description": "Optional; must be this token's site." } }), &[]),
         tool("list_slots", "Every slot: selector, success metric, current champion and variant counts by status.", json!({}), &[]),
         tool("list_variants", "A slot's variants (any status) with their HTML, approval details and the reviewer comment thread.",
@@ -423,12 +423,12 @@ async fn slot_id(pool: &PgPool, site: &str, slot: &str) -> Result<i64, ApiError>
 }
 
 async fn get_site(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
-    let (origin, holdout, forbidden): (String, f32, Vec<String>) =
-        sqlx::query_as("SELECT origin, holdout_fraction, forbidden_claims FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
+    let (origin, holdout, forbidden, facts): (String, f32, Vec<String>, Option<String>) =
+        sqlx::query_as("SELECT origin, holdout_fraction, forbidden_claims, facts FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
     let slots: Vec<(String, String, String, i32)> =
         sqlx::query_as("SELECT key, selector, metric, attribution_window_secs FROM slots WHERE site_id = $1 ORDER BY key").bind(site).fetch_all(pool).await?;
     Ok(json!({
-        "id": site, "origin": origin, "holdout_fraction": holdout, "forbidden_claims": forbidden,
+        "id": site, "origin": origin, "holdout_fraction": holdout, "forbidden_claims": forbidden, "facts": facts,
         "slots": slots.into_iter().map(|(key, selector, metric, w)| json!({ "key": key, "selector": selector, "metric": metric, "attribution_window_secs": w })).collect::<Vec<_>>(),
     }))
 }
@@ -517,8 +517,9 @@ async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &
             .await?;
     }
     tx.commit().await?;
-    let forbidden: Vec<String> = sqlx::query_scalar("SELECT forbidden_claims FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
-    let report = checks::run(&p.html, &forbidden);
+    let (forbidden, facts): (Vec<String>, Option<String>) =
+        sqlx::query_as("SELECT forbidden_claims, facts FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
+    let report = checks::run(&p.html, &checks::Context { forbidden_claims: &forbidden, author: "agent", facts: facts.as_deref() });
     Ok(json!({
         "id": id, "slot": p.slot, "key": p.key, "status": "draft", "checks": report,
         "next": if checks::blocks(&report) {

@@ -8,7 +8,10 @@
 //!   warn, because they can restyle the whole page.
 //! - **safety**: none of the site's forbidden claims appear in the text.
 //! - **brand**: no brand file exists before Phase 2.
-//! - **grounding**: applies to agent-written drafts (Phase 2).
+//! - **grounding**: agent-written drafts only. Every figure in the copy (a number, a
+//!   percentage, a price) must appear in the site's facts.md; one that does not is flagged as a
+//!   warn, and with no facts.md every agent claim is unchecked, which also warns. The design
+//!   names an embedding cross-check; this is the lexical part of it, with no model to run.
 
 use serde::Serialize;
 
@@ -32,8 +35,17 @@ pub fn blocks(checks: &[Check]) -> bool {
     checks.iter().any(|c| c.status == Status::Fail)
 }
 
-pub fn run(html: &str, forbidden_claims: &[String]) -> Vec<Check> {
-    vec![technical(html), safety(html, forbidden_claims), brand(), grounding()]
+/// What the checks need to know about a draft beyond its HTML.
+pub struct Context<'a> {
+    pub forbidden_claims: &'a [String],
+    /// The `author` column: `human`, `agent` or `ai`.
+    pub author: &'a str,
+    /// The site's facts.md, if one was given.
+    pub facts: Option<&'a str>,
+}
+
+pub fn run(html: &str, cx: &Context) -> Vec<Check> {
+    vec![technical(html), safety(html, cx.forbidden_claims), brand(), grounding(html, cx.author, cx.facts)]
 }
 
 const BANNED_TAGS: [&str; 6] = ["script", "iframe", "object", "embed", "base", "meta"];
@@ -115,8 +127,48 @@ fn brand() -> Check {
     Check { name: "brand", status: Status::NotApplicable, reason: "no brand file yet (Phase 2)".into() }
 }
 
-fn grounding() -> Check {
-    Check { name: "grounding", status: Status::NotApplicable, reason: "written by a person; grounding checks apply to agent drafts".into() }
+/// The figures in a text: digit runs with inner `,` or `.`, and a trailing `%` if present.
+fn figures(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let mut f = String::new();
+        while i < chars.len()
+            && (chars[i].is_ascii_digit() || ((chars[i] == ',' || chars[i] == '.') && chars.get(i + 1).is_some_and(|c| c.is_ascii_digit())))
+        {
+            f.push(chars[i]);
+            i += 1;
+        }
+        if chars.get(i) == Some(&'%') {
+            f.push('%');
+        }
+        if !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+fn grounding(html: &str, author: &str, facts: Option<&str>) -> Check {
+    let check = |status, reason: String| Check { name: "grounding", status, reason };
+    if author == "human" {
+        return check(Status::NotApplicable, "written by a person; grounding checks apply to agent drafts".into());
+    }
+    let Some(facts) = facts.filter(|f| !f.trim().is_empty()) else {
+        return check(Status::Warn, "this site has no facts.md, so the agent's claims are unchecked".into());
+    };
+    let known = figures(&text(facts));
+    let missing: Vec<String> = figures(&text(html)).into_iter().filter(|f| !known.contains(f)).collect();
+    if missing.is_empty() {
+        check(Status::Pass, "every figure in the copy appears in facts.md".into())
+    } else {
+        check(Status::Warn, format!("not in facts.md: {}", missing.join(", ")))
+    }
 }
 
 #[cfg(test)]
@@ -129,7 +181,8 @@ mod tests {
 
     #[test]
     fn clean_html_passes() {
-        let c = run("<h1>Gift sets</h1><a href=\"/gifts\" class=\"cta\">Shop gifts</a>", &["guaranteed".into()]);
+        let claims = ["guaranteed".to_string()];
+        let c = run("<h1>Gift sets</h1><a href=\"/gifts\" class=\"cta\">Shop gifts</a>", &Context { forbidden_claims: &claims, author: "human", facts: None });
         assert!(!blocks(&c), "{c:?}");
         assert_eq!(c[0].status, Status::Pass);
         assert_eq!(c[1].status, Status::Pass);
@@ -170,6 +223,21 @@ mod tests {
     fn forbidden_claim_fails() {
         let c = safety("<p>Results <b>Guaranteed</b> or your money back</p>", &["guaranteed".into()]);
         assert_eq!(c.status, Status::Fail, "{c:?}");
+    }
+
+    #[test]
+    fn figures_are_found_with_their_percent_sign() {
+        assert_eq!(figures("ships in 2 days, 20% off, ₹1,249. 30-day returns."), ["2", "20%", "1,249", "30"]);
+    }
+
+    #[test]
+    fn grounding_compares_figures_not_formatting() {
+        let facts = Some("Orders ship in 2 days. Gift sets from ₹1,249.");
+        assert_eq!(grounding("<p>Gift sets from <b>₹1,249</b></p>", "agent", facts).status, Status::Pass);
+        assert_eq!(grounding("<p>Gift sets from ₹999</p>", "agent", facts).status, Status::Warn);
+        // "2" is in the facts, "20%" is not: a percentage is its own figure.
+        assert_eq!(grounding("<p>20% off</p>", "agent", facts).status, Status::Warn);
+        assert_eq!(grounding("<p>20% off</p>", "human", facts).status, Status::NotApplicable);
     }
 
     #[test]

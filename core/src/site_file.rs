@@ -20,6 +20,9 @@ pub struct SiteFile {
     /// Share of visitors (0 to 0.5) who always get the baseline. Omitted: keep the current value.
     #[serde(default)]
     pub holdout_fraction: Option<f32>,
+    /// The site's facts.md, as text: what an agent may claim. Omitted: keep the current value.
+    #[serde(default)]
+    pub facts: Option<String>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -121,12 +124,14 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO sites (id, origin, holdout_fraction) VALUES ($1, $2, COALESCE($3, 0.10))
-         ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction)",
+        "INSERT INTO sites (id, origin, holdout_fraction, facts) VALUES ($1, $2, COALESCE($3, 0.10), $4)
+         ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction),
+                                        facts = COALESCE($4, sites.facts)",
     )
         .bind(&file.site)
         .bind(&file.origin)
         .bind(file.holdout_fraction)
+        .bind(&file.facts)
         .execute(&mut *tx)
         .await?;
     for slot in &file.slots {
