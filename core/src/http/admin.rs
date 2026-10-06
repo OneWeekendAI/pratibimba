@@ -49,6 +49,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/models/{slot}/versions", get(versions))
         .merge(super::sim::routes())
         .merge(super::webhooks::admin_routes())
+        .merge(crate::insights::api::routes())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }
