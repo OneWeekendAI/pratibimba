@@ -167,7 +167,17 @@ pub struct Detail {
     pub replay_matches: Option<bool>,
     pub counterfactual: Option<Counterfactual>,
     pub timeline: Vec<TimelineEvent>,
+    /// What reviewers wrote on the shown variant at the gate: approval, comments, rejection.
+    pub review: Vec<ReviewNote>,
     pub sentence: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ReviewNote {
+    pub action: String,
+    pub actor: String,
+    pub comment: Option<String>,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -288,11 +298,13 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
 
     let window_closes_at = created + Duration::seconds(i64::from(window));
     let timeline: Vec<TimelineEvent> = sqlx::query_as::<_, (DateTime<Utc>, String)>(
-        "SELECT received_at, name FROM events WHERE decision_id = $1
-         UNION ALL
-         SELECT received_at, name FROM events
-          WHERE site_id = $2 AND subject = $3 AND decision_id IS NULL AND received_at BETWEEN $4 AND $5
-         ORDER BY 1",
+        // Events in one batch share received_at; the exposure is what made the rest possible.
+        "SELECT received_at, name FROM (
+           SELECT received_at, name FROM events WHERE decision_id = $1
+           UNION ALL
+           SELECT received_at, name FROM events
+            WHERE site_id = $2 AND subject = $3 AND decision_id IS NULL AND received_at BETWEEN $4 AND $5
+         ) t ORDER BY received_at, name <> 'exposure', name",
     )
     .bind(id)
     .bind(&site)
@@ -303,6 +315,16 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
     .await?
     .into_iter()
     .map(|(at, name)| TimelineEvent { at, name })
+    .collect();
+
+    let review: Vec<ReviewNote> = sqlx::query_as::<_, (String, String, Option<String>, DateTime<Utc>)>(
+        "SELECT action, actor, comment, created_at FROM approvals WHERE variant_id = $1 ORDER BY created_at",
+    )
+    .bind(variant_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(action, actor, comment, at)| ReviewNote { action, actor, comment, at })
     .collect();
 
     let outcome_kind = match (outcome, exposed) {
@@ -353,6 +375,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         replay_matches,
         counterfactual,
         timeline,
+        review,
         sentence: sentence(&facts),
     }))
 }

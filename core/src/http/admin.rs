@@ -175,7 +175,12 @@ pub async fn overview(state: &AppState, site: &str, now: DateTime<Utc>) -> Resul
             json!({
                 "key": s.key, "metric": s.metric, "champion": champion, "lift_7d": s.lift,
                 "treated": s.treated, "holdout": s.holdout, "variants": live.len(),
-                "traffic": live.iter().map(|v| json!({ "key": v.key, "share": v.share })).collect::<Vec<_>>(),
+                // `index` is the variant's place among all of the slot's variants, so its colour
+                // matches the workbench whatever else is paused or retired.
+                "traffic": live.iter().map(|v| json!({
+                    "key": v.key, "share": v.share,
+                    "index": s.variants.iter().position(|x| x.id == v.id).unwrap_or(0),
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();

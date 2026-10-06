@@ -56,6 +56,46 @@ async fn decision_detail_has_features_scores_and_timeline(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn timeline_puts_the_exposure_first_within_one_batch(pool: PgPool) {
+    setup_learning(&pool).await;
+    let app = admin_app(&pool);
+    // One batch from a client gives every event one received_at. Stored in either order, the
+    // exposure must still read first.
+    for (subject, order) in [("b1", ["click", "exposure"]), ("b2", ["exposure", "click"])] {
+        let d = decide(&app, subject, true).await.json();
+        let id = d["decision_id"].as_str().unwrap().to_string();
+        for name in order {
+            event(&app, subject, name, Some(&id)).await;
+        }
+        sqlx::query("UPDATE events SET received_at = (SELECT max(received_at) FROM events WHERE decision_id = $1::uuid) WHERE decision_id = $1::uuid")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let d = detail(&app, &id).await;
+        let names: Vec<&str> = d["timeline"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["exposure", "click"], "stored as {order:?}: {d}");
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn decision_detail_carries_the_review_of_the_shown_variant(pool: PgPool) {
+    let (app, id) = learned_then_moved(&pool).await;
+    sqlx::query(
+        "INSERT INTO approvals (variant_id, action, actor, comment)
+         SELECT variant_id, 'comment', 'Asha', 'Checked against the pricing page' FROM decisions WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let d = detail(&app, &id).await;
+    assert_eq!(d["review"].as_array().unwrap().len(), 1, "{d}");
+    assert_eq!(d["review"][0]["actor"], "Asha");
+    assert_eq!(d["review"][0]["comment"], "Checked against the pricing page");
+}
+
+#[sqlx::test(migrations = false)]
 async fn counterfactual_of_treated_is_the_baseline(pool: PgPool) {
     let (app, id) = learned_then_moved(&pool).await;
     let d = detail(&app, &id).await;
