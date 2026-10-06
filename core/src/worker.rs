@@ -12,6 +12,17 @@
 //! - **Skipped.** An unexposed decision (decided but never shown, e.g. it arrived after the
 //!   client's timeout) settles with no outcome and teaches nothing.
 //!
+//! Phase 3 adds two rules:
+//!
+//! - **Platform goals are authoritative.** A goal named in the site's `authoritative_goals` is
+//!   credited only by a platform event (Stripe, the generic conversion webhook). A browser event
+//!   for it is a hint: it credits nothing, but a platform event that names no decision follows
+//!   the decision the subject's latest hint named. Such a decision waits `platform_grace_secs`
+//!   past its window before it settles as a miss, so a late webhook still lands. A platform
+//!   event is judged at the time the platform says it happened, not when it arrived.
+//! - **Sandboxes are invisible to the real pass.** `run_once` skips sandbox sites entirely (their
+//!   events stay in the outbox); `run_sandbox` runs one sandbox at its own simulated clock.
+//!
 //! `decisions.settled_at` is the exactly-once guard. Events are drained BEFORE settling, so a
 //! conversion that arrived inside the window but is processed late still counts. The model row
 //! is locked `FOR UPDATE` around each read-modify-write, so concurrent workers never lose an
@@ -35,6 +46,8 @@ pub struct Stats {
     pub credited: u64,
     pub settled_negative: u64,
     pub skipped: u64,
+    /// Browser events for an authoritative goal: recorded, never credited.
+    pub hints: u64,
 }
 
 impl Stats {
@@ -43,24 +56,43 @@ impl Stats {
         self.credited += o.credited;
         self.settled_negative += o.settled_negative;
         self.skipped += o.skipped;
+        self.hints += o.hints;
     }
 }
 
+/// One pass over every real site. Sandbox sites are never touched.
 pub async fn run_once(pool: &PgPool, now: DateTime<Utc>) -> Result<Stats> {
     run_once_with(pool, now, BATCH).await
 }
 
 pub async fn run_once_with(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<Stats> {
+    run_scoped(pool, now, batch, None).await
+}
+
+/// One pass over one sandbox site, at its simulated clock `now`.
+pub async fn run_sandbox(pool: &PgPool, sandbox: &str, now: DateTime<Utc>) -> Result<Stats> {
+    run_scoped(pool, now, BATCH, Some(sandbox)).await
+}
+
+/// Which rows a pass may touch: `None` is every real site, `Some(id)` is that sandbox only.
+/// `$SCOPE` is the bind index of the scope in each query.
+const SCOPE: &str = "(CASE WHEN $SCOPE::text IS NULL THEN t.sandbox_of IS NULL ELSE t.id = $SCOPE AND t.sandbox_of IS NOT NULL END)";
+
+fn scoped(sql: &str, bind: usize) -> String {
+    sql.replace("{scope}", &SCOPE.replace("$SCOPE", &format!("${bind}")))
+}
+
+async fn run_scoped(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option<&str>) -> Result<Stats> {
     let mut stats = Stats::default();
     loop {
-        let (n, s) = retry(|| drain_batch(pool, now, batch)).await?;
+        let (n, s) = retry(|| drain_batch(pool, now, batch, scope)).await?;
         stats.add(s);
         if n < batch as u64 {
             break;
         }
     }
     loop {
-        let (n, s) = retry(|| settle_batch(pool, now, batch)).await?;
+        let (n, s) = retry(|| settle_batch(pool, now, batch, scope)).await?;
         stats.add(s);
         if n < batch as u64 {
             break;
@@ -95,21 +127,26 @@ fn is_retryable(e: &anyhow::Error) -> bool {
         .any(|d| matches!(d.code().as_deref(), Some("40P01") | Some("40001")))
 }
 
-type PendingRow = (i64, Uuid, String, String, Option<Uuid>, DateTime<Utc>);
+/// `(outbox id, event id, site, subject|name, decision, at, from a platform, authoritative goal)`.
+type PendingRow = (i64, Uuid, String, String, Option<Uuid>, DateTime<Utc>, bool, bool);
 
-async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<(u64, Stats)> {
+async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option<&str>) -> Result<(u64, Stats)> {
     let mut tx = pool.begin().await?;
-    let rows: Vec<PendingRow> = sqlx::query_as(
-        "SELECT p.id, e.id, e.site_id, e.subject || '|' || e.name, e.decision_id, e.received_at
-           FROM pending_events p JOIN events e ON e.id = p.event_id
+    let rows: Vec<PendingRow> = sqlx::query_as(&scoped(
+        "SELECT p.id, e.id, e.site_id, e.subject || '|' || e.name, e.decision_id, COALESCE(e.occurred_at, e.received_at),
+                e.source <> 'browser', e.name = ANY(t.authoritative_goals)
+           FROM pending_events p JOIN events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
+          WHERE {scope}
           ORDER BY p.id LIMIT $1
           FOR UPDATE OF p SKIP LOCKED",
-    )
+        2,
+    ))
     .bind(batch)
+    .bind(scope)
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();
-    for (_, _, site, subject_name, decision_id, received_at) in &rows {
+    for (_, _, site, subject_name, decision_id, received_at, platform, authoritative) in &rows {
         let (subject, name) = subject_name.rsplit_once('|').expect("joined above");
         local.events += 1;
         match name {
@@ -125,8 +162,14 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<(u
                 }
             }
             "missed" => {} // Recorded in `events` for the Phase 1 dashboard; nothing to learn.
+            _ if *authoritative && !*platform => local.hints += 1,
             goal => {
-                for d in candidates(&mut tx, site, subject, goal, *decision_id, *received_at).await? {
+                let decision_id = match decision_id {
+                    Some(d) => Some(*d),
+                    None if *platform => hinted(&mut tx, site, subject, goal, *received_at).await?,
+                    None => None,
+                };
+                for d in candidates(&mut tx, site, subject, goal, decision_id, *received_at).await? {
                     if credit(&mut tx, d, *received_at, now).await? {
                         local.credited += 1;
                     }
@@ -138,6 +181,21 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<(u
     sqlx::query("DELETE FROM pending_events WHERE id = ANY($1)").bind(&ids).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((rows.len() as u64, local))
+}
+
+/// The decision named by the subject's latest browser hint for this goal, up to `at`.
+async fn hinted(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &str, goal: &str, at: DateTime<Utc>) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT decision_id FROM events
+          WHERE site_id = $1 AND subject = $2 AND name = $3 AND source = 'browser' AND decision_id IS NOT NULL AND received_at <= $4
+          ORDER BY received_at DESC LIMIT 1",
+    )
+    .bind(site)
+    .bind(subject)
+    .bind(goal)
+    .bind(at)
+    .fetch_optional(&mut **tx)
+    .await?)
 }
 
 /// Decisions a goal event may credit: the one it names (if it belongs to this site, this
@@ -205,17 +263,22 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
     }
 }
 
-async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64) -> Result<(u64, Stats)> {
+async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option<&str>) -> Result<(u64, Stats)> {
     let mut tx = pool.begin().await?;
-    let rows: Vec<(Uuid, i64, i64, Value, bool, bool)> = sqlx::query_as(
+    // A slot measuring an authoritative goal waits the grace period for a late webhook.
+    let rows: Vec<(Uuid, i64, i64, Value, bool, bool)> = sqlx::query_as(&scoped(
         "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL, d.in_holdout
-           FROM decisions d JOIN slots s ON s.id = d.slot_id
-          WHERE d.settled_at IS NULL AND d.created_at + make_interval(secs => s.attribution_window_secs) < $1
+           FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
+          WHERE d.settled_at IS NULL AND {scope}
+            AND d.created_at + make_interval(secs => s.attribution_window_secs
+                  + CASE WHEN s.metric = ANY(t.authoritative_goals) THEN t.platform_grace_secs ELSE 0 END) < $1
           ORDER BY d.created_at LIMIT $2
           FOR UPDATE OF d SKIP LOCKED",
-    )
+        3,
+    ))
     .bind(now)
     .bind(batch)
+    .bind(scope)
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();
@@ -284,6 +347,17 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
             Ok(s) if s != Stats::default() => tracing::info!(?s, "worker pass"),
             Ok(_) => {}
             Err(e) => tracing::error!(error = %e, "worker pass failed"),
+        }
+        // Traffic sent to a sandbox (by the simulator or a local SDK) learns at its own clock.
+        match sqlx::query_as::<_, (String, DateTime<Utc>)>("SELECT id, sim_now FROM sites WHERE sandbox_of IS NOT NULL").fetch_all(&pool).await {
+            Ok(sandboxes) => {
+                for (id, at) in sandboxes {
+                    if let Err(e) = run_sandbox(&pool, &id, at).await {
+                        tracing::error!(error = %e, sandbox = %id, "sandbox pass failed");
+                    }
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "listing sandboxes failed"),
         }
         if last_guard.is_none_or(|t| t.elapsed() >= guard_every) {
             if let Err(e) = crate::guard::run(&pool, Utc::now()).await {
