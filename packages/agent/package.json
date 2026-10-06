@@ -1,0 +1,29 @@
+{
+  "name": "@pratibimba/agent",
+  "version": "0.1.0",
+  "description": "The Pratibimba instruction pack: teaches Claude Code, Cursor or any MCP client to read results and submit variants as drafts",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "pratibimba-agent": "bin/cli.mjs"
+  },
+  "exports": {
+    ".": "./src/install.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "pack"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec test/*.test.mjs",
+    "mutate": "node test/mutate.mjs",
+    "e2e": "node test/e2e.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  }
+}
