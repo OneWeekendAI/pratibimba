@@ -84,7 +84,9 @@
   var ctx = {
     returning: ret === '1',
     mobile: /Mobi|Android/i.test(navigator.userAgent || ''),
-    from_ad: /[?&](utm_source|utm_medium|utm_campaign|gclid|fbclid|msclkid)=/.test(location.search || '')
+    from_ad: /[?&](utm_source|utm_medium|utm_campaign|gclid|fbclid|msclkid)=/.test(location.search || ''),
+    // The local clock is a decision feature (sin_hour, cos_hour, is_night_local) in Core.
+    tz_offset: -new Date().getTimezoneOffset()
   };
 
   // --- stated preferences: picks by picker slot; only the owner's option keys -----------------

@@ -142,3 +142,9 @@ test('track_posts_goal_without_decision', async () => {
   assert.equal(goals.length, 1);
   assert.equal(goals[0].decision_id, undefined);
 });
+
+test('decide_carries_the_visitor_tz_offset', async () => {
+  const p = load();
+  await sleep(5);
+  assert.equal(p.decides()[0].body.ctx.tz_offset, -new Date().getTimezoneOffset());
+});

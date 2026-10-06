@@ -37,6 +37,11 @@ pub struct Ctx {
     /// be one of the site's options; anything else is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stated: Vec<String>,
+    /// The visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`). With it,
+    /// the decision carries the local-time features `sin_hour`, `cos_hour` and
+    /// `is_night_local` (see [`crate::insights::localtime`]); without it, it carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz_offset: Option<i16>,
 }
 
 impl Ctx {
@@ -128,10 +133,14 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     if !valid_subject(&req.subject) {
         return Err(ApiError::BadRequest("subject must be 1-256 printable ASCII characters".into()));
     }
+    if req.ctx.tz_offset.is_some_and(|m| !crate::insights::localtime::valid_offset(m)) {
+        return Err(ApiError::BadRequest("ctx.tz_offset is minutes east of UTC, -720 to 840".into()));
+    }
     let pool = &state.pool;
     // `at` is the site's clock: the database's now, or a sandbox's simulated time.
-    let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL, COALESCE(t.sim_now, now())
+    let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>, i16, i16)> = sqlx::query_as(
+        "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL, COALESCE(t.sim_now, now()),
+                t.night_start_hour, t.night_end_hour
            FROM slots s JOIN sites t ON t.id = s.site_id
           WHERE s.site_id = $1 AND s.key = $2",
     )
@@ -139,7 +148,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(&req.slot)
     .fetch_optional(pool)
     .await?;
-    let Some((slot_id, ttl, holdout_fraction, paused, at)) = slot else {
+    let Some((slot_id, ttl, holdout_fraction, paused, at, night_start, night_end)) = slot else {
         return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", req.slot, req.site)));
     };
     let mut arms: Vec<ArmRow> = sqlx::query_as(
@@ -204,12 +213,22 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let x = req.ctx.vector();
     let seed = state.seeds.lock().expect("seed rng poisoned").next_u64();
     let ids = if eligible.is_empty() { arms.iter().map(|a| a.0).collect() } else { eligible };
-    let (picked, scores, policy, features) = if site_keys.is_empty() {
+    // The extension: the site's stated tastes, plus the local clock when the visitor reported it.
+    let mut ext_keys = site_keys.clone();
+    let mut ext = said.clone();
+    if let Some(off) = req.ctx.tz_offset {
+        let night = crate::insights::localtime::NightWindow { start: night_start as u8, end: night_end as u8 };
+        let local = crate::insights::localtime::LocalTime::at(at, Some(off), night);
+        ext_keys.extend(stated::time_keys());
+        ext.extend(stated::time_values(&local));
+    }
+    let (picked, scores, policy, features) = if ext_keys.is_empty() {
         let (p, s) = model.choose(&ids, &x, seed);
         (p, s, bandit::POLICY, named(&x))
     } else {
-        let (p, s) = stated::choose(&model, &site_keys, &ids, &x, &said, seed);
-        (p, s, stated::POLICY, stated::with_stated(named(&x), &site_keys, &said))
+        let (p, s) = stated::choose(&model, &ext_keys, &ids, &x, &ext, seed);
+        let policy = if site_keys.is_empty() { stated::TIME_POLICY } else { stated::POLICY };
+        (p, s, policy, stated::with_stated(named(&x), &ext_keys, &ext))
     };
     let chosen = match (in_holdout, baseline) {
         (true, Some(b)) => b,

@@ -265,8 +265,8 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
     let (replay_matches, policy_pick) = match (&model, x) {
         // An on-device decision has no seeded draw to replay.
         (Some(m), Some(x)) if !arm_pool.is_empty() && policy != crate::adapt::POLICY => {
-            let said = crate::stated::from_features(&features);
-            let (pick, replayed) = if policy == crate::stated::POLICY {
+            let said = crate::stated::ext_from_features(&features);
+            let (pick, replayed) = if crate::stated::is_extended(&policy) {
                 let keys: Vec<String> = said.keys().cloned().collect();
                 crate::stated::choose(m, &keys, &arm_pool, &x, &said, seed as u64)
             } else {
@@ -280,7 +280,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
     };
     let rate = |vid: i64| -> Option<f64> {
         let (m, x) = (model.as_ref()?, x?);
-        if !crate::stated::from_features(&features).is_empty() {
+        if !crate::stated::ext_from_features(&features).is_empty() {
             return Some(crate::stated::mean_score(m, vid, &x, &features));
         }
         let mean = m.arm(vid).mean;

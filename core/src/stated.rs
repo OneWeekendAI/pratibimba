@@ -48,8 +48,49 @@ pub fn is_demographic(key: &str) -> bool {
     key.split(['-', '_']).any(|w| DEMOGRAPHIC.contains(&w))
 }
 
+/// The model key of an extension dimension that is not a stated taste. Option keys are slugs, so
+/// they never contain a `:` and cannot collide with these.
+pub const TIME_PREFIX: &str = "time:";
+/// The time-of-day features (see [`crate::insights::localtime`]), by decision feature name.
+pub const TIME_FEATURES: [&str; 3] = ["sin_hour", "cos_hour", "is_night_local"];
+/// The policy name of a decision scored with the extension for time features alone.
+pub const TIME_POLICY: &str = "lints_time";
+
+/// True for the two policies scored by the extension model.
+pub fn is_extended(policy: &str) -> bool {
+    policy == POLICY || policy == TIME_POLICY
+}
+
+/// The model keys of the time features, in the order they are appended to a model.
+pub fn time_keys() -> Vec<String> {
+    TIME_FEATURES.iter().map(|n| format!("{TIME_PREFIX}{n}")).collect()
+}
+
+/// A model key's decision feature name: `time:sin_hour` is `sin_hour`, an option key `k` is
+/// `stated:k`.
 pub fn feature_name(key: &str) -> String {
-    format!("{PREFIX}{key}")
+    match key.strip_prefix(TIME_PREFIX) {
+        Some(n) => n.to_string(),
+        None => format!("{PREFIX}{key}"),
+    }
+}
+
+/// Every extension dimension in stored named features, keyed by model key: the stated tastes
+/// and, when the decision knew the visitor's local hour, the time features.
+pub fn ext_from_features(features: &Value) -> BTreeMap<String, f64> {
+    let mut out = from_features(features);
+    for n in TIME_FEATURES {
+        if let Some(v) = features.get(n).and_then(Value::as_f64) {
+            out.insert(format!("{TIME_PREFIX}{n}"), v);
+        }
+    }
+    out
+}
+
+/// The time features of a local clock, by model key.
+pub fn time_values(t: &crate::insights::localtime::LocalTime) -> BTreeMap<String, f64> {
+    let v = [t.sin_hour, t.cos_hour, if t.is_night_local { 1.0 } else { 0.0 }];
+    time_keys().into_iter().zip(v).collect()
 }
 
 /// The stated part of stored named features: option key -> value.
@@ -161,10 +202,19 @@ impl DynArm {
     }
 }
 
-/// The stated extension of one slot's model, persisted inside [`LinTs`].
+/// The extension of one slot's model, persisted inside [`LinTs`]: the stated tastes and the
+/// time-of-day features, as extra named dimensions after the base four.
+///
+/// **Versioning.** The layout is self-describing: `keys` names every dimension after the base,
+/// in vector order, and is only ever appended to. A model saved before the time features
+/// existed has keys like `["garden", "kitchen"]` and arms of dimension 6; the first decision
+/// that carries time features appends `time:sin_hour`, `time:cos_hour`, `time:is_night_local`
+/// and extends every arm at the prior, so what the old dimensions learned is kept exactly and
+/// a model with no time data scores as it did. An arm whose shape does not match its keys
+/// (a hand-edited or corrupt state) is reset to the base posterior rather than read misaligned.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StatedModel {
-    /// Option keys in vector order (after the base features). Only ever appended to.
+    /// Model keys in vector order (after the base features). Only ever appended to.
     pub keys: Vec<String>,
     pub arms: BTreeMap<i64, DynArm>,
 }
@@ -188,9 +238,18 @@ impl StatedModel {
         }
     }
 
-    /// The arm's posterior, or the base arm's posterior extended to this model's keys.
+    /// The arm's posterior, or the base arm's posterior extended to this model's keys. A stored
+    /// arm whose shape does not fit the keys is reset to that, never read misaligned.
     pub fn arm(&self, base: &LinTs, id: i64) -> DynArm {
-        self.arms.get(&id).cloned().unwrap_or_else(|| DynArm::from_base(&base.arm(id), self.dim()))
+        let dim = self.dim();
+        match self.arms.get(&id) {
+            Some(a) if a.mean.len() == dim && a.cov.len() == dim && a.cov.iter().all(|r| r.len() == dim) => a.clone(),
+            Some(_) => {
+                tracing::warn!(arm = id, dim, "a stored extension arm has the wrong shape; reset to the base posterior");
+                DynArm::from_base(&base.arm(id), dim)
+            }
+            None => DynArm::from_base(&base.arm(id), dim),
+        }
     }
 
     pub fn vector(&self, x: &Vector, stated: &BTreeMap<String, f64>) -> Vec<f64> {
@@ -199,7 +258,7 @@ impl StatedModel {
         v
     }
 
-    /// Feature names in vector order: the base names, then `stated:<key>`.
+    /// Feature names in vector order: the base names, then `stated:<key>` and the time names.
     pub fn names(&self) -> Vec<String> {
         bandit::FEATURE_NAMES.iter().map(|s| s.to_string()).chain(self.keys.iter().map(|k| feature_name(k))).collect()
     }
@@ -231,10 +290,11 @@ pub fn choose(model: &LinTs, keys: &[String], arm_ids: &[i64], x: &Vector, state
     (best.0, scores)
 }
 
-/// Absorb one settled observation. Stated features present: the stated arm learns first (it
-/// is seeded from the base arm BEFORE the base absorbs this observation), then the base.
+/// Absorb one settled observation. Extension features present (stated or time): the extension
+/// arm learns first (it is seeded from the base arm BEFORE the base absorbs this observation),
+/// then the base.
 pub fn learn(model: &mut LinTs, arm: i64, x: &Vector, features: &Value, converted: bool) {
-    let stated = from_features(features);
+    let stated = ext_from_features(features);
     if !stated.is_empty() {
         let mut m = model_for(model, &stated.keys().cloned().collect::<Vec<_>>());
         let mut a = m.arm(model, arm);
@@ -252,9 +312,9 @@ pub fn weights(model: &LinTs, keys: &[String], arm: i64) -> Map<String, Value> {
     m.names().into_iter().zip(a.mean).map(|(n, w)| (n, json!(w))).collect()
 }
 
-/// Posterior-mean conversion rate for stored named features (base or stated).
+/// Posterior-mean conversion rate for stored named features (base, stated or time).
 pub fn mean_score(model: &LinTs, arm: i64, x: &Vector, features: &Value) -> f64 {
-    let stated = from_features(features);
+    let stated = ext_from_features(features);
     let keys: Vec<String> = stated.keys().cloned().collect();
     let m = model_for(model, &keys);
     m.arm(model, arm).mean_score(&m.vector(x, &stated))
@@ -444,5 +504,74 @@ mod tests {
         let s: BTreeMap<String, f64> = [("a".to_string(), 1.0)].into();
         let round: LinTs = serde_json::from_value(serde_json::to_value(&model).unwrap()).unwrap();
         assert_eq!(choose(&model, &keys, &[1, 2, 3], &X, &s, 99), choose(&round, &keys, &[3, 2, 1], &X, &s, 99));
+    }
+
+    /// A model saved before the time features existed: base arms of 4, stated arms of 4 + 1.
+    /// This JSON is the exact shape the previous release wrote.
+    fn saved_v1() -> LinTs {
+        let mut m = LinTs::default();
+        for i in 0..40 {
+            learn(&mut m, 1, &X, &json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0, "stated:a": (i % 2) as f64 }), i % 3 == 0);
+        }
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["stated"]["keys"], json!(["a"]));
+        assert_eq!(v["stated"]["arms"]["1"]["mean"].as_array().unwrap().len(), 5);
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn time_features_extend_a_saved_model_and_keep_what_it_learned() {
+        let old = saved_v1();
+        let before = old.stated.clone().unwrap().arms[&1].clone();
+        let mut keys = vec!["a".to_string()];
+        keys.extend(time_keys());
+        let m = model_for(&old, &keys);
+        assert_eq!(m.keys, ["a", "time:cos_hour", "time:is_night_local", "time:sin_hour"], "appended after the old keys");
+        let a = m.arm(&old, 1);
+        assert_eq!(&a.mean[..5], &before.mean[..], "the old dimensions keep their posterior");
+        assert_eq!(&a.mean[5..], &[0.0, 0.0, 0.0]);
+        for i in 5..8 {
+            assert_eq!(a.cov[i][i], 1.0);
+            assert_eq!(a.cov[0][i], 0.0);
+        }
+        let w = weights(&old, &keys, 1);
+        assert_eq!(w["stated:a"], json!(before.mean[4]));
+        assert_eq!(w["sin_hour"], json!(0.0));
+        assert_eq!(w["is_night_local"], json!(0.0));
+        // With no time data yet, the extended model scores exactly as the saved one did.
+        let f = json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0, "stated:a": 1 });
+        let mut ft = f.clone();
+        ft["sin_hour"] = json!(0.5);
+        ft["cos_hour"] = json!(-0.8);
+        ft["is_night_local"] = json!(1);
+        assert!((mean_score(&old, 1, &X, &f) - mean_score(&old, 1, &X, &ft)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_misshapen_stored_arm_resets_to_the_base_posterior() {
+        let mut old = saved_v1();
+        let st = old.stated.as_mut().unwrap();
+        st.arms.get_mut(&1).unwrap().mean.truncate(4);
+        let m = model_for(&old, &["a".to_string()]);
+        let a = m.arm(&old, 1);
+        assert_eq!(a.mean.len(), 5);
+        assert_eq!(&a.mean[..4], &old.arm(1).mean[..], "reset from the base arm, not read misaligned");
+        assert_eq!(a.mean[4], 0.0);
+    }
+
+    #[test]
+    fn time_learning_separates_night_from_day() {
+        let mut model = LinTs::default();
+        let feat = |night: f64| json!({ "bias": 1, "returning": 0, "mobile": 0, "from_ad": 0, "sin_hour": 0.0, "cos_hour": 0.0, "is_night_local": night });
+        for _ in 0..200 {
+            learn(&mut model, 1, &X, &feat(1.0), true);
+            learn(&mut model, 1, &X, &feat(0.0), false);
+        }
+        let night = mean_score(&model, 1, &X, &feat(1.0));
+        let day = mean_score(&model, 1, &X, &feat(0.0));
+        assert!(night > 0.8 && day < 0.2, "night {night:.2} day {day:.2}");
+        assert!(ext_from_features(&feat(1.0)).contains_key("time:is_night_local"));
+        assert_eq!(feature_name("time:cos_hour"), "cos_hour");
+        assert_eq!(feature_name("garden"), "stated:garden");
     }
 }
