@@ -27,7 +27,7 @@ pub struct EventsRequest {
     pub tz_offset: Option<i16>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventIn {
     pub id: Uuid,

@@ -215,6 +215,7 @@ pub async fn visitors(pool: &PgPool, site: &str, cohort: &Cohort) -> Result<Day,
             returning: rng.random_bool(cohort.returning),
             mobile: rng.random_bool(cohort.mobile),
             from_ad: rng.random_bool(cohort.from_ad),
+            ..Default::default()
         };
         let mut events = vec![];
         for (slot, metric) in &slots {
@@ -226,10 +227,10 @@ pub async fn visitors(pool: &PgPool, site: &str, cohort: &Cohort) -> Result<Day,
                 Err(e) => return Err(e),
             };
             *day.served.entry(slot.clone()).or_default().entry(d.variant.clone()).or_default() += 1;
-            events.push(EventIn { id: Uuid::new_v4(), name: "exposure".into(), slot: Some(slot.clone()), decision_id: Some(d.decision_id) });
+            events.push(EventIn { id: Uuid::new_v4(), name: "exposure".into(), slot: Some(slot.clone()), decision_id: Some(d.decision_id), ..Default::default() });
             if rng.random_bool(cohort.rate(slot, &d.variant, ctx.returning)) {
                 *day.conversions.entry(slot.clone()).or_default() += 1;
-                events.push(EventIn { id: Uuid::new_v4(), name: metric.clone(), slot: Some(slot.clone()), decision_id: Some(d.decision_id) });
+                events.push(EventIn { id: Uuid::new_v4(), name: metric.clone(), slot: Some(slot.clone()), decision_id: Some(d.decision_id), ..Default::default() });
             }
         }
         if !events.is_empty() {
