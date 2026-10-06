@@ -1,4 +1,4 @@
-//! `pratibimba serve | worker | migrate | apply <site.json>`
+//! `pratibimba serve | worker | migrate | apply <site.json> | mcp-token <site> <name>`
 //!
 //! One binary, several entry points, so the HTTP server and the learning worker always agree
 //! on schema and policy. Configuration is environment only:
@@ -15,12 +15,14 @@ use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
 use std::time::Duration;
 
-const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json>>";
+const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json> | mcp-token <site> <name>>";
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        // Logs go to stderr so stdout carries only a command's output (`mcp-token` prints the token).
+        .with_writer(std::io::stderr)
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str);
@@ -72,6 +74,13 @@ async fn main() -> Result<()> {
             db::migrate(&pool).await?;
             site_file::apply_path(&pool, std::path::Path::new(path)).await?;
             println!("applied {path}");
+        }
+        Some("mcp-token") => {
+            let (Some(site), Some(name)) = (args.get(1), args.get(2)) else { bail!(USAGE) };
+            db::migrate(&pool).await?;
+            let token = pratibimba::mcp::issue_token(&pool, site, name).await?;
+            eprintln!("MCP token for site {site:?} ({name}). It is shown once; only its hash is stored.");
+            println!("{token}");
         }
         Some(other) => bail!("unknown command {other:?}\n{USAGE}"),
         None => unreachable!(),
