@@ -45,6 +45,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/variants/{id}/approve", post(approve))
         .route("/variants/{id}/reject", post(reject))
         .route("/variants/{id}/comment", post(comment))
+        .route("/variants/{id}/audience", post(set_audience))
         .route("/models/{slot}/rollback", post(rollback))
         .route("/models/{slot}/versions", get(versions))
         .merge(super::sim::routes())
@@ -742,4 +743,40 @@ async fn mcp_call(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Re
     o.insert("arguments".into(), arguments);
     o.insert("variants".into(), json!(wrote.into_iter().map(|(id, slot, key, status)| json!({ "id": id, "slot": slot, "key": key, "status": status })).collect::<Vec<_>>()));
     Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetAudience {
+    /// A promoted audience (a segment with status `audience`) of the variant's site, or null to
+    /// lift the gate.
+    audience: Option<i64>,
+    actor: Option<String>,
+}
+
+/// Restrict a variant to a promoted audience, or lift the restriction. Only an audience can
+/// gate (promotion is the owner's permission to use a segment in a decision), only on its own
+/// site, and never the baseline, so every visitor always has something to see.
+async fn set_audience(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<SetAudience>) -> Result<Json<Value>, ApiError> {
+    let who = actor(b.actor.as_deref().unwrap_or(""))?;
+    let row: Option<(String, bool)> =
+        sqlx::query_as("SELECT s.site_id, v.is_baseline FROM variants v JOIN slots s ON s.id = v.slot_id WHERE v.id = $1").bind(id).fetch_optional(&state.pool).await?;
+    let (site, baseline) = row.ok_or_else(|| ApiError::NotFound(format!("unknown variant {id}")))?;
+    if let Some(aud) = b.audience {
+        if baseline {
+            return Err(ApiError::BadRequest("the baseline is shown to everyone; it cannot be restricted to an audience".into()));
+        }
+        let seg: Option<(String, String)> = sqlx::query_as("SELECT site_id, status FROM segments WHERE id = $1").bind(aud).fetch_optional(&state.pool).await?;
+        match seg {
+            None => return Err(ApiError::NotFound(format!("unknown segment {aud}"))),
+            Some((s, _)) if s != site => return Err(ApiError::BadRequest(format!("segment {aud} belongs to another site"))),
+            Some((_, st)) if st != "audience" => {
+                return Err(ApiError::Conflict(format!("segment {aud} is {st}; promote it to an audience before it can gate a variant")));
+            }
+            _ => {}
+        }
+    }
+    sqlx::query("UPDATE variants SET audience_id = $2 WHERE id = $1").bind(id).bind(b.audience).execute(&state.pool).await?;
+    tracing::info!(variant = id, audience = ?b.audience, actor = %who, "variant audience set");
+    Ok(Json(json!({ "variant": id, "audience": b.audience })))
 }

@@ -126,8 +126,8 @@ pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<B
 
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
 type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
-/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy)`.
-type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String);
+/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences)`.
+type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>);
 
 pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideResponse, ApiError> {
     if !valid_subject(&req.subject) {
@@ -167,6 +167,12 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     if arms.is_empty() {
         return Err(ApiError::Conflict(format!("slot {:?} has no approved variants", req.slot)));
     }
+    // Promoted audiences gate their variants: a visitor outside the audience never gets them.
+    let night = crate::insights::localtime::NightWindow { start: night_start as u8, end: night_end as u8 };
+    let audiences = gate_by_audience(pool, slot_id, &req.ctx, at, night, &mut arms).await?;
+    if arms.is_empty() {
+        return Err(ApiError::Conflict(format!("no variant of slot {:?} is open to this visitor's audiences", req.slot)));
+    }
     // The `stated` feature group: present on every decision of a site that has a picker.
     let site_keys = stated::site_keys(pool, &req.site).await?;
     let said = stated::resolve(pool, &req.site, &req.subject, &site_keys, &req.ctx.stated).await?;
@@ -175,7 +181,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
     let recent: Option<StickyRow> = sqlx::query_as(
-        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy FROM decisions
+        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences FROM decisions
           WHERE slot_id = $1 AND subject = $2 AND created_at > $4 - make_interval(secs => $3) AND created_at <= $4
             AND NOT (source = 'client' AND COALESCE(divergence, 0) > $5)
           ORDER BY created_at DESC LIMIT 1",
@@ -187,11 +193,12 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(crate::adapt::DIVERGENCE)
     .fetch_optional(pool)
     .await?;
-    if let Some((id, variant_id, features, scores, seed, version, held, policy)) = recent {
+    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds)) = recent {
         // A visitor who has stated something new since gets a fresh decision.
         let same_statement = stated::from_features(&features) == said_now;
         if let (true, Some((key, payload))) = (same_statement, key_of(variant_id)) {
-            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms));
+            let auds = auds.unwrap_or_else(|| json!([]));
+            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds));
         }
     }
 
@@ -217,7 +224,6 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let mut ext_keys = site_keys.clone();
     let mut ext = said.clone();
     if let Some(off) = req.ctx.tz_offset {
-        let night = crate::insights::localtime::NightWindow { start: night_start as u8, end: night_end as u8 };
         let local = crate::insights::localtime::LocalTime::at(at, Some(off), night);
         ext_keys.extend(stated::time_keys());
         ext.extend(stated::time_values(&local));
@@ -247,8 +253,8 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     );
     sqlx::query(
         "WITH ins AS (
-             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING 1)
+             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16) RETURNING 1)
          INSERT INTO webhook_deliveries (subscription_id, event, idempotency_key, payload)
          SELECT id, 'decision', $14, $15 FROM webhook_subscriptions WHERE site_id = $2 AND 'decision' = ANY(events) AND EXISTS (SELECT 1 FROM ins)",
     )
@@ -267,9 +273,10 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(at)
     .bind(hook_key)
     .bind(hook_body)
+    .bind(&audiences)
     .execute(pool)
     .await?;
-    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms))
+    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -285,6 +292,7 @@ fn response(
     seed: u64,
     in_holdout: bool,
     arms: &[ArmRow],
+    audiences: Value,
 ) -> DecideResponse {
     // Explanations name variants by key; storage keys them by id so a rename cannot lie.
     let scores: Map<String, Value> = arms
@@ -304,6 +312,55 @@ fn response(
             // A string: a u64 does not survive a JavaScript number.
             "seed": seed.to_string(),
             "in_holdout": in_holdout,
+            // Every audience that gates a variant of this slot: whether this visitor matched,
+            // and the variants it kept out when they did not.
+            "audiences": audiences,
         }),
     }
+}
+
+/// A variant's gate: `(variant_id, variant key, audience id, name, predicate, status)`.
+type GateRow = (i64, String, i64, String, Value, String);
+
+/// Drop from `arms` every variant whose audience this visitor is outside, and say so:
+/// `[{id, name, matched, variants}]`, one entry per audience, ascending id. Fails closed: an
+/// audience that is no longer promoted, or reads a local clock the visitor did not report,
+/// matches nobody. The baseline is never gated (a CHECK holds it), so the pool is never empty.
+async fn gate_by_audience(
+    pool: &sqlx::PgPool,
+    slot_id: i64,
+    ctx: &Ctx,
+    at: chrono::DateTime<chrono::Utc>,
+    night: crate::insights::localtime::NightWindow,
+    arms: &mut Vec<ArmRow>,
+) -> Result<Value, ApiError> {
+    use crate::insights::{localtime::LocalTime, segments};
+    let gates: Vec<GateRow> = sqlx::query_as(
+        "SELECT v.id, v.key, g.id, g.name, g.predicate, g.status FROM variants v JOIN segments g ON g.id = v.audience_id
+          WHERE v.slot_id = $1 AND v.status = 'approved' ORDER BY g.id, v.id",
+    )
+    .bind(slot_id)
+    .fetch_all(pool)
+    .await?;
+    let visit = segments::Visit {
+        ctx: (ctx.returning as u8) * segments::CTX_RETURNING | (ctx.mobile as u8) * segments::CTX_MOBILE | (ctx.from_ad as u8) * segments::CTX_FROM_AD,
+        local: LocalTime::at(at, ctx.tz_offset, night),
+    };
+    let mut out: Vec<Value> = Vec::new();
+    let mut shut: Vec<i64> = Vec::new();
+    for (vid, vkey, gid, name, predicate, status) in gates {
+        if out.last().and_then(|o| o["id"].as_i64()) != Some(gid) {
+            let matched = status == "audience"
+                && segments::Predicate::parse(&predicate)
+                    .is_ok_and(|p| (ctx.tz_offset.is_some() || !p.uses_local_time()) && p.matches(&visit));
+            out.push(json!({ "id": gid, "name": name, "matched": matched, "variants": [] }));
+        }
+        let entry = out.last_mut().expect("pushed above");
+        if entry["matched"] == json!(false) {
+            shut.push(vid);
+            entry["variants"].as_array_mut().expect("an array").push(json!(vkey));
+        }
+    }
+    arms.retain(|a| !shut.contains(&a.0));
+    Ok(Value::Array(out))
 }

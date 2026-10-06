@@ -162,6 +162,8 @@ pub struct Detail {
     pub policy_version: i64,
     pub seed: String,
     pub features: Value,
+    /// The audiences this decision evaluated: `[{id, name, matched, variants}]`.
+    pub audiences: Value,
     pub scores: Vec<Score>,
     /// Re-running the policy on the stored version, seed and pool gives the stored scores.
     pub replay_matches: Option<bool>,
@@ -202,13 +204,14 @@ struct Row {
     outcome: Option<i16>,
     outcome_at: Option<DateTime<Utc>>,
     settled_at: Option<DateTime<Utc>>,
+    audiences: Option<Value>,
 }
 
 pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Option<Detail>> {
     let row: Option<Row> = sqlx::query_as(
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
-                d.outcome, d.outcome_at, d.settled_at
+                d.outcome, d.outcome_at, d.settled_at, d.audiences
            FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1",
     )
     .bind(id)
@@ -235,6 +238,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         outcome,
         outcome_at,
         settled_at: settled,
+        audiences,
     }) = row
     else {
         return Ok(None);
@@ -381,6 +385,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         policy_version: version,
         seed: (seed as u64).to_string(),
         features,
+        audiences: audiences.unwrap_or_else(|| serde_json::json!([])),
         scores,
         replay_matches,
         counterfactual,

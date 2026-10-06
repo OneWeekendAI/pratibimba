@@ -116,6 +116,12 @@ impl Predicate {
         self.to_json().to_string()
     }
 
+    /// True when the predicate reads the visitor's local clock, so it cannot be decided for a
+    /// visitor whose clock is unknown.
+    pub fn uses_local_time(&self) -> bool {
+        self.hours.is_some() || self.bools.keys().any(|k| k.ends_with("_local"))
+    }
+
     pub fn len(&self) -> usize {
         self.bools.len() + self.hours.is_some() as usize
     }
