@@ -263,8 +263,15 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         .and_then(|s| serde_json::from_value(s).ok());
 
     let (replay_matches, policy_pick) = match (&model, x) {
-        (Some(m), Some(x)) if !arm_pool.is_empty() => {
-            let (pick, replayed) = m.choose(&arm_pool, &x, seed as u64);
+        // An on-device decision has no seeded draw to replay.
+        (Some(m), Some(x)) if !arm_pool.is_empty() && policy != crate::adapt::POLICY => {
+            let said = crate::stated::from_features(&features);
+            let (pick, replayed) = if policy == crate::stated::POLICY {
+                let keys: Vec<String> = said.keys().cloned().collect();
+                crate::stated::choose(m, &keys, &arm_pool, &x, &said, seed as u64)
+            } else {
+                m.choose(&arm_pool, &x, seed as u64)
+            };
             let matches = replayed.len() == scores.len()
                 && replayed.iter().all(|(vid, s)| scores.iter().any(|o| o.variant_id == *vid && o.score == *s));
             (Some(matches), Some(pick))
@@ -273,6 +280,9 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
     };
     let rate = |vid: i64| -> Option<f64> {
         let (m, x) = (model.as_ref()?, x?);
+        if !crate::stated::from_features(&features).is_empty() {
+            return Some(crate::stated::mean_score(m, vid, &x, &features));
+        }
         let mean = m.arm(vid).mean;
         Some(sigmoid(mean.iter().zip(&x).map(|(a, b)| a * b).sum()))
     };

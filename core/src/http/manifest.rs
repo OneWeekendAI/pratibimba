@@ -27,12 +27,26 @@ pub struct ManifestSlot {
     pub metric: String,
     pub ttl_secs: i32,
     pub variants: Vec<ManifestVariant>,
+    /// `"picker"` for a picker slot; absent for a swap slot. Set by [`crate::adapt::enrich`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picker: Option<crate::stated::PickerSpec>,
+    /// `true` when the SDK may re-score this slot on the device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_session: Option<bool>,
 }
 
 #[derive(Serialize)]
 pub struct ManifestVariant {
     pub key: String,
     pub baseline: bool,
+    /// In-session slots only: the HTML (null = the page's own) and the linear weights by
+    /// feature name that the on-device scorer dots with the visitor's features.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weights: Option<serde_json::Value>,
 }
 
 pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError> {
@@ -52,11 +66,13 @@ pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError>
     let mut slots: Vec<ManifestSlot> = vec![];
     for (key, selector, metric, ttl_secs, vkey, baseline) in rows {
         if slots.last().map(|s| s.key != key).unwrap_or(true) {
-            slots.push(ManifestSlot { key, selector, metric, ttl_secs, variants: vec![] });
+            slots.push(ManifestSlot { key, selector, metric, ttl_secs, variants: vec![], kind: None, picker: None, in_session: None });
         }
-        slots.last_mut().unwrap().variants.push(ManifestVariant { key: vkey, baseline });
+        slots.last_mut().unwrap().variants.push(ManifestVariant { key: vkey, baseline, payload: None, weights: None });
     }
-    Ok(Manifest { site: site.to_string(), slots })
+    let mut manifest = Manifest { site: site.to_string(), slots };
+    crate::adapt::enrich(pool, &mut manifest).await?;
+    Ok(manifest)
 }
 
 pub async fn handler(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Response, ApiError> {

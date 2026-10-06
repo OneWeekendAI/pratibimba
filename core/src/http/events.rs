@@ -34,6 +34,16 @@ pub struct EventIn {
     pub name: String,
     pub slot: Option<String>,
     pub decision_id: Option<Uuid>,
+    /// `pick` only: the picker option keys chosen (see [`crate::stated`]).
+    #[serde(default)]
+    pub picks: Option<Vec<String>>,
+    /// `rescore` only: an on-device decision (see [`crate::adapt`]).
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub features: Option<Value>,
+    #[serde(default)]
+    pub score: Option<f64>,
 }
 
 pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsRequest>) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -57,8 +67,10 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         }
     }
     let slots: HashMap<String, i64> = slots.into_iter().collect();
+    let client = crate::adapt::check(&state.pool, &req.site, &req.subject, &req.events).await?;
 
     let mut tx = state.pool.begin().await?;
+    crate::adapt::record(&mut tx, &req.site, &req.subject, &client).await?;
     let mut accepted = 0u64;
     for e in &req.events {
         // An unknown slot key (a stale page, a renamed slot) is kept with no slot rather than
@@ -66,8 +78,8 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         let slot_id = e.slot.as_ref().and_then(|k| slots.get(k)).copied();
         let r = sqlx::query(
             "WITH ins AS (
-                 INSERT INTO events (id, site_id, subject, name, slot_id, decision_id, received_at, tz_offset_min)
-                 VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(sim_now, now()) FROM sites WHERE id = $2), $7)
+                 INSERT INTO events (id, site_id, subject, name, slot_id, decision_id, received_at, tz_offset_min, picks)
+                 VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(sim_now, now()) FROM sites WHERE id = $2), $7, $8)
                  ON CONFLICT (id) DO NOTHING
                  RETURNING id)
              INSERT INTO pending_events (event_id) SELECT id FROM ins",
@@ -79,6 +91,7 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         .bind(slot_id)
         .bind(e.decision_id)
         .bind(req.tz_offset)
+        .bind(&e.picks)
         .execute(&mut *tx)
         .await?;
         accepted += r.rows_affected();

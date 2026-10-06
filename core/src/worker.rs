@@ -321,7 +321,7 @@ async fn learn(tx: &mut Transaction<'_, Postgres>, slot: i64, variant: i64, feat
     let x = from_named(features).context("decision features are missing a named feature")?;
     let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1 FOR UPDATE").bind(slot).fetch_one(&mut **tx).await?;
     let mut model: LinTs = serde_json::from_value(state)?;
-    model.update(variant, &x, converted);
+    crate::stated::learn(&mut model, variant, &x, features, converted);
     let reason = if converted { "learn: conversion" } else { "learn: miss" };
     write_model(tx, slot, &serde_json::to_value(&model)?, reason).await?;
     Ok(())

@@ -14,7 +14,7 @@
 
 use super::{ApiError, AppState, valid_subject};
 use crate::bandit::{self, LinTs, Vector};
-use crate::hash;
+use crate::{hash, stated};
 use axum::{Json, extract::State};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,10 @@ pub struct Ctx {
     pub mobile: bool,
     #[serde(default)]
     pub from_ad: bool,
+    /// Picker option keys the client holds for this visitor (see [`crate::stated`]). Each must
+    /// be one of the site's options; anything else is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stated: Vec<String>,
 }
 
 impl Ctx {
@@ -117,6 +121,8 @@ pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<B
 
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
 type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
+/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy)`.
+type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String);
 
 pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideResponse, ApiError> {
     if !valid_subject(&req.subject) {
@@ -152,23 +158,31 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     if arms.is_empty() {
         return Err(ApiError::Conflict(format!("slot {:?} has no approved variants", req.slot)));
     }
+    // The `stated` feature group: present on every decision of a site that has a picker.
+    let site_keys = stated::site_keys(pool, &req.site).await?;
+    let said = stated::resolve(pool, &req.site, &req.subject, &site_keys, &req.ctx.stated).await?;
+    let said_now = stated::from_features(&stated::with_stated(json!({}), &site_keys, &said));
     let key_of = |id: i64| arms.iter().find(|a| a.0 == id).map(|a| (a.1.clone(), a.2.clone()));
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
-    let recent: Option<(Uuid, i64, Value, Value, i64, i64, bool)> = sqlx::query_as(
-        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout FROM decisions
+    let recent: Option<StickyRow> = sqlx::query_as(
+        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy FROM decisions
           WHERE slot_id = $1 AND subject = $2 AND created_at > $4 - make_interval(secs => $3) AND created_at <= $4
+            AND NOT (source = 'client' AND COALESCE(divergence, 0) > $5)
           ORDER BY created_at DESC LIMIT 1",
     )
     .bind(slot_id)
     .bind(&req.subject)
     .bind(ttl as f64)
     .bind(at)
+    .bind(crate::adapt::DIVERGENCE)
     .fetch_optional(pool)
     .await?;
-    if let Some((id, variant_id, features, scores, seed, version, held)) = recent {
-        if let Some((key, payload)) = key_of(variant_id) {
-            return Ok(response(id, &req.slot, key, payload, version, features, &scores, seed as u64, held, &arms));
+    if let Some((id, variant_id, features, scores, seed, version, held, policy)) = recent {
+        // A visitor who has stated something new since gets a fresh decision.
+        let same_statement = stated::from_features(&features) == said_now;
+        if let (true, Some((key, payload))) = (same_statement, key_of(variant_id)) {
+            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms));
         }
     }
 
@@ -190,13 +204,18 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let x = req.ctx.vector();
     let seed = state.seeds.lock().expect("seed rng poisoned").next_u64();
     let ids = if eligible.is_empty() { arms.iter().map(|a| a.0).collect() } else { eligible };
-    let (picked, scores) = model.choose(&ids, &x, seed);
+    let (picked, scores, policy, features) = if site_keys.is_empty() {
+        let (p, s) = model.choose(&ids, &x, seed);
+        (p, s, bandit::POLICY, named(&x))
+    } else {
+        let (p, s) = stated::choose(&model, &site_keys, &ids, &x, &said, seed);
+        (p, s, stated::POLICY, stated::with_stated(named(&x), &site_keys, &said))
+    };
     let chosen = match (in_holdout, baseline) {
         (true, Some(b)) => b,
         _ => picked,
     };
     let scores_json = Value::Object(scores.iter().map(|(id, s)| (id.to_string(), json!(s))).collect());
-    let features = named(&x);
     let id = Uuid::new_v4();
     let (key, payload) = key_of(chosen).expect("chosen arm is in the pool");
     // One statement writes the decision and its webhook outbox rows, so both land or neither.
@@ -222,7 +241,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(&ids)
     .bind(&features)
     .bind(&scores_json)
-    .bind(bandit::POLICY)
+    .bind(policy)
     .bind(version)
     .bind(seed as i64)
     .bind(in_holdout)
@@ -231,7 +250,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(hook_body)
     .execute(pool)
     .await?;
-    Ok(response(id, &req.slot, key, payload, version, features, &scores_json, seed, in_holdout, &arms))
+    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -240,6 +259,7 @@ fn response(
     slot: &str,
     variant: String,
     payload: Option<String>,
+    policy: &str,
     version: i64,
     features: Value,
     scores_by_id: &Value,
@@ -258,7 +278,7 @@ fn response(
         variant,
         payload,
         explanation: json!({
-            "policy": bandit::POLICY,
+            "policy": policy,
             "policy_version": version,
             "features": features,
             "scores": scores,

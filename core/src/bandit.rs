@@ -142,6 +142,10 @@ pub struct LinTs {
     /// Observations absorbed. Read-modify-written by the worker, so a lost update shows here.
     #[serde(default)]
     pub n: u64,
+    /// The stated-preference extension (see [`crate::stated`]); absent until a decision with
+    /// `stated` features settles, so a site without pickers stores exactly what it did before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stated: Option<crate::stated::StatedModel>,
 }
 
 impl LinTs {

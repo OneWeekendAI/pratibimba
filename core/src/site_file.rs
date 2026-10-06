@@ -39,7 +39,22 @@ pub struct SlotSpec {
     pub attribution_window_secs: i32,
     #[serde(default = "default_ttl")]
     pub decision_ttl_secs: i32,
+    /// `swap` (default) or `picker` (see [`crate::stated`]).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Ship payloads and weights in the manifest so the SDK may re-score this slot on the device.
+    #[serde(default)]
+    pub in_session: bool,
+    /// A picker slot's options. Required for `kind: "picker"`, refused otherwise.
+    #[serde(default)]
+    pub picker: Option<crate::stated::PickerSpec>,
     pub variants: Vec<VariantSpec>,
+}
+
+impl SlotSpec {
+    pub fn is_picker(&self) -> bool {
+        self.kind.as_deref() == Some("picker")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +111,7 @@ impl SiteFile {
             if slot.attribution_window_secs <= 0 || slot.decision_ttl_secs < 0 {
                 bail!("slot {k:?}: attribution_window_secs must be > 0 and decision_ttl_secs >= 0");
             }
+            crate::stated::validate_slot(slot)?;
             let baselines = slot.variants.iter().filter(|v| v.baseline).count();
             if baselines != 1 {
                 bail!("slot {k:?}: exactly one variant must be marked baseline (found {baselines})");
@@ -107,11 +123,12 @@ impl SiteFile {
                 }
                 match (v.baseline, &v.html) {
                     (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
-                    (false, None) => bail!("slot {k:?}: variant {:?} needs html", v.key),
+                    (false, None) if !slot.is_picker() => bail!("slot {k:?}: variant {:?} needs html", v.key),
                     _ => {}
                 }
             }
         }
+        crate::stated::validate_site(self)?;
         Ok(())
     }
 }
@@ -138,10 +155,11 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .await?;
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
-            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
-                 attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs
+                 attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
+                 kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker
              RETURNING id",
         )
         .bind(&file.site)
@@ -150,6 +168,9 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(&slot.metric)
         .bind(slot.attribution_window_secs)
         .bind(slot.decision_ttl_secs)
+        .bind(slot.kind.as_deref().unwrap_or("swap"))
+        .bind(slot.in_session)
+        .bind(slot.picker.as_ref().map(serde_json::to_value).transpose()?)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;
