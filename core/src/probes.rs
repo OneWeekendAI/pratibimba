@@ -9,7 +9,7 @@
 //!    `@pratibimba/edge`) or the page loads `/_prb/sdk.js` (the script fallback).
 //! 3. `reach`: `GET {origin}/_prb/manifest/{site}` answers with this site's manifest.
 //! 4. `slot`: an `exposure` event has arrived for this site.
-//! 5. `agent`: Phase 2. Never done.
+//! 5. `agent`: a coding agent's MCP tool call has run (not been refused) on this site.
 //! 6. `live`: a variant approved through the dashboard gate (not `apply`) has been shown.
 
 use anyhow::Result;
@@ -122,6 +122,27 @@ pub async fn live(pool: &PgPool, site: &str) -> Result<Step> {
     })
 }
 
+pub async fn agent(pool: &PgPool, site: &str) -> Result<Step> {
+    let last: Option<(String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT agent, tool, created_at FROM mcp_calls WHERE site_id = $1 AND outcome <> 'refused' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(site)
+    .fetch_optional(pool)
+    .await?;
+    Ok(match last {
+        Some((agent, tool, at)) => Step {
+            id: "agent",
+            state: State::Done,
+            detail: format!("{agent} called `{tool}` over MCP at {}.", at.format("%Y-%m-%d %H:%M UTC")),
+        },
+        None => Step {
+            id: "agent",
+            state: State::Pending,
+            detail: format!("No MCP tool call has arrived yet. Mint a token with `pratibimba mcp-token {site} <name>` and connect your agent."),
+        },
+    })
+}
+
 pub async fn all(pool: &PgPool, http: &reqwest::Client, site: &str, origin: &str) -> Result<Vec<Step>> {
     let (package, reach) = tokio::join!(package(http, origin), reach(http, origin, site));
     Ok(vec![
@@ -129,7 +150,7 @@ pub async fn all(pool: &PgPool, http: &reqwest::Client, site: &str, origin: &str
         package,
         reach,
         slot(pool, site).await?,
-        Step { id: "agent", state: State::Later, detail: "Coding-agent connection over MCP arrives in Phase 2.".into() },
+        agent(pool, site).await?,
         live(pool, site).await?,
     ])
 }

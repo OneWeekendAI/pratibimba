@@ -1,7 +1,7 @@
 //! Install probes: each wizard step is done when Core observes it.
 
 mod common;
-use axum::{Router, http::HeaderMap, routing::get};
+use axum::{Router, body::Body, http::{HeaderMap, Request}, routing::get};
 use common::*;
 use pratibimba::probes::{self, State};
 use sqlx::PgPool;
@@ -122,5 +122,28 @@ async fn install_endpoint_lists_six_steps(pool: PgPool) {
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     let ids: Vec<String> = r.json()["steps"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
     assert_eq!(ids, ["framework", "package", "reach", "slot", "agent", "live"]);
-    assert_eq!(r.json()["steps"][4]["state"], "later");
+    assert_eq!(r.json()["steps"][4]["state"], "pending");
+}
+
+#[sqlx::test(migrations = false)]
+async fn agent_step_is_done_after_an_mcp_call_runs(pool: PgPool) {
+    setup_demo(&pool).await;
+    let token = pratibimba::mcp::issue_token(&pool, "demo", "laptop").await.unwrap();
+    let refused = pratibimba::mcp::issue_token(&pool, "demo", "other").await.unwrap();
+    let call = |t: &str, justification: &str| {
+        Request::post("/mcp")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {t}"))
+            .body(Body::from(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "list_slots", "arguments": { "agent": "Claude Code", "justification": justification } } }).to_string()))
+            .unwrap()
+    };
+    // A refused call (no justification) is not a connection.
+    send(&app(&pool), call(&refused, "")).await;
+    let step = pratibimba::probes::agent(&pool, "demo").await.unwrap();
+    assert_eq!(serde_json::to_value(&step).unwrap()["state"], "pending");
+    send(&app(&pool), call(&token, "checking the slots before writing a variant")).await;
+    let step = serde_json::to_value(pratibimba::probes::agent(&pool, "demo").await.unwrap()).unwrap();
+    assert_eq!(step["state"], "done");
+    assert!(step["detail"].as_str().unwrap().contains("Claude Code called `list_slots`"), "{step}");
 }
