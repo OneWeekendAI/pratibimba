@@ -3,9 +3,12 @@
 //! Each decision teaches its slot's model exactly once, and only if the visitor saw it:
 //!
 //! - **Positive.** A goal event (any name other than `exposure` or `missed`) whose name is the
-//!   slot's metric credits an exposed, unsettled decision inside its attribution window. The
-//!   event names the decision (`decision_id`) or falls back to last-touch: the subject's latest
-//!   exposed decision per slot in the window.
+//!   slot's metric credits exposed, unsettled decisions inside their attribution window. Which
+//!   ones, and with what share, is the slot's attributor's call ([`crate::attribution`]): under
+//!   `last_touch` (the default) the decision the event names (`decision_id`), or else the
+//!   subject's latest exposed decision per slot in the window, takes the whole conversion; under
+//!   `linear` every open exposed decision of the subject in the slot's window takes an equal
+//!   share, recorded in `decisions.credit` and learned as a fractional reward.
 //! - **Negative.** An exposed decision whose window closes with no conversion settles as 0.
 //! - **Holdout.** A decision in the holdout gets its outcome recorded like any other (it is the
 //!   control group's measurement) but never updates the model.
@@ -31,6 +34,7 @@
 //! is locked `FOR UPDATE` around each read-modify-write, so concurrent workers never lose an
 //! update.
 
+use crate::attribution::Touch;
 use crate::bandit::LinTs;
 use crate::http::decide::from_named;
 use crate::http::events::CHANNEL;
@@ -187,10 +191,10 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
                     None if *platform => hinted(&mut tx, site, subject, goal, *received_at).await?,
                     None => None,
                 };
-                for d in candidates(&mut tx, site, subject, goal, decision_id, *received_at).await? {
-                    if credit(&mut tx, d, *received_at, now).await? {
+                for (d, share) in candidates(&mut tx, site, subject, goal, decision_id, *received_at, *platform).await? {
+                    if credit(&mut tx, d, *received_at, now, share).await? {
                         local.credited += 1;
-                    } else if *platform && correct(&mut tx, d, *received_at, now).await? {
+                    } else if *platform && correct(&mut tx, d, *received_at, now, share).await? {
                         local.corrected += 1;
                     }
                 }
@@ -218,9 +222,11 @@ async fn hinted(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &str, g
     .await?)
 }
 
-/// Decisions a goal event may credit: the one it names (if it belongs to this site, this
-/// subject, and a slot measuring this goal), or else the latest exposed in-window decision per
-/// slot measuring this goal.
+/// Decisions a goal event credits, with each one's share. The touches are the subject's exposed
+/// decisions whose window contains `at`, per slot measuring this goal (only the named decision's
+/// slot when the event names one); each slot's attributor shares the conversion among them. A
+/// touch is open while it can still take credit: unsettled, or (for a platform event) a settled
+/// miss not yet corrected.
 async fn candidates(
     tx: &mut Transaction<'_, Postgres>,
     site: &str,
@@ -228,39 +234,40 @@ async fn candidates(
     goal: &str,
     decision_id: Option<Uuid>,
     at: DateTime<Utc>,
-) -> Result<Vec<Uuid>> {
-    Ok(match decision_id {
-        Some(d) => sqlx::query_scalar(
-            "SELECT d.id FROM decisions d JOIN slots s ON s.id = d.slot_id
-              WHERE d.id = $1 AND d.site_id = $2 AND d.subject = $3 AND s.metric = $4",
-        )
-        .bind(d)
-        .bind(site)
-        .bind(subject)
-        .bind(goal)
-        .fetch_all(&mut **tx)
-        .await?,
-        None => sqlx::query_scalar(
-            "SELECT DISTINCT ON (d.slot_id) d.id FROM decisions d JOIN slots s ON s.id = d.slot_id
-              WHERE d.site_id = $1 AND d.subject = $2 AND s.metric = $3 AND d.exposed_at IS NOT NULL
-                AND d.created_at <= $4 AND d.created_at + make_interval(secs => s.attribution_window_secs) >= $4
-              ORDER BY d.slot_id, d.created_at DESC",
-        )
-        .bind(site)
-        .bind(subject)
-        .bind(goal)
-        .bind(at)
-        .fetch_all(&mut **tx)
-        .await?,
-    })
+    platform: bool,
+) -> Result<Vec<(Uuid, f64)>> {
+    let rows: Vec<(Uuid, i64, String, bool)> = sqlx::query_as(
+        "SELECT d.id, d.slot_id, coalesce(s.attribution, t.attribution),
+                d.settled_at IS NULL OR ($6 AND d.outcome = 0 AND d.corrected_at IS NULL)
+           FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
+          WHERE d.site_id = $1 AND d.subject = $2 AND s.metric = $3 AND d.exposed_at IS NOT NULL
+            AND d.created_at <= $4 AND d.created_at + make_interval(secs => s.attribution_window_secs) >= $4
+            AND ($5::uuid IS NULL OR d.slot_id = (SELECT slot_id FROM decisions WHERE id = $5))
+          ORDER BY d.slot_id, d.created_at, d.id",
+    )
+    .bind(site)
+    .bind(subject)
+    .bind(goal)
+    .bind(at)
+    .bind(decision_id)
+    .bind(platform)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut out = vec![];
+    for group in rows.chunk_by(|a, b| a.1 == b.1) {
+        let attributor = crate::attribution::by_name(&group[0].2).context("unknown attributor")?;
+        let touches: Vec<Touch> = group.iter().map(|r| Touch { id: r.0, open: r.3 }).collect();
+        out.extend(attributor.credit(&touches, decision_id));
+    }
+    Ok(out)
 }
 
-/// Credit one decision as converted, at most once, and teach its model. Returns whether it
-/// was credited.
-async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) -> Result<bool> {
+/// Credit one decision as converted with its `share` of the conversion, at most once, and teach
+/// its model that share. Returns whether it was credited.
+async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>, share: f64) -> Result<bool> {
     #[allow(clippy::type_complexity)]
     let row: Option<(i64, i64, Value, bool, String, String, String, String, String)> = sqlx::query_as(
-        "UPDATE decisions d SET outcome = 1, outcome_at = $2, settled_at = $3
+        "UPDATE decisions d SET outcome = 1, outcome_at = $2, settled_at = $3, credit = $4
            FROM slots s, variants v
           WHERE d.id = $1 AND s.id = d.slot_id AND v.id = d.variant_id
             AND d.settled_at IS NULL AND d.exposed_at IS NOT NULL
@@ -270,16 +277,20 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
     .bind(decision)
     .bind(at)
     .bind(now)
+    .bind(share)
     .fetch_optional(&mut **tx)
     .await?;
     match row {
         Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject)) => {
-            let data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
-                               "subject": subject, "in_holdout": held, "converted_at": at });
+            let mut data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
+                                   "subject": subject, "in_holdout": held, "converted_at": at });
+            if share < 1.0 {
+                data["credit"] = json!(share);
+            }
             webhooks::enqueue(&mut **tx, &site, "conversion", data).await?;
             // A holdout outcome is the control group's measurement, never a lesson.
             if !held {
-                learn(tx, slot, variant, &features, true).await?;
+                learn(tx, slot, variant, &features, share).await?;
             }
             Ok(true)
         }
@@ -293,10 +304,10 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
 /// [`crate::bandit::Arm::flip_miss`]); the `conversion` webhook fires with `late: true`. At most
 /// once per decision (`corrected_at`), and never for a browser event, so a late or replayed
 /// browser click cannot rewrite history.
-async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) -> Result<bool> {
+async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>, share: f64) -> Result<bool> {
     #[allow(clippy::type_complexity)]
     let row: Option<(i64, i64, Value, bool, String, String, String, String, String)> = sqlx::query_as(
-        "UPDATE decisions d SET outcome = 1, outcome_at = $2, corrected_at = $3
+        "UPDATE decisions d SET outcome = 1, outcome_at = $2, corrected_at = $3, credit = $4
            FROM slots s, variants v
           WHERE d.id = $1 AND s.id = d.slot_id AND v.id = d.variant_id
             AND d.settled_at IS NOT NULL AND d.outcome = 0 AND d.corrected_at IS NULL AND d.exposed_at IS NOT NULL
@@ -306,17 +317,21 @@ async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTim
     .bind(decision)
     .bind(at)
     .bind(now)
+    .bind(share)
     .fetch_optional(&mut **tx)
     .await?;
     let Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject)) = row else { return Ok(false) };
-    let data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
-                       "subject": subject, "in_holdout": held, "converted_at": at, "late": true });
+    let mut data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
+                           "subject": subject, "in_holdout": held, "converted_at": at, "late": true });
+    if share < 1.0 {
+        data["credit"] = json!(share);
+    }
     webhooks::enqueue(&mut **tx, &site, "conversion", data).await?;
     if !held {
         let x = from_named(&features).context("decision features are missing a named feature")?;
         let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1 FOR UPDATE").bind(slot).fetch_one(&mut **tx).await?;
         let mut model: LinTs = serde_json::from_value(state)?;
-        crate::stated::correct_miss(&mut model, variant, &x, &features);
+        crate::stated::correct_miss_by(&mut model, variant, &x, &features, share);
         write_model(tx, slot, &serde_json::to_value(&model)?, "learn: late conversion corrects a miss").await?;
     }
     Ok(true)
@@ -345,7 +360,7 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
         if *exposed {
             sqlx::query("UPDATE decisions SET outcome = 0, settled_at = $2 WHERE id = $1").bind(id).bind(now).execute(&mut *tx).await?;
             if !*held {
-                learn(&mut tx, *slot, *variant, features, false).await?;
+                learn(&mut tx, *slot, *variant, features, 0.0).await?;
             }
             local.settled_negative += 1;
         } else {
@@ -357,12 +372,20 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
     Ok((rows.len() as u64, local))
 }
 
-async fn learn(tx: &mut Transaction<'_, Postgres>, slot: i64, variant: i64, features: &Value, converted: bool) -> Result<()> {
+/// Teach the model one settled decision: `reward` 0 is a miss, 1 a conversion, and anything
+/// between a shared conversion.
+async fn learn(tx: &mut Transaction<'_, Postgres>, slot: i64, variant: i64, features: &Value, reward: f64) -> Result<()> {
     let x = from_named(features).context("decision features are missing a named feature")?;
     let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1 FOR UPDATE").bind(slot).fetch_one(&mut **tx).await?;
     let mut model: LinTs = serde_json::from_value(state)?;
-    crate::stated::learn(&mut model, variant, &x, features, converted);
-    let reason = if converted { "learn: conversion" } else { "learn: miss" };
+    crate::stated::learn_credit(&mut model, variant, &x, features, reward);
+    let reason = if reward >= 1.0 {
+        "learn: conversion"
+    } else if reward > 0.0 {
+        "learn: shared conversion"
+    } else {
+        "learn: miss"
+    };
     write_model(tx, slot, &serde_json::to_value(&model)?, reason).await?;
     Ok(())
 }

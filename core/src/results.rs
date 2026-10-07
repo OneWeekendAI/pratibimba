@@ -8,6 +8,12 @@
 //! The slot-level number (the policy against the holdout) is causal: the holdout is a random
 //! slice of visitors. A per-variant number is not: the bandit chose who saw the variant by
 //! context. The dashboard labels per-variant lift as descriptive.
+//!
+//! Rates and lift count **credit**, not converted decisions: under multi-touch attribution one
+//! conversion is shared among several decisions, and its shares sum to one, so a conversion counts
+//! once whichever attributor ran. Under last touch credit and conversions are the same number.
+//! A shared outcome lies in [0, 1] with mean p, so its variance is at most p(1-p) and the
+//! Bernoulli confidence sequence stays valid.
 
 use crate::stats::{self, ALPHA, Interval};
 use anyhow::Result;
@@ -19,24 +25,35 @@ use std::collections::BTreeMap;
 /// "Since the beginning": Postgres cannot hold chrono's minimum date.
 pub const ALL_TIME: DateTime<Utc> = DateTime::<Utc>::UNIX_EPOCH;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct Counts {
     pub n: u64,
+    /// Decisions that took any share of a conversion.
     pub conversions: u64,
+    /// The conversions credited to those decisions: the sum of their shares.
+    pub credit: f64,
 }
 
 impl Counts {
-    fn add(&mut self, n: u64, s: u64) {
+    fn add(&mut self, n: u64, s: u64, credit: f64) {
         self.n += n;
         self.conversions += s;
+        self.credit += credit;
     }
-    fn pair(&self) -> (u64, u64) {
-        (self.conversions, self.n)
+    fn merge(&mut self, o: Counts) {
+        self.add(o.n, o.conversions, o.credit);
+    }
+    fn pair(&self) -> (f64, u64) {
+        (self.credit, self.n)
     }
     pub fn rate(&self) -> Option<f64> {
-        (self.n > 0).then(|| self.conversions as f64 / self.n as f64)
+        (self.n > 0).then(|| self.credit / self.n as f64)
     }
 }
+
+/// A decision's credit: its recorded share, or the whole conversion for a row written before
+/// attribution was pluggable.
+const CREDIT: &str = "coalesce(sum(CASE WHEN d.outcome = 1 THEN coalesce(d.credit, 1) ELSE 0 END), 0)::float8";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct VariantResult {
@@ -77,17 +94,17 @@ pub struct SiteResult {
 }
 
 /// One row per (slot, variant, holdout flag): closed exposed decisions created in `[since, now)`.
-type CountRow = (i64, i64, bool, i64, i64);
+type CountRow = (i64, i64, bool, i64, i64, f64);
 
 async fn counts(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime<Utc>) -> Result<Vec<CountRow>> {
-    Ok(sqlx::query_as(
-        "SELECT d.slot_id, d.variant_id, d.in_holdout, count(*), count(*) FILTER (WHERE d.outcome = 1)
+    Ok(sqlx::query_as(&format!(
+        "SELECT d.slot_id, d.variant_id, d.in_holdout, count(*), count(*) FILTER (WHERE d.outcome = 1), {CREDIT}
            FROM decisions d JOIN slots s ON s.id = d.slot_id
           WHERE d.site_id = $1 AND d.exposed_at IS NOT NULL
             AND d.created_at >= $2
             AND d.created_at + make_interval(secs => s.attribution_window_secs) < $3
-          GROUP BY 1, 2, 3",
-    )
+          GROUP BY 1, 2, 3"
+    ))
     .bind(site)
     .bind(since)
     .bind(now)
@@ -115,13 +132,13 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
 
     let mut treated_by_variant: BTreeMap<i64, Counts> = BTreeMap::new();
     let mut by_slot: BTreeMap<i64, (Counts, Counts)> = BTreeMap::new();
-    for (slot, variant, held, n, s) in rows {
+    for (slot, variant, held, n, s, c) in rows {
         let entry = by_slot.entry(slot).or_default();
         if held {
-            entry.1.add(n as u64, s as u64);
+            entry.1.add(n as u64, s as u64, c);
         } else {
-            entry.0.add(n as u64, s as u64);
-            treated_by_variant.entry(variant).or_default().add(n as u64, s as u64);
+            entry.0.add(n as u64, s as u64, c);
+            treated_by_variant.entry(variant).or_default().add(n as u64, s as u64, c);
         }
     }
 
@@ -129,8 +146,8 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
     let mut out = vec![];
     for (slot_id, key, metric) in slots {
         let (treated, holdout) = by_slot.get(&slot_id).copied().unwrap_or_default();
-        site_t.add(treated.n, treated.conversions);
-        site_h.add(holdout.n, holdout.conversions);
+        site_t.merge(treated);
+        site_h.merge(holdout);
         let vs = variants
             .iter()
             .filter(|v| v.1 == slot_id)
@@ -144,7 +161,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
                     traffic_share: *share,
                     counts: c,
                     share: if treated.n > 0 { c.n as f64 / treated.n as f64 } else { 0.0 },
-                    lift: stats::lift_cs(c.pair(), holdout.pair(), ALPHA),
+                    lift: stats::lift_cs_credit(c.pair(), holdout.pair(), ALPHA),
                 }
             })
             .collect();
@@ -154,7 +171,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
             metric,
             treated,
             holdout,
-            lift: stats::lift_cs(treated.pair(), holdout.pair(), ALPHA),
+            lift: stats::lift_cs_credit(treated.pair(), holdout.pair(), ALPHA),
             variants: vs,
         });
     }
@@ -164,7 +181,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
         holdout_fraction,
         treated: site_t,
         holdout: site_h,
-        lift: stats::lift_cs(site_t.pair(), site_h.pair(), ALPHA),
+        lift: stats::lift_cs_credit(site_t.pair(), site_h.pair(), ALPHA),
         slots: out,
     }))
 }
@@ -189,8 +206,8 @@ pub async fn curve(pool: &PgPool, slot_id: i64, now: DateTime<Utc>) -> Result<Ve
     .await?;
     let Some((first, last)) = span else { return Ok(vec![]) };
     let unit = if last - first > chrono::Duration::days(8) { "day" } else { "hour" };
-    let rows: Vec<(DateTime<Utc>, String, bool, i64, i64)> = sqlx::query_as(&format!(
-        "SELECT date_trunc('{unit}', d.created_at) b, v.key, d.in_holdout, count(*), count(*) FILTER (WHERE d.outcome = 1)
+    let rows: Vec<(DateTime<Utc>, String, bool, i64, i64, f64)> = sqlx::query_as(&format!(
+        "SELECT date_trunc('{unit}', d.created_at) b, v.key, d.in_holdout, count(*), count(*) FILTER (WHERE d.outcome = 1), {CREDIT}
            FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN variants v ON v.id = d.variant_id
           WHERE d.slot_id = $1 AND d.exposed_at IS NOT NULL
             AND d.created_at + make_interval(secs => s.attribution_window_secs) < $2
@@ -208,19 +225,19 @@ pub async fn curve(pool: &PgPool, slot_id: i64, now: DateTime<Utc>) -> Result<Ve
     while i < rows.len() {
         let bucket = rows[i].0;
         while i < rows.len() && rows[i].0 == bucket {
-            let (_, key, held, n, s) = &rows[i];
+            let (_, key, held, n, s, c) = &rows[i];
             if *held {
-                holdout.add(*n as u64, *s as u64);
+                holdout.add(*n as u64, *s as u64, *c);
             } else {
-                treated.add(*n as u64, *s as u64);
-                per.entry(key.clone()).or_default().add(*n as u64, *s as u64);
+                treated.add(*n as u64, *s as u64, *c);
+                per.entry(key.clone()).or_default().add(*n as u64, *s as u64, *c);
             }
             i += 1;
         }
         points.push(CurvePoint {
             t: bucket + step,
-            policy: stats::lift_cs(treated.pair(), holdout.pair(), ALPHA),
-            variants: per.iter().map(|(k, c)| (k.clone(), stats::lift_cs(c.pair(), holdout.pair(), ALPHA))).collect(),
+            policy: stats::lift_cs_credit(treated.pair(), holdout.pair(), ALPHA),
+            variants: per.iter().map(|(k, c)| (k.clone(), stats::lift_cs_credit(c.pair(), holdout.pair(), ALPHA))).collect(),
         });
     }
     Ok(points)

@@ -54,18 +54,29 @@ pub fn half_width(n: u64, var: f64, alpha: f64) -> f64 {
 
 /// The sequence for a conversion rate: `successes` out of `n`. `None` with no data.
 pub fn rate_cs(successes: u64, n: u64, alpha: f64) -> Option<Interval> {
+    rate_cs_credit(successes as f64, n, alpha)
+}
+
+/// [`rate_cs`] for outcomes in [0, 1] (shared conversions): `credit` is their sum. Each has
+/// variance at most p(1-p), so the Bernoulli sequence still covers.
+pub fn rate_cs_credit(credit: f64, n: u64, alpha: f64) -> Option<Interval> {
     if n == 0 {
         return None;
     }
-    let p = successes as f64 / n as f64;
+    let p = credit / n as f64;
     let h = half_width(n, (p * (1.0 - p)).max(VAR_FLOOR), alpha);
     Some(Interval { estimate: p, lo: (p - h).max(0.0), hi: (p + h).min(1.0) })
 }
 
 /// The sequence for `treated rate − control rate`, each group given as `(successes, n)`.
 pub fn lift_cs(treated: (u64, u64), control: (u64, u64), alpha: f64) -> Option<Interval> {
-    let t = rate_cs(treated.0, treated.1, alpha / 2.0)?;
-    let c = rate_cs(control.0, control.1, alpha / 2.0)?;
+    lift_cs_credit((treated.0 as f64, treated.1), (control.0 as f64, control.1), alpha)
+}
+
+/// [`lift_cs`] with each group given as `(credit, n)`.
+pub fn lift_cs_credit(treated: (f64, u64), control: (f64, u64), alpha: f64) -> Option<Interval> {
+    let t = rate_cs_credit(treated.0, treated.1, alpha / 2.0)?;
+    let c = rate_cs_credit(control.0, control.1, alpha / 2.0)?;
     Some(Interval { estimate: t.estimate - c.estimate, lo: t.lo - c.hi, hi: t.hi - c.lo })
 }
 

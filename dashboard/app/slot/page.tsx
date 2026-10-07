@@ -39,7 +39,7 @@ function VariantCard({ v, index, champion }: { v: VariantRow; index: number; cha
         </div>
         <div className="mt-2"><LiftPill lift={v.lift} small /></div>
         <div className="mt-1 text-[11px] text-muted tabular">
-          {int(v.counts.n)} closed · {int(v.counts.conversions)} converted
+          {int(v.counts.n)} closed · {credited(v.counts.credit ?? v.counts.conversions)} converted
           {v.traffic_share !== null && ` · planned share ${Math.round(v.traffic_share * 100)}%`}
         </div>
         {v.pause_reason && (
@@ -212,4 +212,9 @@ export default function SlotPage() {
       <Page />
     </Suspense>
   );
+}
+
+/** Credited conversions: whole under last touch, a sum of shares under multi-touch. */
+function credited(c: number) {
+  return Number.isInteger(c) ? int(c) : c.toFixed(1);
 }

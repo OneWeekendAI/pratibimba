@@ -85,7 +85,13 @@ impl Arm {
 
     /// Absorb one observation: `y = true` means the visitor converted.
     pub fn update(&mut self, x: &Vector, y: bool) {
-        let y = if y { 1.0 } else { 0.0 };
+        self.update_credit(x, if y { 1.0 } else { 0.0 });
+    }
+
+    /// Absorb one observation with a fractional reward `y` in [0, 1] (a share of a conversion
+    /// under multi-touch attribution): the same Laplace step with the Bernoulli log-likelihood
+    /// replaced by `y log p + (1 - y) log(1 - p)`. `y` of 0 or 1 is exactly [`Self::update`].
+    pub fn update_credit(&mut self, x: &Vector, y: f64) {
         let sx = mat_vec(&self.cov, x);
         let s = dot(x, &sx);
         let a = dot(&self.mean, x);
@@ -120,9 +126,15 @@ impl Arm {
     /// `log sigmoid(w.x) - log(1 - sigmoid(w.x)) = w.x`, a linear term, so in the Gaussian
     /// posterior the covariance is unchanged and the mean moves by `cov x`.
     pub fn flip_miss(&mut self, x: &Vector) {
+        self.flip_miss_by(x, 1.0);
+    }
+
+    /// Turn an absorbed miss into a reward of `y`: the log-likelihood gains `y w.x`, so the mean
+    /// moves by `y cov x`.
+    pub fn flip_miss_by(&mut self, x: &Vector, y: f64) {
         let sx = mat_vec(&self.cov, x);
         for i in 0..DIM {
-            self.mean[i] += sx[i];
+            self.mean[i] += y * sx[i];
         }
     }
 
@@ -164,7 +176,11 @@ impl LinTs {
     }
 
     pub fn update(&mut self, arm: i64, x: &Vector, y: bool) {
-        self.arms.entry(arm).or_default().update(x, y);
+        self.update_credit(arm, x, if y { 1.0 } else { 0.0 });
+    }
+
+    pub fn update_credit(&mut self, arm: i64, x: &Vector, y: f64) {
+        self.arms.entry(arm).or_default().update_credit(x, y);
         self.n += 1;
     }
 

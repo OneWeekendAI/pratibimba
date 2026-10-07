@@ -37,6 +37,10 @@ pub struct SiteFile {
     /// [`crate::features`]). Omitted: keep the current list; `[]` clears it.
     #[serde(default)]
     pub features: Option<Vec<crate::features::FeatureSpec>>,
+    /// How a conversion's credit is shared among decisions ([`crate::attribution`]):
+    /// `last_touch` (the default for a new site) or `linear`. Omitted: keep the current value.
+    #[serde(default)]
+    pub attribution: Option<String>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -64,6 +68,9 @@ pub struct SlotSpec {
     /// A picker slot's options. Required for `kind: "picker"`, refused otherwise.
     #[serde(default)]
     pub picker: Option<crate::stated::PickerSpec>,
+    /// Overrides the site's attributor for this slot. Omitted: follow the site.
+    #[serde(default)]
+    pub attribution: Option<String>,
     pub variants: Vec<VariantSpec>,
 }
 
@@ -118,6 +125,7 @@ impl SiteFile {
         if let Some(f) = &self.features {
             crate::features::validate(f)?;
         }
+        check_attribution("site", self.attribution.as_deref())?;
         if let Some(h) = self.holdout_fraction {
             if !(0.0..=0.5).contains(&h) {
                 bail!("holdout_fraction must be between 0 and 0.5");
@@ -140,6 +148,7 @@ impl SiteFile {
             if !(0..=MAX_COLD_START).contains(&slot.cold_start_exposures) {
                 bail!("slot {k:?}: cold_start_exposures must be between 0 and {MAX_COLD_START}");
             }
+            check_attribution(&format!("slot {k:?}"), slot.attribution.as_deref())?;
             crate::stated::validate_slot(slot)?;
             let baselines = slot.variants.iter().filter(|v| v.baseline).count();
             if baselines != 1 {
@@ -162,6 +171,15 @@ impl SiteFile {
     }
 }
 
+fn check_attribution(what: &str, name: Option<&str>) -> Result<()> {
+    match name {
+        Some(n) if crate::attribution::by_name(n).is_none() => {
+            bail!("{what}: attribution {n:?} is not one of {:?}", crate::attribution::NAMES)
+        }
+        _ => Ok(()),
+    }
+}
+
 pub async fn apply_path(pool: &PgPool, path: &std::path::Path) -> Result<()> {
     let text = std::fs::read_to_string(path)?;
     let file: SiteFile = serde_json::from_str(&text)?;
@@ -172,11 +190,12 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed)
-         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6)
+        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed, attribution)
+         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6, COALESCE($7, 'last_touch'))
          ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction),
                                         facts = COALESCE($4, sites.facts), privacy_mode = COALESCE($5, sites.privacy_mode),
-                                        fields_allowed = COALESCE($6, sites.fields_allowed)",
+                                        fields_allowed = COALESCE($6, sites.fields_allowed),
+                                        attribution = COALESCE($7, sites.attribution)",
     )
         .bind(&file.site)
         .bind(&file.origin)
@@ -184,6 +203,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(&file.facts)
         .bind(&file.privacy_mode)
         .bind(&file.fields_allowed)
+        .bind(&file.attribution)
         .execute(&mut *tx)
         .await?;
     if let Some(features) = &file.features {
@@ -199,12 +219,12 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     }
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
-            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures, attribution)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
                  attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
                  kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker,
-                 cold_start_exposures = EXCLUDED.cold_start_exposures
+                 cold_start_exposures = EXCLUDED.cold_start_exposures, attribution = EXCLUDED.attribution
              RETURNING id",
         )
         .bind(&file.site)
@@ -217,6 +237,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(slot.in_session)
         .bind(slot.picker.as_ref().map(serde_json::to_value).transpose()?)
         .bind(slot.cold_start_exposures)
+        .bind(&slot.attribution)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;

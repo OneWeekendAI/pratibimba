@@ -159,15 +159,23 @@ impl DynArm {
 
     /// The twin of [`bandit::Arm::flip_miss`]: the mean moves by `cov x`.
     pub fn flip_miss(&mut self, x: &[f64]) {
+        self.flip_miss_by(x, 1.0);
+    }
+
+    pub fn flip_miss_by(&mut self, x: &[f64], y: f64) {
         let sx: Vec<f64> = self.cov.iter().map(|r| dot(r, x)).collect();
         for (m, s) in self.mean.iter_mut().zip(&sx) {
-            *m += s;
+            *m += y * s;
         }
     }
 
     pub fn update(&mut self, x: &[f64], y: bool) {
+        self.update_credit(x, if y { 1.0 } else { 0.0 });
+    }
+
+    /// The twin of [`bandit::Arm::update_credit`]: a fractional reward `y` in [0, 1].
+    pub fn update_credit(&mut self, x: &[f64], y: f64) {
         let n = x.len();
-        let y = if y { 1.0 } else { 0.0 };
         let sx: Vec<f64> = self.cov.iter().map(|r| dot(r, x)).collect();
         let s = dot(x, &sx);
         let a = dot(&self.mean, x);
@@ -316,30 +324,40 @@ pub fn choose(model: &LinTs, keys: &[String], arm_ids: &[i64], x: &Vector, state
 /// arm learns first (it is seeded from the base arm BEFORE the base absorbs this observation),
 /// then the base.
 pub fn learn(model: &mut LinTs, arm: i64, x: &Vector, features: &Value, converted: bool) {
+    learn_credit(model, arm, x, features, if converted { 1.0 } else { 0.0 });
+}
+
+/// [`learn`] with a fractional reward: the share of a conversion this decision took.
+pub fn learn_credit(model: &mut LinTs, arm: i64, x: &Vector, features: &Value, y: f64) {
     let stated = ext_from_features(features);
     if !stated.is_empty() {
         let mut m = model_for(model, &stated.keys().cloned().collect::<Vec<_>>());
         let mut a = m.arm(model, arm);
-        a.update(&m.vector(x, &stated), converted);
+        a.update_credit(&m.vector(x, &stated), y);
         m.arms.insert(arm, a);
         model.stated = Some(m);
     }
-    model.update(arm, x, converted);
+    model.update_credit(arm, x, y);
 }
 
 /// A settled miss turned out to be a conversion (a late platform webhook): flip it in the base
 /// arm and, when the decision carried extension features, in the extension arm. The
 /// observation count does not change; it is the same observation, corrected.
 pub fn correct_miss(model: &mut LinTs, arm: i64, x: &Vector, features: &Value) {
+    correct_miss_by(model, arm, x, features, 1.0);
+}
+
+/// [`correct_miss`] for a miss that turned into a share `y` of a conversion.
+pub fn correct_miss_by(model: &mut LinTs, arm: i64, x: &Vector, features: &Value, y: f64) {
     let ext = ext_from_features(features);
     if !ext.is_empty() {
         let mut m = model_for(model, &ext.keys().cloned().collect::<Vec<_>>());
         let mut a = m.arm(model, arm);
-        a.flip_miss(&m.vector(x, &ext));
+        a.flip_miss_by(&m.vector(x, &ext), y);
         m.arms.insert(arm, a);
         model.stated = Some(m);
     }
-    model.arms.entry(arm).or_default().flip_miss(x);
+    model.arms.entry(arm).or_default().flip_miss_by(x, y);
 }
 
 /// Posterior-mean weights per arm, by feature name: what the on-device scorer ships with.

@@ -52,6 +52,8 @@ export interface Interval {
 export interface Counts {
   n: number;
   conversions: number;
+  /** Conversions credited (a sum of shares under multi-touch; equal to conversions under last touch). */
+  credit: number;
 }
 export interface Check {
   name: string;

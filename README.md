@@ -31,6 +31,13 @@ looking at it.
   event that matches the slot's metric (for example `click`) inside the attribution window
   (default 30 minutes) counts as a conversion. An exposure whose window closes without one
   counts as a miss. A decision that was never shown teaches nothing.
+- **Attribution is pluggable.** `"attribution"` in the site file (or on one slot, which
+  overrides the site) picks who gets the credit: `last_touch` (the default) gives the whole
+  conversion to the decision the event names, or else the visitor's latest exposed one;
+  `linear` splits it evenly across every exposed, not-yet-credited decision of that visitor in
+  the slot's window. The bandit learns each share as a fractional reward (the same logistic
+  update with `y` in [0, 1], so 0 and 1 are exactly a miss and a conversion), and results add
+  up shares, so one conversion counts once whichever attributor ran.
 - **A holdout keeps it honest.** Each site sends a fixed share of visitors (default 10%,
   `holdout_fraction` in the site file, at most 50%) the baseline regardless. Lift is always the
   policy against that holdout, with a 95% confidence sequence that stays valid however often
