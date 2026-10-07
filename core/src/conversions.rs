@@ -109,9 +109,22 @@ pub struct Conversion<'a> {
     pub occurred_at: Option<DateTime<Utc>>,
 }
 
-/// Write one platform conversion and its outbox entry. Returns `false` for a duplicate.
-pub async fn record(pool: &PgPool, c: &Conversion<'_>) -> anyhow::Result<bool> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recorded {
+    New,
+    Duplicate,
+    /// The subject was erased: nothing is written.
+    Erased,
+}
+
+/// Write one platform conversion and its outbox entry, under the subject as the site's privacy
+/// mode stores it (see [`crate::privacy::platform_subject`]).
+pub async fn record(pool: &PgPool, c: &Conversion<'_>) -> anyhow::Result<Recorded> {
+    let subject = crate::privacy::platform_subject(pool, c.site, c.subject).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let mut tx = pool.begin().await?;
+    if crate::privacy::erased(&mut tx, c.site, c.subject).await? {
+        return Ok(Recorded::Erased);
+    }
     let r = sqlx::query(
         "WITH clock AS (SELECT COALESCE(sim_now, now()) AS at FROM sites WHERE id = $2),
               ins AS (
@@ -123,7 +136,7 @@ pub async fn record(pool: &PgPool, c: &Conversion<'_>) -> anyhow::Result<bool> {
     )
     .bind(event_id(c.site, c.source, c.external_id))
     .bind(c.site)
-    .bind(c.subject)
+    .bind(&subject)
     .bind(c.goal)
     .bind(c.decision_id)
     .bind(c.source.as_str())
@@ -133,7 +146,7 @@ pub async fn record(pool: &PgPool, c: &Conversion<'_>) -> anyhow::Result<bool> {
     .await?;
     sqlx::query("SELECT pg_notify($1, '')").bind(crate::http::events::CHANNEL).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(r.rows_affected() == 1)
+    Ok(if r.rows_affected() == 1 { Recorded::New } else { Recorded::Duplicate })
 }
 
 #[cfg(test)]

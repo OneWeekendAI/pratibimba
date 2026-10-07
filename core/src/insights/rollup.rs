@@ -182,7 +182,8 @@ type ExposureRow = (String, i64, i64, Value, DateTime<Utc>, Option<i16>, bool, O
 /// Rebuild one site-hour. Returns the number of exposures it counted.
 async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteCtx) -> Result<u64> {
     let rows: Vec<ExposureRow> = sqlx::query_as(
-        "SELECT d.subject, d.slot_id, d.variant_id, d.features, d.exposed_at, d.outcome, d.settled_at IS NOT NULL, tz.tz_offset_min
+        "SELECT d.subject, d.slot_id, d.variant_id, d.features, d.exposed_at, d.outcome, d.settled_at IS NOT NULL,
+                COALESCE(tz.tz_offset_min, d.tz_offset_min)
            FROM decisions d
            LEFT JOIN LATERAL (
                 SELECT e.tz_offset_min FROM events e
@@ -254,6 +255,10 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
         .await?;
     }
     for ((subject, week), segs) in weeks {
+        // An erased visitor's decisions still count, but they are nobody's activity.
+        if subject.starts_with(crate::privacy::ERASED) {
+            continue;
+        }
         let segs: Vec<i64> = segs.into_iter().collect();
         sqlx::query(
             "INSERT INTO insight_visitor_weeks AS w (site_id, subject, week, segments) VALUES ($1, $2, $3, $4)

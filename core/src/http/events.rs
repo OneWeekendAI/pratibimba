@@ -25,6 +25,9 @@ pub struct EventsRequest {
     /// local-time insights. Optional; see `insights::localtime`.
     #[serde(default)]
     pub tz_offset: Option<i16>,
+    /// Whether the visitor consented to being remembered; see [`crate::privacy`].
+    #[serde(default)]
+    pub consent: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -59,19 +62,29 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
     if req.tz_offset.is_some_and(|m| !crate::insights::localtime::valid_offset(m)) {
         return Err(ApiError::BadRequest("tz_offset is minutes east of UTC, -720 to 840".into()));
     }
+    let Some(policy) = crate::privacy::policy(&state.pool, &req.site).await? else {
+        return Err(ApiError::NotFound(format!("unknown site {:?}", req.site)));
+    };
+    // Privacy: from here on the subject is the one stored (a pseudonym unless the request is
+    // identified), and the batch holds only the fields this site collects.
+    let EventsRequest { site, subject: raw, events, tz_offset, consent } = req;
+    let identified = policy.identified(consent);
+    let req = EventsRequest {
+        subject: crate::privacy::stored_subject(&state.pool, &policy, &site, &raw, identified).await?,
+        site,
+        events: policy.events(events),
+        tz_offset: policy.tz(tz_offset),
+        consent,
+    };
     let slots: Vec<(String, i64)> = sqlx::query_as("SELECT key, id FROM slots WHERE site_id = $1").bind(&req.site).fetch_all(&state.pool).await?;
-    if slots.is_empty() {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sites WHERE id = $1)").bind(&req.site).fetch_one(&state.pool).await?;
-        if !exists {
-            return Err(ApiError::NotFound(format!("unknown site {:?}", req.site)));
-        }
-    }
     let slots: HashMap<String, i64> = slots.into_iter().collect();
     let client = crate::adapt::check(&state.pool, &req.site, &req.subject, &req.events).await?;
 
     let mut tx = state.pool.begin().await?;
+    crate::privacy::admit(&mut tx, &req.site, &raw).await?;
     crate::adapt::record(&mut tx, &req.site, &req.subject, &client).await?;
     let mut accepted = 0u64;
+    let mut names: Vec<String> = Vec::new();
     for e in &req.events {
         // An unknown slot key (a stale page, a renamed slot) is kept with no slot rather than
         // failing the whole batch.
@@ -94,8 +107,12 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         .bind(&e.picks)
         .execute(&mut *tx)
         .await?;
-        accepted += r.rows_affected();
+        if r.rows_affected() > 0 {
+            accepted += 1;
+            names.push(e.name.clone());
+        }
     }
+    crate::privacy::record_visit(&mut tx, &req.site, &req.subject, &names, policy.at).await?;
     sqlx::query("SELECT pg_notify($1, '')").bind(CHANNEL).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "accepted": accepted }))))

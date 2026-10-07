@@ -217,6 +217,8 @@ pub async fn visitors(pool: &PgPool, site: &str, cohort: &Cohort) -> Result<Day,
             returning: rng.random_bool(cohort.returning),
             mobile: rng.random_bool(cohort.mobile),
             from_ad: rng.random_bool(cohort.from_ad),
+            // Simulated visitors consent; a cookieless site still treats them as cookieless.
+            consent: Some(true),
             ..Default::default()
         };
         let mut events = vec![];
@@ -236,7 +238,7 @@ pub async fn visitors(pool: &PgPool, site: &str, cohort: &Cohort) -> Result<Day,
             }
         }
         if !events.is_empty() {
-            let _accepted = crate::http::events::handler(State(state.clone()), Json(EventsRequest { site: id.clone(), subject, events, tz_offset: None })).await?;
+            let _accepted = crate::http::events::handler(State(state.clone()), Json(EventsRequest { site: id.clone(), subject, events, tz_offset: None, consent: Some(true) })).await?;
         }
     }
     day.absorb(worker::run_sandbox(pool, &id, at).await?);

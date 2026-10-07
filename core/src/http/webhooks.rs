@@ -84,8 +84,7 @@ pub async fn stripe(State(state): State<Arc<AppState>>, Path(site): Path<String>
     // same second as its decision does not appear to precede it. `record` caps it at the clock.
     let occurred_at = event["created"].as_i64().and_then(|t| DateTime::<Utc>::from_timestamp(t, 999_999_999));
     let c = Conversion { site: &site, source: Source::Stripe, external_id: session_id, subject, goal, decision_id, occurred_at };
-    let new = conversions::record(&state.pool, &c).await?;
-    Ok(Json(json!({ "received": true, "duplicate": !new })))
+    recorded(conversions::record(&state.pool, &c).await?)
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,8 +111,15 @@ pub async fn conversion(State(state): State<Arc<AppState>>, Path(site): Path<Str
         return Err(ApiError::BadRequest(format!("event {goal:?} must match [a-z0-9_:]{{1,64}}")));
     }
     let c = Conversion { site: &site, source: Source::Conversion, external_id: id, subject, goal, decision_id: g.decision_id, occurred_at: g.occurred_at };
-    let new = conversions::record(&state.pool, &c).await?;
-    Ok(Json(json!({ "received": true, "duplicate": !new })))
+    recorded(conversions::record(&state.pool, &c).await?)
+}
+
+/// An erased subject's conversion gets 200 (so the platform stops retrying) and is not stored.
+fn recorded(r: conversions::Recorded) -> Result<Json<Value>, ApiError> {
+    Ok(match r {
+        conversions::Recorded::Erased => ignored("the subject was erased"),
+        r => Json(json!({ "received": true, "duplicate": r == conversions::Recorded::Duplicate })),
+    })
 }
 
 pub fn admin_routes() -> Router<Arc<AppState>> {

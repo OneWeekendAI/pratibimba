@@ -41,18 +41,21 @@ pub async fn table_exists(pool: &PgPool, name: &str) -> bool {
 }
 
 /// The standard fixture: site `demo`, slot `hero` (#hero, metric click) with an approved
-/// baseline and an approved `gift` variant.
+/// baseline and an approved `gift` variant. Fixtures run in `full` privacy mode (the client's
+/// subject is stored as sent, as in Phases 0-3) unless they name a mode.
 pub fn demo_file() -> pratibimba::site_file::SiteFile {
-    serde_json::from_value(serde_json::json!({
+    file_from(serde_json::json!({
         "site": "demo", "origin": "http://localhost:5173",
         "slots": [{ "key": "hero", "selector": "#hero", "metric": "click",
                     "variants": [ { "key": "baseline", "baseline": true },
                                   { "key": "gift", "html": "<h1>Gift sets</h1>" } ] }]
     }))
-    .unwrap()
 }
 
-pub fn file_from(v: serde_json::Value) -> pratibimba::site_file::SiteFile {
+pub fn file_from(mut v: serde_json::Value) -> pratibimba::site_file::SiteFile {
+    if let Some(o) = v.as_object_mut() {
+        o.entry("privacy_mode").or_insert_with(|| serde_json::json!("full"));
+    }
     serde_json::from_value(v).unwrap()
 }
 

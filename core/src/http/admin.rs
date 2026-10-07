@@ -48,6 +48,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/variants/{id}/audience", post(set_audience))
         .route("/models/{slot}/rollback", post(rollback))
         .route("/models/{slot}/versions", get(versions))
+        .merge(super::privacy::routes())
         .merge(super::sim::routes())
         .merge(super::webhooks::admin_routes())
         .merge(crate::insights::api::routes())

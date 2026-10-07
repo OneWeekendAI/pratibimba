@@ -15,6 +15,7 @@ pub mod decide;
 pub mod events;
 pub mod hooks;
 pub mod manifest;
+pub mod privacy;
 pub mod sim;
 pub mod webhooks;
 
@@ -135,6 +136,8 @@ pub enum ApiError {
     NotFound(String),
     BadRequest(String),
     Conflict(String),
+    /// The subject was erased: its tombstone refuses every later write.
+    Gone(String),
     Internal(anyhow::Error),
 }
 
@@ -156,6 +159,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
+            ApiError::Gone(m) => (StatusCode::GONE, m),
             ApiError::Internal(e) => {
                 tracing::error!(error = %e, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())

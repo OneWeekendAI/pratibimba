@@ -322,7 +322,7 @@ async fn tools_call(state: &AppState, caller: &Caller, id: &Value, params: &Valu
         }
         Err(e) => {
             let msg = match e {
-                ApiError::NotFound(m) | ApiError::BadRequest(m) | ApiError::Conflict(m) => m,
+                ApiError::NotFound(m) | ApiError::BadRequest(m) | ApiError::Conflict(m) | ApiError::Gone(m) => m,
                 ApiError::Internal(e) => {
                     tracing::error!(error = %e, tool = name, "mcp tool failed");
                     "internal error".into()

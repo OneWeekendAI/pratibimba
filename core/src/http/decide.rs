@@ -14,7 +14,7 @@
 
 use super::{ApiError, AppState, valid_subject};
 use crate::bandit::{self, LinTs, Vector};
-use crate::{hash, stated};
+use crate::{hash, privacy, stated};
 use axum::{Json, extract::State};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,10 @@ pub struct Ctx {
     /// holds; preferred over `tz_offset` when both are sent. An unknown name is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tz: Option<String>,
+    /// Whether the visitor consented to being remembered. Read only by a `consent_aware` site
+    /// (see [`crate::privacy`]); it is not a feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<bool>,
 }
 
 impl Ctx {
@@ -123,6 +127,7 @@ pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<B
         out.push(match decide(&state, &one).await {
             Ok(d) => serde_json::to_value(d).map_err(anyhow::Error::from)?,
             Err(ApiError::NotFound(m) | ApiError::Conflict(m) | ApiError::BadRequest(m)) => json!({ "slot": slot, "error": m }),
+            // An erased subject is refused as a whole, not slot by slot.
             Err(e) => return Err(e),
         });
     }
@@ -149,6 +154,21 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         ),
     };
     let pool = &state.pool;
+    // Privacy first: from here on the subject is the one stored (a pseudonym unless the request
+    // is identified) and the context holds only the fields this site collects.
+    let Some(policy) = privacy::policy(pool, &req.site).await? else {
+        return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", req.slot, req.site)));
+    };
+    let identified = policy.identified(req.ctx.consent);
+    let raw = req.subject.as_str();
+    let req = &DecideRequest {
+        site: req.site.clone(),
+        slot: req.slot.clone(),
+        subject: privacy::stored_subject(pool, &policy, &req.site, raw, identified).await?,
+        ctx: policy.ctx(&req.ctx, identified),
+    };
+    // A named zone is the visitor's clock too: collected only with `tz_offset`.
+    let zone = zone.filter(|_| req.ctx.tz.is_some());
     // `at` is the site's clock: the database's now, or a sandbox's simulated time.
     let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>, i16, i16)> = sqlx::query_as(
         "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL, COALESCE(t.sim_now, now()),
@@ -268,6 +288,9 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
                 "policy_version": version }),
         at,
     );
+    // The tombstone check and the insert share one transaction under the subject's lock.
+    let mut tx = pool.begin().await?;
+    privacy::admit(&mut tx, &req.site, raw).await?;
     sqlx::query(
         "WITH ins AS (
              INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences)
@@ -291,8 +314,9 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(hook_key)
     .bind(hook_body)
     .bind(&audiences)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences))
 }
 

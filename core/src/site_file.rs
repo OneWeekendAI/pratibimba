@@ -25,6 +25,14 @@ pub struct SiteFile {
     /// The site's facts.md, as text: what an agent may claim. Omitted: keep the current value.
     #[serde(default)]
     pub facts: Option<String>,
+    /// `cookieless`, `consent_aware` (the default for a new site) or `full`; see
+    /// [`crate::privacy`]. Omitted: keep the current value.
+    #[serde(default)]
+    pub privacy_mode: Option<String>,
+    /// The optional fields this site collects ([`crate::privacy::FIELDS`]). Omitted: keep the
+    /// current list (a new site collects every field).
+    #[serde(default)]
+    pub fields_allowed: Option<Vec<String>>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -92,6 +100,9 @@ impl SiteFile {
         if !is_slug(&self.site) {
             bail!("site {:?}: must be a lowercase slug", self.site);
         }
+        if let Err(e) = crate::privacy::validate(self.privacy_mode.as_deref(), self.fields_allowed.as_deref()) {
+            bail!("{e}");
+        }
         if let Some(h) = self.holdout_fraction {
             if !(0.0..=0.5).contains(&h) {
                 bail!("holdout_fraction must be between 0 and 0.5");
@@ -143,14 +154,18 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO sites (id, origin, holdout_fraction, facts) VALUES ($1, $2, COALESCE($3, 0.10), $4)
+        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed)
+         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6)
          ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction),
-                                        facts = COALESCE($4, sites.facts)",
+                                        facts = COALESCE($4, sites.facts), privacy_mode = COALESCE($5, sites.privacy_mode),
+                                        fields_allowed = COALESCE($6, sites.fields_allowed)",
     )
         .bind(&file.site)
         .bind(&file.origin)
         .bind(file.holdout_fraction)
         .bind(&file.facts)
+        .bind(&file.privacy_mode)
+        .bind(&file.fields_allowed)
         .execute(&mut *tx)
         .await?;
     for slot in &file.slots {

@@ -17,6 +17,9 @@ const CACHE: &str = "public, max-age=60, stale-while-revalidate=600";
 #[derive(Serialize)]
 pub struct Manifest {
     pub site: String,
+    /// The site's consent mode; the SDK uses it to choose between a cookie and session storage
+    /// (see [`crate::privacy`]).
+    pub privacy_mode: String,
     pub slots: Vec<ManifestSlot>,
 }
 
@@ -50,10 +53,10 @@ pub struct ManifestVariant {
 }
 
 pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sites WHERE id = $1)").bind(site).fetch_one(pool).await?;
-    if !exists {
+    let mode: Option<String> = sqlx::query_scalar("SELECT privacy_mode FROM sites WHERE id = $1").bind(site).fetch_optional(pool).await?;
+    let Some(privacy_mode) = mode else {
         return Err(ApiError::NotFound(format!("unknown site {site:?}")));
-    }
+    };
     let rows: Vec<(String, String, String, i32, String, bool)> = sqlx::query_as(
         "SELECT s.key, s.selector, s.metric, s.decision_ttl_secs, v.key, v.is_baseline
            FROM slots s JOIN variants v ON v.slot_id = s.id AND v.status = 'approved'
@@ -70,7 +73,7 @@ pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError>
         }
         slots.last_mut().unwrap().variants.push(ManifestVariant { key: vkey, baseline, payload: None, weights: None });
     }
-    let mut manifest = Manifest { site: site.to_string(), slots };
+    let mut manifest = Manifest { site: site.to_string(), privacy_mode, slots };
     crate::adapt::enrich(pool, &mut manifest).await?;
     Ok(manifest)
 }
