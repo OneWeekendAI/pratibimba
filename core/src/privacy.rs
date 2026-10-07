@@ -91,20 +91,24 @@ impl Policy {
         events
             .into_iter()
             .filter_map(|mut e| {
-                let mut cut = false;
+                let (mut slot, mut decision, mut picks, mut rescore) = (false, false, false, false);
                 if !self.allows("slot") {
-                    cut |= e.slot.take().is_some();
+                    slot = e.slot.take().is_some();
                 }
                 if !self.allows("decision_id") {
-                    cut |= e.decision_id.take().is_some();
+                    decision = e.decision_id.take().is_some();
                 }
                 if !self.allows("picks") {
-                    cut |= e.picks.take().is_some();
+                    picks = e.picks.take().is_some();
                 }
                 if !self.allows("rescore") {
-                    cut |= e.variant.take().is_some() | e.features.take().is_some() | e.score.take().is_some();
+                    rescore = e.variant.take().is_some() | e.features.take().is_some() | e.score.take().is_some();
                 }
-                let gutted = cut && matches!(e.name.as_str(), "pick" | "rescore");
+                let gutted = match e.name.as_str() {
+                    "pick" => slot || picks,
+                    "rescore" => slot || decision || rescore,
+                    _ => false,
+                };
                 (!gutted).then_some(e)
             })
             .collect()
@@ -464,6 +468,39 @@ mod tests {
     #[test]
     fn validate_refuses_an_unknown_mode() {
         assert!(validate(Some("anonymous"), None).is_err());
+    }
+
+    fn ev(name: &str, picks: bool, rescore: bool) -> EventIn {
+        EventIn {
+            id: uuid::Uuid::new_v4(),
+            name: name.into(),
+            slot: Some("s".into()),
+            decision_id: Some(uuid::Uuid::new_v4()),
+            picks: picks.then(|| vec!["kitchen".to_string()]),
+            variant: rescore.then(|| "gift".to_string()),
+            features: rescore.then(|| json!({})),
+            score: rescore.then_some(0.5),
+        }
+    }
+
+    #[test]
+    fn a_pick_whose_picks_are_not_collected_is_dropped() {
+        assert!(p("full", Some(&["slot"])).events(vec![ev("pick", true, false)]).is_empty());
+    }
+
+    #[test]
+    fn a_pick_is_kept_when_picks_are_collected() {
+        assert_eq!(p("full", Some(&["slot", "picks"])).events(vec![ev("pick", true, false)]).len(), 1);
+    }
+
+    #[test]
+    fn a_malformed_pick_is_left_for_the_ingest_checks() {
+        assert_eq!(p("full", None).events(vec![ev("pick", false, false)]).len(), 1);
+    }
+
+    #[test]
+    fn a_rescore_is_dropped_when_rescore_is_not_collected() {
+        assert!(p("full", Some(&["slot", "decision_id"])).events(vec![ev("rescore", false, true)]).is_empty());
     }
 
     #[test]

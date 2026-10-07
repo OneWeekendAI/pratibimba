@@ -225,7 +225,7 @@ async fn apply_refuses_an_unknown_privacy_mode(pool: PgPool) {
     let mut f = demo_file();
     f.privacy_mode = Some("anonymous".into());
     let e = pratibimba::site_file::apply(&pool, &f).await.expect_err("refused").to_string();
-    assert!(e.contains("privacy_mode"), "{e}");
+    assert!(e.contains("must be one of"), "{e}");
 }
 
 #[sqlx::test(migrations = false)]
