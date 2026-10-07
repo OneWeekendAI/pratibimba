@@ -102,6 +102,17 @@ Each slot has exactly one `baseline`: the content your page already renders, wit
 Re-applying the file updates the site in place. A variant you remove from the file is retired,
 not deleted.
 
+**Cold start.** Until a slot has had `cold_start_exposures` learned-from exposures (per slot,
+default 100, `0` turns it off), each visitor gets the eligible variant cold start has served
+least, so a new slot's variants get equal turns before the bandit takes over. The explanation
+says when cold start chose.
+
+**Declared features.** `"features": [{"key": "loyalty_member", "pii": false}, {"key":
+"corp_email", "pii": true}]` lists booleans your page may send in `ctx.features` (up to 16).
+`pii` is required: say whether the feature can identify or profile a person. They join the
+decision as `feature:<key>` dimensions and are learned. A PII feature is used only for an
+identified visitor (see [Privacy](#privacy)); an undeclared or demographic name is refused.
+
 ### Install on a page
 
 The dashboard's install wizard (`/app/install/?site=<id>`) walks through these and checks each
@@ -133,6 +144,10 @@ export default { fetch: (req) => prb.handleRequest(req) };   // Cloudflare; Deno
 
 See `examples/next` and `examples/edge`.
 
+Both send the visitor's consent as `ctx.consent`, read from the `_prb_consent` cookie, IAB TCF
+v2's `euconsent-v2` (purpose 1) or OneTrust's `OptanonConsent` (C0002). Pass `consent: true`,
+`false` or a function of the request's cookies to decide it yourself.
+
 #### The script fallback
 
 Proxy `/_prb/*` on your own origin to Core, so the browser only ever talks to your domain.
@@ -159,8 +174,13 @@ Clicks inside a slot are reported automatically. For other goals, call
 `window.prb.track('purchase')`. Where the subject id lives follows the site's privacy mode (see
 [Privacy](#privacy)): `sessionStorage`, or a one-year first-party `_prb_subject` cookie (which
 turns on the `returning` feature). On a `consent_aware` site the script uses the cookie only
-with consent: `data-cookie="on"` on the tag, a granted Google Consent Mode `analytics_storage`,
-or OneTrust's performance group.
+with consent: `data-cookie="on"` on the tag, IAB TCF v2 purpose 1 from `__tcfapi`, a granted
+Google Consent Mode `analytics_storage`, or OneTrust's performance group, in that order.
+
+To send [declared features](#the-site-file), set them before the script tag:
+`window.__prb_features = { loyalty_member: true }`. The script sends only names the manifest
+declares, only booleans, and a PII one only when the visitor is identified, so it never leaves
+the browser otherwise.
 
 To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, then serve
 `examples/plain/` on port 5173.
@@ -414,6 +434,10 @@ Each site has a **privacy mode**, set with `"privacy_mode"` in the site file or
 
 Sites that existed before this release were moved to `full`, which is what they did before.
 
+**PII features.** A [declared feature](#the-site-file) tagged `pii: true` is dropped before
+scoring and storage in `cookieless` mode and in `consent_aware` mode without consent; the
+script does not send it in those cases at all.
+
 **Minimum collection.** `"fields_allowed"` lists the optional fields a site collects: any of
 `returning`, `mobile`, `from_ad`, `stated`, `tz_offset` (also covers `ctx.tz`), `slot`,
 `decision_id`, `picks`, `rescore`. Anything else is dropped at `/decide` and `/e` before it is
@@ -460,7 +484,7 @@ transaction. The Docker image includes `pg_dump` and `psql` (Debian's 17, so the
 
 | Method and path | What it does |
 |---|---|
-| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?, tz_offset?, tz?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. `explanation.audiences` lists the audiences evaluated. |
+| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?, tz_offset?, tz?, consent?, features?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. `explanation.audiences` lists the audiences evaluated. |
 | `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}], tz_offset?}`. Accepts up to 100 events per call. A `pick` adds `picks: [option keys]`. A `rescore` adds `variant`, `features` and `score`. `id` is your idempotency key. `tz_offset` is the visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`, -720 to 840); the script sends it. |
 | `GET /manifest/:site` | Slots and approved variant keys. Append `.js` for the script form. Edge-cacheable. |
 | `GET /sdk.js` | The client script. |
@@ -523,9 +547,11 @@ hours joined this way after the first three).
 
 **Server-side SDKs send a time zone name.** A server render has no browser clock, so
 `@pratibimba/next` and `@pratibimba/edge` send `ctx.tz`, an IANA zone such as `Asia/Kolkata`.
-They read it from the platform's IP geolocation (`x-vercel-ip-timezone`, Cloudflare's
-`request.cf.timezone` or `cf-timezone`, `cloudfront-viewer-time-zone`) and fall back to
-`_prb_tz`, a first-party session cookie their browser beacon sets. Off those platforms a geo
+They prefer the zone the browser names, in `_prb_tz`, a first-party cookie their beacon sets
+(a session cookie, or a year with consent), because IP geolocation is wrong behind many
+carriers and every VPN. Without it they fall back to the platform's geolocation
+(`x-vercel-ip-timezone`, Cloudflare's `request.cf.timezone` or `cf-timezone`,
+`cloudfront-viewer-time-zone`). Off those platforms a geo
 header is just something the visitor sent; pass `timeZoneHeaders: []` to ignore it. Core
 resolves the zone at the site's own clock (so daylight saving and a sandbox's time both hold)
 and prefers it over `tz_offset`; an unknown zone is refused with 400.
