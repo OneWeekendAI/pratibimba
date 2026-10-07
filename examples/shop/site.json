@@ -1,0 +1,15 @@
+{
+  "site": "shop",
+  "origin": "http://localhost:3200",
+  "slots": [
+    {
+      "key": "promo",
+      "selector": "[data-prb-slot=promo]",
+      "metric": "add_to_cart",
+      "variants": [
+        { "key": "plain", "baseline": true },
+        { "key": "bundle", "html": "<p class=\"promo\">Add any two bags and the grinder ships free.</p>" }
+      ]
+    }
+  ]
+}

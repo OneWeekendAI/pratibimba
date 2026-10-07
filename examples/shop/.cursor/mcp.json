@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pratibimba": {
+      "url": "https://pratibimbaapi.meetdev.in/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:PRATIBIMBA_MCP_TOKEN}"
+      }
+    }
+  }
+}

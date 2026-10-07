@@ -151,7 +151,11 @@ const prb = createEdge({ core: 'https://core.internal', site: 'demo' });
 export default { fetch: (req) => prb.handleRequest(req) };   // Cloudflare; Deno and Vercel Edge take the same handler
 ```
 
-See `examples/next` and `examples/edge`.
+See `examples/next` and `examples/edge`. `examples/shop` is a small Next.js store wired to a hosted
+Core (`PRB_CORE_URL`, default `https://pratibimbaapi.meetdev.in`) with an add-to-cart and a purchase
+goal reported from server actions (`prb.track`), and the agent pack installed. The packages are not on
+npm yet: the examples depend on them with `file:` and need `install-links=true` in `.npmrc`, because
+Turbopack does not resolve a symlinked package outside the app.
 
 Both send the visitor's consent as `ctx.consent`, read from the `_prb_consent` cookie, IAB TCF
 v2's `euconsent-v2` (purpose 1) or OneTrust's `OptanonConsent` (C0002). Pass `consent: true`,
