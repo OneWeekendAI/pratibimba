@@ -201,7 +201,8 @@ async fn a_new_site_defaults_to_consent_aware(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_site_from_before_the_migration_keeps_full(pool: PgPool) {
     let all = pratibimba::db::MIGRATIONS;
-    pratibimba::db::migrate_with(&pool, &all[..all.len() - 1]).await.unwrap();
+    let privacy = all.iter().position(|m| m.0 == "0060_privacy").expect("the privacy migration");
+    pratibimba::db::migrate_with(&pool, &all[..privacy]).await.unwrap();
     sqlx::query("INSERT INTO sites (id, origin) VALUES ('old', 'http://x')").execute(&pool).await.unwrap();
     pratibimba::db::migrate(&pool).await.unwrap();
     let m: String = sqlx::query_scalar("SELECT privacy_mode FROM sites WHERE id = 'old'").fetch_one(&pool).await.unwrap();
