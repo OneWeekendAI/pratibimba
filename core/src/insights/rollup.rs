@@ -177,13 +177,13 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<RollupStats> {
     Ok(stats)
 }
 
-type ExposureRow = (String, i64, i64, Value, DateTime<Utc>, Option<i16>, bool, Option<i16>);
+type ExposureRow = (String, i64, i64, Value, DateTime<Utc>, Option<i16>, bool, Option<i16>, f64);
 
 /// Rebuild one site-hour. Returns the number of exposures it counted.
 async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteCtx) -> Result<u64> {
     let rows: Vec<ExposureRow> = sqlx::query_as(
         "SELECT d.subject, d.slot_id, d.variant_id, d.features, d.exposed_at, d.outcome, d.settled_at IS NOT NULL,
-                COALESCE(tz.tz_offset_min, d.tz_offset_min)
+                COALESCE(tz.tz_offset_min, d.tz_offset_min), coalesce(d.credit, 1)::float8
            FROM decisions d
            LEFT JOIN LATERAL (
                 SELECT e.tz_offset_min FROM events e
@@ -197,9 +197,9 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
     .await?;
 
     type Key = (i16, i16, i64, i64, i64, i16, &'static str);
-    let mut cells: BTreeMap<Key, (i64, i64)> = BTreeMap::new();
+    let mut cells: BTreeMap<Key, (i64, i64, f64)> = BTreeMap::new();
     let mut weeks: BTreeMap<(String, NaiveDate), BTreeSet<i64>> = BTreeMap::new();
-    for (subject, slot, variant, features, exposed_at, outcome, settled, tz) in &rows {
+    for (subject, slot, variant, features, exposed_at, outcome, settled, tz, credit) in &rows {
         let local = LocalTime::at(*exposed_at, *tz, sc.night);
         let ctx = ctx_bits(features);
         let visit = Visit { ctx, local };
@@ -215,6 +215,9 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
             let c = cells.entry((local.hour_local as i16, local.dow_local as i16, seg, *slot, *variant, ctx as i16, outcome)).or_default();
             c.0 += 1;
             c.1 += known;
+            if outcome == "converted" {
+                c.2 += credit;
+            }
             if seg != 0 {
                 w.insert(seg);
             }
@@ -224,8 +227,8 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM rollup_hourly WHERE site_id = $1 AND hour_utc = $2").bind(site).bind(hour).execute(&mut *tx).await?;
     if !cells.is_empty() {
-        let mut cols: (Vec<i16>, Vec<i16>, Vec<i64>, Vec<i64>, Vec<i64>, Vec<i16>, Vec<String>, Vec<i64>, Vec<i64>) = Default::default();
-        for ((hl, dow, seg, slot, var, ctx, out), (n, known)) in &cells {
+        let mut cols: (Vec<i16>, Vec<i16>, Vec<i64>, Vec<i64>, Vec<i64>, Vec<i16>, Vec<String>, Vec<i64>, Vec<i64>, Vec<f64>) = Default::default();
+        for ((hl, dow, seg, slot, var, ctx, out), (n, known, credit)) in &cells {
             cols.0.push(*hl);
             cols.1.push(*dow);
             cols.2.push(*seg);
@@ -235,10 +238,11 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
             cols.6.push(out.to_string());
             cols.7.push(*n);
             cols.8.push(*known);
+            cols.9.push(*credit);
         }
         sqlx::query(
-            "INSERT INTO rollup_hourly (site_id, hour_utc, hour_local, dow_local, segment_id, slot_id, variant_id, ctx, outcome, n, tz_known)
-             SELECT $1, $2, * FROM UNNEST($3::int2[], $4::int2[], $5::int8[], $6::int8[], $7::int8[], $8::int2[], $9::text[], $10::int8[], $11::int8[])",
+            "INSERT INTO rollup_hourly (site_id, hour_utc, hour_local, dow_local, segment_id, slot_id, variant_id, ctx, outcome, n, tz_known, credit)
+             SELECT $1, $2, * FROM UNNEST($3::int2[], $4::int2[], $5::int8[], $6::int8[], $7::int8[], $8::int2[], $9::text[], $10::int8[], $11::int8[], $12::float8[])",
         )
         .bind(site)
         .bind(hour)
@@ -251,6 +255,7 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
         .bind(&cols.6)
         .bind(&cols.7)
         .bind(&cols.8)
+        .bind(&cols.9)
         .execute(&mut *tx)
         .await?;
     }
@@ -310,8 +315,8 @@ async fn rebuild_day(pool: &PgPool, site: &str, day: NaiveDate) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM rollup_daily WHERE site_id = $1 AND day = $2").bind(site).bind(day).execute(&mut *tx).await?;
     sqlx::query(
-        "INSERT INTO rollup_daily (site_id, day, segment_id, slot_id, variant_id, ctx, outcome, n)
-         SELECT site_id, $2, segment_id, slot_id, variant_id, ctx, outcome, sum(n)::int8 FROM rollup_hourly
+        "INSERT INTO rollup_daily (site_id, day, segment_id, slot_id, variant_id, ctx, outcome, n, credit)
+         SELECT site_id, $2, segment_id, slot_id, variant_id, ctx, outcome, sum(n)::int8, sum(credit) FROM rollup_hourly
           WHERE site_id = $1 AND hour_utc >= $3 AND hour_utc < $4
           GROUP BY site_id, segment_id, slot_id, variant_id, ctx, outcome",
     )

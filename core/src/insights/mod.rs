@@ -86,3 +86,9 @@ pub async fn maybe_run(pool: &PgPool, now: DateTime<Utc>) -> Result<()> {
     sqlx::query("SELECT pg_advisory_unlock($1)").bind(LOCK).execute(&mut *conn).await?;
     result
 }
+
+/// A conversion count as JSON. Rollups sum `credit` (a linear slot's shares), so the count is a
+/// float; a whole one is written as an integer so last-touch output keeps its old shape.
+pub fn count_json(c: f64) -> serde_json::Value {
+    if c.fract() == 0.0 && c.abs() < 9.0e15 { serde_json::json!(c as i64) } else { serde_json::json!(c) }
+}

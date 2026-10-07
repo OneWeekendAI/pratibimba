@@ -45,6 +45,8 @@ pub struct Facts {
     pub outcome: Outcome,
     /// `(exposures, until)` when cold start chose the arm.
     pub cold_start: Option<(i64, i64)>,
+    /// The share of a conversion a multi-touch attributor gave this decision, when less than whole.
+    pub share: Option<f64>,
 }
 
 fn short(subject: &str) -> String {
@@ -105,10 +107,17 @@ pub fn sentence(f: &Facts) -> String {
         out += " They were not in the holdout.";
     }
     out += &match &f.outcome {
-        Outcome::Converted { after } => {
-            let lesson = if f.in_holdout { "it was recorded for the holdout and not learned from" } else { "the model learned from it" };
-            format!(" They converted (`{}`) {} later, and {lesson}.", f.metric, ago(*after))
-        }
+        Outcome::Converted { after } => match f.share {
+            Some(share) => {
+                let lesson = if f.in_holdout { "it was recorded for the holdout and not learned from" } else { "the model learned from that share" };
+                let share = (share * 100.0).round() / 100.0;
+                format!(" They converted (`{}`) {} later; linear attribution gave this decision {share} of that conversion, and {lesson}.", f.metric, ago(*after))
+            }
+            None => {
+                let lesson = if f.in_holdout { "it was recorded for the holdout and not learned from" } else { "the model learned from it" };
+                format!(" They converted (`{}`) {} later, and {lesson}.", f.metric, ago(*after))
+            }
+        },
         Outcome::Missed => {
             let lesson = if f.in_holdout { "recorded for the holdout" } else { "which taught the model a miss" };
             format!(" They did not `{}` within the {}-minute window, {lesson}.", f.metric, f.window_mins)
@@ -165,6 +174,10 @@ pub struct Detail {
     pub settled_at: Option<DateTime<Utc>>,
     /// Set when a late platform conversion turned a settled miss into a conversion.
     pub corrected_at: Option<DateTime<Utc>>,
+    /// The share of the conversion this decision took under a multi-touch attributor; absent
+    /// when it took the whole conversion (always so under last touch) or none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<f64>,
     pub window_closes_at: DateTime<Utc>,
     pub in_holdout: bool,
     pub policy: String,
@@ -218,13 +231,14 @@ struct Row {
     audiences: Option<Value>,
     corrected_at: Option<DateTime<Utc>>,
     cold_start: Option<Value>,
+    credit: Option<f64>,
 }
 
 pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Option<Detail>> {
     let row: Option<Row> = sqlx::query_as(
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
-                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start
+                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start, d.credit
            FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1",
     )
     .bind(id)
@@ -254,6 +268,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         audiences,
         corrected_at,
         cold_start,
+        credit,
     }) = row
     else {
         return Ok(None);
@@ -363,6 +378,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         (None, None) if settled.is_some() || now > window_closes_at => Outcome::NeverShown,
         (None, None) => Outcome::NotShownYet,
     };
+    let share = credit.filter(|c| outcome == Some(1) && *c < 1.0);
     let fval = |n: &str| features.get(n).and_then(Value::as_f64).unwrap_or(0.0) > 0.5;
     let facts = Facts {
         variant: shown.1.clone(),
@@ -380,6 +396,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         window_mins: i64::from(window) / 60,
         outcome: outcome_kind,
         cold_start: cold_start.as_ref().and_then(|c| Some((c["exposures"].as_i64()?, c["until"].as_i64()?))),
+        share,
     };
     Ok(Some(Detail {
         id,
@@ -396,6 +413,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         outcome_at,
         settled_at: settled,
         corrected_at,
+        credit: share,
         window_closes_at,
         in_holdout: held,
         policy,
@@ -435,6 +453,7 @@ mod tests {
             window_mins: 30,
             outcome,
             cold_start: None,
+            share: None,
         }
     }
 

@@ -93,10 +93,10 @@ async fn heatmap(State(state): St, Path(site): Path<String>, Query(q): Query<Hea
         (true, true) => "dow_local",
         (true, false) => "extract(dow from hour_utc AT TIME ZONE 'UTC')::int2",
     };
-    let rows: Vec<(i16, Option<i16>, i64, i64, i64, i64, i64)> = sqlx::query_as(&format!(
+    let rows: Vec<(i16, Option<i16>, i64, i64, f64, i64, i64)> = sqlx::query_as(&format!(
         "SELECT {hour} AS h, {dow} AS d, variant_id,
                 coalesce(sum(n) FILTER (WHERE outcome <> 'pending'), 0)::int8,
-                coalesce(sum(n) FILTER (WHERE outcome = 'converted'), 0)::int8,
+                coalesce(sum(credit) FILTER (WHERE outcome = 'converted'), 0)::float8,
                 coalesce(sum(n) FILTER (WHERE outcome = 'pending'), 0)::int8,
                 sum(tz_known)::int8
            FROM rollup_hourly
@@ -117,8 +117,8 @@ async fn heatmap(State(state): St, Path(site): Path<String>, Query(q): Query<Hea
             total += n + p;
             known += k;
             let (slot, variant) = names.get(v).cloned().unwrap_or_default();
-            let mut cell = json!({ "hour": h, "slot": slot, "variant": variant, "variant_id": v, "exposures": n, "conversions": c,
-                                   "rate": if *n > 0 { *c as f64 / *n as f64 } else { 0.0 }, "pending": p });
+            let mut cell = json!({ "hour": h, "slot": slot, "variant": variant, "variant_id": v, "exposures": n, "conversions": super::count_json(*c),
+                                   "rate": if *n > 0 { *c / *n as f64 } else { 0.0 }, "pending": p });
             if let Some(d) = d {
                 cell["dow"] = json!(d);
             }
@@ -249,8 +249,8 @@ async fn list_segments(State(state): St, Path(site): Path<String>) -> Result<Jso
         .bind(&site)
         .fetch_all(&state.pool)
         .await?;
-    let totals: HashMap<i64, (i64, i64)> = sqlx::query_as::<_, (i64, i64, i64)>(
-        "SELECT segment_id, coalesce(sum(n) FILTER (WHERE outcome <> 'pending'), 0)::int8, coalesce(sum(n) FILTER (WHERE outcome = 'converted'), 0)::int8
+    let totals: HashMap<i64, (i64, f64)> = sqlx::query_as::<_, (i64, i64, f64)>(
+        "SELECT segment_id, coalesce(sum(n) FILTER (WHERE outcome <> 'pending'), 0)::int8, coalesce(sum(credit) FILTER (WHERE outcome = 'converted'), 0)::float8
            FROM rollup_daily WHERE site_id = $1 AND day >= $2 GROUP BY 1",
     )
     .bind(&site)
@@ -266,7 +266,7 @@ async fn list_segments(State(state): St, Path(site): Path<String>) -> Result<Jso
             let id = r.0;
             let mut v = segment_json(r);
             if let Some((n, c)) = totals.get(&id) {
-                v["last_28_days"] = json!({ "exposures": n, "conversions": c, "rate": if *n > 0 { *c as f64 / *n as f64 } else { 0.0 } });
+                v["last_28_days"] = json!({ "exposures": n, "conversions": super::count_json(*c), "rate": if *n > 0 { *c / *n as f64 } else { 0.0 } });
             }
             v
         })

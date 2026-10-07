@@ -43,23 +43,22 @@ pub struct Finding {
 #[derive(Default, Clone, Copy)]
 struct Tally {
     n: i64,
-    c: i64,
+    /// Credit, not converted exposures: a linear slot's shares sum to one per conversion.
+    c: f64,
 }
 
 impl Tally {
-    fn add(&mut self, n: i64, converted: bool) {
+    fn add(&mut self, n: i64, credit: f64) {
         self.n += n;
-        if converted {
-            self.c += n;
-        }
+        self.c += credit;
     }
     /// Smoothed rate and its variance, so an empty or all-or-nothing cell cannot divide by zero.
     fn rate(&self) -> (f64, f64) {
-        let p = (self.c as f64 + 0.5) / (self.n as f64 + 1.0);
+        let p = (self.c + 0.5) / (self.n as f64 + 1.0);
         (p, p * (1.0 - p) / (self.n as f64 + 1.0))
     }
     fn json(&self) -> Value {
-        json!({ "exposures": self.n, "conversions": self.c, "rate": if self.n > 0 { self.c as f64 / self.n as f64 } else { 0.0 } })
+        json!({ "exposures": self.n, "conversions": super::count_json(self.c), "rate": if self.n > 0 { self.c / self.n as f64 } else { 0.0 } })
     }
 }
 
@@ -76,18 +75,18 @@ fn candidates() -> Vec<Predicate> {
     out
 }
 
-/// One aggregated cell of the window: (slot, variant, hour_local, dow_local, ctx, converted) -> n.
+/// One aggregated cell of the window: (slot, variant, hour_local, dow_local, ctx, converted) -> (n, credit).
 type Cell = (i64, i64, i16, i16, i16, bool);
 
 /// Score every candidate for one site from its rollups. Pure given the cells, so the statistics
 /// are testable without a database.
-pub fn score(cells: &[(Cell, i64)], baselines: &HashMap<i64, i64>, night: NightWindow) -> Vec<Finding> {
-    let mut slots: Vec<i64> = cells.iter().map(|((s, ..), _)| *s).collect();
+pub fn score(cells: &[(Cell, i64, f64)], baselines: &HashMap<i64, i64>, night: NightWindow) -> Vec<Finding> {
+    let mut slots: Vec<i64> = cells.iter().map(|((s, ..), _, _)| *s).collect();
     slots.sort();
     slots.dedup();
     let visits: Vec<Visit> = cells
         .iter()
-        .map(|((_, _, h, d, ctx, _), _)| Visit { ctx: *ctx as u8, local: LocalTime::from_parts(*h as u8, *d as u8, night) })
+        .map(|((_, _, h, d, ctx, _), _, _)| Visit { ctx: *ctx as u8, local: LocalTime::from_parts(*h as u8, *d as u8, night) })
         .collect();
 
     let mut found: Vec<Finding> = Vec::new();
@@ -96,12 +95,12 @@ pub fn score(cells: &[(Cell, i64)], baselines: &HashMap<i64, i64>, night: NightW
         for &slot in &slots {
             let mut inside: HashMap<i64, Tally> = HashMap::new();
             let mut outside: HashMap<i64, Tally> = HashMap::new();
-            for (((s, v, .., conv), n), visit) in cells.iter().zip(&visits) {
+            for (((s, v, ..), n, credit), visit) in cells.iter().zip(&visits) {
                 if *s != slot {
                     continue;
                 }
                 let side = if p.matches(visit) { &mut inside } else { &mut outside };
-                side.entry(*v).or_default().add(*n, *conv);
+                side.entry(*v).or_default().add(*n, *credit);
             }
             let pool = |m: &HashMap<i64, Tally>| m.values().fold(Tally::default(), |a, t| Tally { n: a.n + t.n, c: a.c + t.c });
             let (pin, pout) = (pool(&inside), pool(&outside));
@@ -175,8 +174,8 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<u64> {
     let sites: Vec<(String, i16, i16)> = sqlx::query_as("SELECT id, night_start_hour, night_end_hour FROM sites WHERE sandbox_of IS NULL").fetch_all(pool).await?;
     let mut written = 0;
     for (site, ns, ne) in sites {
-        let cells: Vec<(i64, i64, i16, i16, i16, bool, i64)> = sqlx::query_as(
-            "SELECT slot_id, variant_id, hour_local, dow_local, ctx, outcome = 'converted', sum(n)::int8 FROM rollup_hourly
+        let cells: Vec<(i64, i64, i16, i16, i16, bool, i64, f64)> = sqlx::query_as(
+            "SELECT slot_id, variant_id, hour_local, dow_local, ctx, outcome = 'converted', sum(n)::int8, sum(credit) FROM rollup_hourly
               WHERE site_id = $1 AND segment_id = 0 AND outcome <> 'pending' AND hour_utc >= $2
               GROUP BY 1, 2, 3, 4, 5, 6",
         )
@@ -184,7 +183,7 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<u64> {
         .bind(now - Duration::days(WINDOW_DAYS))
         .fetch_all(pool)
         .await?;
-        let cells: Vec<(Cell, i64)> = cells.into_iter().map(|(a, b, c, d, e, f, n)| ((a, b, c, d, e, f), n)).collect();
+        let cells: Vec<(Cell, i64, f64)> = cells.into_iter().map(|(a, b, c, d, e, f, n, cr)| ((a, b, c, d, e, f), n, cr)).collect();
         let baselines: HashMap<i64, i64> = sqlx::query_as("SELECT s.id, v.id FROM slots s JOIN variants v ON v.slot_id = s.id AND v.is_baseline WHERE s.site_id = $1")
             .bind(&site)
             .fetch_all(pool)

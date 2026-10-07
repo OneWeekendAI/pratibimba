@@ -405,3 +405,148 @@ async fn linear_late_platform_conversion_corrects_each_miss_by_its_share(pool: P
     assert_eq!(record(&pool, t[0]).await, (Some(1), Some(0.5)));
     assert_eq!(record(&pool, t[1]).await, (Some(1), Some(0.5)));
 }
+
+// ---- B1b: insights and explain sum credit too ----
+//
+// Each pair: a linear slot whose numbers must be the shares, and the same shape under last touch
+// whose output must not change (whole counts stay JSON integers, explain adds nothing).
+
+use pratibimba::insights::{self, rollup};
+
+async fn roll(pool: &PgPool) {
+    rollup::run(pool, Utc::now() + Duration::hours(1)).await.unwrap();
+}
+
+/// The heatmap's conversions over every cell, and whether each one is a JSON integer.
+async fn heatmap_conversions(pool: &PgPool) -> (f64, bool) {
+    let h = api_get(&admin_app(pool), "/api/sites/demo/insights/heatmap?axis=utc").await.json();
+    let cells = h["cells"].as_array().unwrap().clone();
+    (cells.iter().map(|c| c["conversions"].as_f64().unwrap()).sum(), cells.iter().all(|c| c["conversions"].is_i64()))
+}
+
+#[sqlx::test(migrations = false)]
+async fn heatmap_sums_linear_credit_like_results(pool: PgPool) {
+    let app = setup_linear(&pool).await;
+    touches(&app, &pool, "v", 4).await;
+    event(&app, "v", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    roll(&pool).await;
+    let (c, _) = heatmap_conversions(&pool).await;
+    let r = results::site(&pool, "demo", results::ALL_TIME, Utc::now() + Duration::hours(1)).await.unwrap().unwrap();
+    assert!(close(c, 1.0), "{c}");
+    assert!(close(c, r.treated.credit), "{c} vs {:?}", r.treated);
+}
+
+#[sqlx::test(migrations = false)]
+async fn heatmap_under_last_touch_counts_whole_conversions(pool: PgPool) {
+    let app = setup_with(&pool, &file(None, None)).await;
+    touches(&app, &pool, "v", 4).await;
+    event(&app, "v", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    roll(&pool).await;
+    assert_eq!(heatmap_conversions(&pool).await, (1.0, true));
+}
+
+/// An active segment everyone in these fixtures matches, made before the rollup runs.
+async fn everyone_segment(pool: &PgPool) {
+    let r = api_post(&admin_app(pool), "/api/sites/demo/segments", json!({ "predicate": { "from_ad": false }, "actor": "t", "name": "All" })).await;
+    assert_eq!(r.status, axum::http::StatusCode::CREATED, "{}", r.text);
+}
+
+async fn segment_28_days(pool: &PgPool) -> Value {
+    let segs = api_get(&admin_app(pool), "/api/sites/demo/segments").await.json();
+    segs["segments"].as_array().unwrap().iter().find(|s| s["name"] == "All").unwrap()["last_28_days"].clone()
+}
+
+#[sqlx::test(migrations = false)]
+async fn segment_totals_sum_linear_credit(pool: PgPool) {
+    let app = setup_linear(&pool).await;
+    everyone_segment(&pool).await;
+    touches(&app, &pool, "v", 4).await;
+    event(&app, "v", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    roll(&pool).await;
+    let t = segment_28_days(&pool).await;
+    assert!(close(t["conversions"].as_f64().unwrap(), 1.0), "{t}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn segment_totals_under_last_touch_count_whole_conversions(pool: PgPool) {
+    let app = setup_with(&pool, &file(None, None)).await;
+    everyone_segment(&pool).await;
+    touches(&app, &pool, "v", 4).await;
+    event(&app, "v", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    roll(&pool).await;
+    let t = segment_28_days(&pool).await;
+    assert_eq!(t["conversions"].as_i64(), Some(1), "{t}");
+}
+
+/// 400 settled mobile exposures, 200 converted with `credit` each; 400 desktop with 4 whole conversions.
+async fn seed_mobile_pattern(pool: &PgPool, credit: Option<f64>) {
+    for (mobile, n, conv, cr) in [(1, 400, 200, credit), (0, 400, 4, None)] {
+        sqlx::query(
+            "INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed,
+                                    created_at, exposed_at, outcome, outcome_at, settled_at, credit)
+             SELECT gen_random_uuid(), 'demo', v.slot_id, v.id, 's' || $1 || '-' || i, '{}',
+                    jsonb_build_object('bias', 1, 'returning', 0, 'mobile', $1::int, 'from_ad', 0), '{}', 'lints', 0, 0,
+                    now() - interval '3 hours', now() - interval '3 hours', CASE WHEN i <= $3 THEN 1 ELSE 0 END,
+                    now() - interval '2 hours', now() - interval '2 hours', CASE WHEN i <= $3 THEN $4::float8 END
+               FROM variants v, generate_series(1, $2::int) i WHERE v.key = 'baseline'",
+        )
+        .bind(mobile)
+        .bind(n)
+        .bind(conv)
+        .bind(cr)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    insights::nightly(pool, Utc::now() + Duration::hours(1)).await.unwrap();
+}
+
+async fn mobile_evidence(pool: &PgPool) -> Value {
+    let rows: Vec<(Value, Value)> = sqlx::query_as("SELECT predicate, evidence FROM segments WHERE origin = 'discovered'").fetch_all(pool).await.unwrap();
+    rows.into_iter().find(|(p, _)| *p == json!({ "mobile": true })).map(|(_, e)| e).expect("the mobile draft")["converts_more"]["inside"].clone()
+}
+
+#[sqlx::test(migrations = false)]
+async fn discovery_evidence_sums_linear_credit(pool: PgPool) {
+    let _ = setup_linear(&pool).await;
+    seed_mobile_pattern(&pool, Some(0.25)).await;
+    let inside = mobile_evidence(&pool).await;
+    assert!(close(inside["conversions"].as_f64().unwrap(), 50.0), "{inside}");
+    assert!(close(inside["rate"].as_f64().unwrap(), 0.125), "{inside}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn discovery_evidence_under_last_touch_counts_whole_conversions(pool: PgPool) {
+    let _ = setup_with(&pool, &file(None, None)).await;
+    seed_mobile_pattern(&pool, Some(1.0)).await;
+    let inside = mobile_evidence(&pool).await;
+    assert_eq!(inside["conversions"].as_i64(), Some(200), "{inside}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn explain_states_a_linear_share(pool: PgPool) {
+    let app = setup_linear(&pool).await;
+    let t = touches(&app, &pool, "v", 2).await;
+    event(&app, "v", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    let d = serde_json::to_value(pratibimba::explain::detail(&pool, t[0], Utc::now()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(d["credit"].as_f64(), Some(0.5), "{d}");
+    let s = d["sentence"].as_str().unwrap();
+    assert!(s.contains("linear attribution gave this decision 0.5 of that conversion, and the model learned from that share."), "{s}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn explain_under_last_touch_is_unchanged(pool: PgPool) {
+    let app = setup_with(&pool, &file(None, None)).await;
+    let t = touches(&app, &pool, "v", 1).await;
+    event(&app, "v", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    let d = serde_json::to_value(pratibimba::explain::detail(&pool, t[0], Utc::now()).await.unwrap().unwrap()).unwrap();
+    assert!(d.get("credit").is_none(), "{d}");
+    let s = d["sentence"].as_str().unwrap();
+    assert!(s.contains("later, and the model learned from it."), "{s}");
+}
