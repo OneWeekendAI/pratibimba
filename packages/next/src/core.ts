@@ -38,27 +38,54 @@ export type Fetch = typeof fetch;
 /** How long a server render waits for Core before it renders the baseline. */
 export const DEFAULT_TIMEOUT_MS = 300;
 
+/**
+ * How long a request that missed its render may keep running. A late answer is read to the end
+ * so its keep-alive connection goes back to the pool; only a Core that never answers is cut off.
+ */
+export const HARD_TIMEOUT_MS = 10_000;
+
 export function isDecision(d: Decision | SlotError): d is Decision {
   return typeof (d as Decision).decision_id === 'string';
 }
 
+/**
+ * Waits up to `ms` for `work`, then rejects; `work` itself keeps running.
+ *
+ * Why not abort at the deadline: aborting an in-flight fetch destroys its keep-alive socket, so
+ * the next render pays a fresh TCP+TLS handshake, misses its deadline too, and the pool never
+ * warms. Measured against the live endpoint from India: 15 renders at 300 ms opened 22
+ * connections and served 0 decisions. The work is bounded by its own (hard) signal instead.
+ */
+export function deadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  work.catch(() => {}); // a late failure is nobody's: the render already moved on
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
 export async function decideBatch(
-  opts: { core: string; site: string; fetch?: Fetch; timeoutMs?: number },
+  opts: { core: string; site: string; fetch?: Fetch; timeoutMs?: number; hardTimeoutMs?: number },
   subject: string,
   ctx: Ctx,
   slots: string[],
 ): Promise<(Decision | SlotError)[]> {
   const f = opts.fetch ?? fetch;
-  const res = await f(`${opts.core.replace(/\/$/, '')}/decide/batch`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ site: opts.site, subject, slots, ctx }),
-    signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-    cache: 'no-store',
-  });
-  if (!res.ok) throw new Error(`Pratibimba decide failed: ${res.status}`);
-  const body = (await res.json()) as { decisions: (Decision | SlotError)[] };
-  return body.decisions;
+  const ms = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const work = (async () => {
+    const res = await f(`${opts.core.replace(/\/$/, '')}/decide/batch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ site: opts.site, subject, slots, ctx }),
+      signal: AbortSignal.timeout(Math.max(ms, opts.hardTimeoutMs ?? HARD_TIMEOUT_MS)),
+      cache: 'no-store',
+    });
+    if (!res.ok) throw new Error(`Pratibimba decide failed: ${res.status}`);
+    const body = (await res.json()) as { decisions: (Decision | SlotError)[] };
+    return body.decisions;
+  })();
+  return deadline(work, ms, 'Pratibimba decide');
 }
 
 export interface EventIn {

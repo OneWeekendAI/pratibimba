@@ -30,6 +30,12 @@ export interface EdgeOptions {
   persist?: boolean;
   /** How long one slot waits for Core before keeping its baseline. Default 300 ms. */
   timeoutMs?: number;
+  /**
+   * How long a decide that missed its page may keep running, so its late answer is read and its
+   * keep-alive connection goes back to the pool. Only a Core that never answers is cut off.
+   * Default 10 s.
+   */
+  hardTimeoutMs?: number;
   fetch?: typeof fetch;
   /**
    * Geolocation headers trusted to name the visitor's time zone when the browser's `_prb_tz`
@@ -96,6 +102,16 @@ function decodeCtx(s: string | undefined): Ctx | null {
 
 const validSubject = (s: string | undefined): s is string => !!s && s.length <= 256 && /^[\x21-\x7e]+$/.test(s);
 
+/** Waits up to `ms` for `work`, then rejects; `work` itself keeps running to the end. */
+function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  work.catch(() => {}); // a late failure is nobody's: the page already moved on
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Pratibimba decide timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
 function attr(json: unknown) {
   return JSON.stringify(json).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
 }
@@ -155,14 +171,21 @@ export function createEdge(opts: EdgeOptions) {
 
     const decided: { slot: string; id: string }[] = [];
     async function decide(slot: string): Promise<Replacement> {
-      const r = await f(`${core}/decide`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ site: opts.site, slot, subject, ctx: await decideCtx() }),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 300),
-      });
-      if (!r.ok) return { html: null };
-      const d = (await r.json()) as { decision_id: string; payload: string | null };
+      const ms = opts.timeoutMs ?? 300;
+      // Raced, not aborted: an abort destroys the keep-alive socket, so every later page would
+      // pay a fresh handshake and miss its deadline too. The late answer is read and dropped.
+      const work = (async () => {
+        const r = await f(`${core}/decide`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ site: opts.site, slot, subject, ctx: await decideCtx() }),
+          signal: AbortSignal.timeout(Math.max(ms, opts.hardTimeoutMs ?? 10_000)),
+        });
+        if (!r.ok) return null;
+        return (await r.json()) as { decision_id: string; payload: string | null };
+      })();
+      const d = await deadline(work, ms);
+      if (!d) return { html: null };
       decided.push({ slot, id: d.decision_id });
       return { html: d.payload };
     }
