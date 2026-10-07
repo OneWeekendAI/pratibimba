@@ -218,7 +218,9 @@ Mark a slot `"in_session": true` and the manifest ships each variant's payload a
 weights. After a signal, the script re-scores those slots on the device: a dot product per
 variant, batched into one animation frame. A signal is a pick, or a click on any element with
 `data-prb-intent="<option key>"` (worth half a pick, session only). `data-adapt-min` sets how
-many signals it waits for (default 1).
+many signals it waits for (default 1). Once a slot has learned the visitor's local hour, its
+weights include the time features; the script computes them from the browser clock and the
+site's night window, which the manifest ships as `night`.
 
 **It never swaps what the visitor is touching.** A slot that is in the viewport, holds focus,
 or is under the pointer is left alone. So is every slot on a page whose layout the browser

@@ -25,6 +25,16 @@ pub struct Manifest {
     /// sends only these names, and a PII one only when the visitor is identified.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<crate::features::FeatureSpec>,
+    /// The site's night window, `[start, end)` in local hours, when an in-session slot ships:
+    /// the on-device scorer computes `is_night_local` from the browser clock with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub night: Option<NightSpec>,
+}
+
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+pub struct NightSpec {
+    pub start: i16,
+    pub end: i16,
 }
 
 #[derive(Serialize)]
@@ -78,7 +88,7 @@ pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError>
         slots.last_mut().unwrap().variants.push(ManifestVariant { key: vkey, baseline, payload: None, weights: None });
     }
     let features = crate::features::declared(pool, site).await?.into_iter().map(|(key, pii)| crate::features::FeatureSpec { key, pii }).collect();
-    let mut manifest = Manifest { site: site.to_string(), privacy_mode, slots, features };
+    let mut manifest = Manifest { site: site.to_string(), privacy_mode, slots, features, night: None };
     crate::adapt::enrich(pool, &mut manifest).await?;
     Ok(manifest)
 }

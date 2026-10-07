@@ -66,7 +66,9 @@ pub struct ClientDecision {
 /// holdout visitor or a paused site). Plain events pass through untouched.
 ///
 /// A rescore may carry the site's declared features as `feature:<key>`; a PII one is dropped
-/// from a request that is not `identified`, as it is from a server decision.
+/// from a request that is not `identified`, as it is from a server decision. It may carry the
+/// time features too (`sin_hour` .. `is_business_hours_local`), which the SDK computes from the
+/// browser clock once the slot's model has learned them.
 pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn], identified: bool) -> Result<Vec<ClientDecision>, ApiError> {
     let bad = |m: String| Err(ApiError::BadRequest(m));
     let special = |e: &EventIn| e.name == "pick" || e.name == "rescore" || e.picks.is_some() || e.variant.is_some() || e.features.is_some() || e.score.is_some();
@@ -111,12 +113,15 @@ pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn],
                 .map(|n| n.to_string())
                 .chain(site_keys.iter().map(|k| stated::feature_name(k)))
                 .chain(declared.keys().map(feature_name))
+                .chain(stated::TIME_FEATURES.iter().map(|n| n.to_string()))
                 .collect();
             if let Some(k) = fm.keys().find(|k| !allowed.contains(*k)) {
                 return bad(format!("feature {k:?} is not part of the decision context"));
             }
-            if fm.values().any(|v| !v.as_f64().is_some_and(|f| (0.0..=1.0).contains(&f))) {
-                return bad("feature values must be numbers in 0-1".into());
+            // The hour's sine and cosine span -1..1; every other feature is a 0-1 value.
+            let range = |k: &str| if k == "sin_hour" || k == "cos_hour" { -1.0..=1.0 } else { 0.0..=1.0 };
+            if fm.iter().any(|(k, v)| !v.as_f64().is_some_and(|f| range(k).contains(&f))) {
+                return bad("feature values must be numbers in 0-1 (sin_hour and cos_hour in -1..1)".into());
             }
             let Some(x) = from_named(features) else { return bad("features must include every base feature".into()) };
             // A PII feature never reaches scoring or storage on an unidentified request.
@@ -213,6 +218,11 @@ pub async fn enrich(pool: &PgPool, manifest: &mut Manifest) -> Result<(), ApiErr
             continue;
         }
         ms.in_session = Some(true);
+        if manifest.night.is_none() {
+            let (start, end): (i16, i16) =
+                sqlx::query_as("SELECT night_start_hour, night_end_hour FROM sites WHERE id = $1").bind(&site).fetch_one(pool).await?;
+            manifest.night = Some(crate::http::manifest::NightSpec { start, end });
+        }
         let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1").bind(info.id).fetch_one(pool).await?;
         let model: LinTs = serde_json::from_value(state).map_err(anyhow::Error::from)?;
         let arms: Vec<(String, i64, Option<String>)> =

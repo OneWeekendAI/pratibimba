@@ -42,6 +42,8 @@
  * next page instead. Each on-device decision is posted as a `rescore` event. A holdout visitor
  * is never re-scored. The weights include the declared features (`feature:<key>`): the SDK
  * fills them from what it sends as ctx.features, and leaves a PII one out unless identified.
+ * Once a slot has learned the time features (`sin_hour` .. `is_business_hours_local`), its
+ * weights name them too: the SDK computes them from the browser clock and the manifest's `night`.
  */
 (function () {
   'use strict';
@@ -341,6 +343,7 @@
 
   function features(names) {
     var st = statedKeys();
+    var clock = localClock();
     var x = {};
     names.forEach(function (n) {
       if (n === 'bias') x[n] = 1;
@@ -350,9 +353,30 @@
         x[n] = st.indexOf(k) >= 0 ? 1 : (intent[k] || 0);
       } else if (n.indexOf('feature:') === 0) {
         if (usableFeature[n]) x[n] = sentFeatures[n.slice(8)] ? 1 : 0;
-      } else x[n] = 0;
+      } else if (n in clock) x[n] = clock[n];
+      else x[n] = 0;
     });
     return x;
+  }
+
+  // The time features, from the browser clock as Core computes them from tz_offset: the hour's
+  // sine and cosine, night by the site's window ([start, end), wrapping midnight), weekend, and
+  // Monday-Friday 09:00-17:00.
+  function localClock() {
+    var d = new Date();
+    var h = d.getHours();
+    var dow = d.getDay();
+    var nw = manifest.night || { start: 22, end: 5 };
+    var a = 2 * Math.PI * h / 24;
+    var weekend = dow === 0 || dow === 6;
+    var night = nw.start <= nw.end ? (h >= nw.start && h < nw.end) : (h >= nw.start || h < nw.end);
+    return {
+      sin_hour: Math.sin(a),
+      cos_hour: Math.cos(a),
+      is_night_local: night ? 1 : 0,
+      is_weekend_local: weekend ? 1 : 0,
+      is_business_hours_local: !weekend && h >= 9 && h < 17 ? 1 : 0,
+    };
   }
 
   // Never under the visitor's hand or eyes: not in the viewport, not focused, not hovered.
