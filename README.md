@@ -22,8 +22,9 @@ looking at it.
   against the same Postgres.
 - **Decisions** come from a LinTS bandit per slot: Thompson sampling over a Bayesian logistic
   regression, one per variant. It uses three visitor features (`returning`, `mobile`,
-  `from_ad`) plus a bias, and, when the visitor reports a UTC offset, the local clock
-  (`sin_hour`, `cos_hour`, `is_night_local`; see below). No LLM sits on the decision path. Each decision is stored with its
+  `from_ad`) plus a bias, and, when the visitor's time zone is known, the local clock
+  (`sin_hour`, `cos_hour`, `is_night_local`, `is_weekend_local`, `is_business_hours_local`;
+  see below). No LLM sits on the decision path. Each decision is stored with its
   features, every variant's sampled score, the policy version and the random seed, so it can be
   replayed exactly.
 - **Learning** happens once per decision, and only when the visitor actually saw it. A goal
@@ -264,13 +265,17 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
 | `get_results` | Per-slot and per-variant results with lift against the holdout. |
 | `list_decisions`, `explain_decision` | Recent decisions, and why one visitor saw what they saw. |
 | `propose_variant` | Submits a variant as a **draft**, with an optional note to the reviewer. Returns the constraint checks. |
+| `create_slot`, `update_slot` | Declares a swap slot whose baseline is a **draft**: it is in no manifest and decides nothing until a person approves that baseline (which activates the slot). `update_slot` edits only such draft slots. |
+| `retire_variant` | **Proposes** retiring a live variant. It keeps serving until a person confirms (`POST /api/retire-requests/:id/confirm {actor}`) or declines (`.../decline {actor, comment}`); open proposals are in the approvals API, and the answer on `list_variants`. |
 | `list_audiences`, `create_audience` | The site's segments and what each audience gates; a new segment lands as a **draft** that a person promotes. |
 | `simulate` | Runs a synthetic cohort (optionally for N simulated days) in the site's **sandbox**, creating it on first use. |
 | `fast_forward_visitor` | Moves the sandbox's clock forward (its worker and auto-rollback run) and decides every slot for one subject at the new time. |
 
 - **An agent cannot approve.** There is no approve tool, `propose_variant` writes `draft`
   whatever it is sent (a `status` or `traffic_share` argument fails the call), and an MCP
-  token is not accepted by `/api`. A person approves in the dashboard.
+  token is not accepted by `/api`. A person approves in the dashboard. The same floor holds for
+  slots (an agent's slot stays dark until a person approves its baseline, and its variants
+  wait for that) and for retirement (a proposal, never a retirement).
 - **Every call is audited.** Each tool takes `agent` and `justification` (and optionally
   `on_behalf_of`); a call without them is refused. Every call, refused or not, writes a row
   to `mcp_calls`, and each result returns that row as `audit`. A draft links to the call that
@@ -455,7 +460,7 @@ transaction. The Docker image includes `pg_dump` and `psql` (Debian's 17, so the
 
 | Method and path | What it does |
 |---|---|
-| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?, tz_offset?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. `explanation.audiences` lists the audiences evaluated. |
+| `POST /decide` | `{site, slot, subject, ctx: {returning, mobile, from_ad, stated?, tz_offset?, tz?}}` returns `{decision_id, variant, payload, explanation}`. The same subject and slot inside the slot's TTL get the same decision. `explanation.audiences` lists the audiences evaluated. |
 | `POST /e` | `{site, subject, events: [{id, name, slot?, decision_id?}], tz_offset?}`. Accepts up to 100 events per call. A `pick` adds `picks: [option keys]`. A `rescore` adds `variant`, `features` and `score`. `id` is your idempotency key. `tz_offset` is the visitor's UTC offset in minutes east (`-new Date().getTimezoneOffset()`, -720 to 840); the script sends it. |
 | `GET /manifest/:site` | Slots and approved variant keys. Append `.js` for the script form. Edge-cacheable. |
 | `GET /sdk.js` | The client script. |
@@ -507,14 +512,23 @@ own hour. An event with no offset counts as UTC. The night window is per site
 (`sites.night_start_hour` / `night_end_hour`, default 22:00-05:00). Raw events are not pruned.
 
 **The local clock is also a decision feature.** The script sends `ctx.tz_offset` on
-`/decide`; with it, the decision carries `sin_hour`, `cos_hour` (so 23:00 sits next to 00:00)
-and `is_night_local`, and the bandit learns whether the hour predicts a variant's lift. No
+`/decide`; with it, the decision carries `sin_hour`, `cos_hour` (so 23:00 sits next to 00:00),
+`is_night_local`, `is_weekend_local` and `is_business_hours_local` (Monday-Friday,
+09:00-17:00), and the bandit learns whether they predict a variant's lift. No
 offset, no time features: an unknown clock is never guessed as UTC on the decision path. The
 time features are extra named dimensions after the base four (beside any `stated` tastes), and
 the list of names is stored with the model and only appended to, so a model saved before them
-keeps everything it learned and gains the new dimensions at the prior. The server-side
-`@pratibimba/next` and `@pratibimba/edge` SDKs do not know the visitor's offset yet, so their
-decisions carry no time features.
+keeps everything it learned and gains the new dimensions at the prior (weekend and business
+hours joined this way after the first three).
+
+**Server-side SDKs send a time zone name.** A server render has no browser clock, so
+`@pratibimba/next` and `@pratibimba/edge` send `ctx.tz`, an IANA zone such as `Asia/Kolkata`.
+They read it from the platform's IP geolocation (`x-vercel-ip-timezone`, Cloudflare's
+`request.cf.timezone` or `cf-timezone`, `cloudfront-viewer-time-zone`) and fall back to
+`_prb_tz`, a first-party session cookie their browser beacon sets. Off those platforms a geo
+header is just something the visitor sent; pass `timeZoneHeaders: []` to ignore it. Core
+resolves the zone at the site's own clock (so daylight saving and a sandbox's time both hold)
+and prefers it over `tz_offset`; an unknown zone is refused with 400.
 
 ## Webhooks out
 
@@ -553,9 +567,13 @@ export DATABASE_URL=postgres://postgres@localhost:5432/postgres
 cargo test                                  # bandit math, migrations, HTTP, worker, scripted cohorts
 cd packages/client && npm install && npm test   # the client script, in jsdom
 cd packages/agent && npm install && npm test    # the instruction pack installer
-npm run mutate                                  # 23 mutants, each must turn that suite red
+npm run mutate                                  # 27 mutants, each must turn that suite red
 # Install the pack into a copy of examples/next, then propose a draft through the MCP SDK client:
 PRB_BIN=../../target/debug/pratibimba DATABASE_URL=postgres://…/scratch npm run e2e
+
+# next and edge: unit suites, then the local-time path end to end against real Core + worker
+cd packages/next && npm install && npm test && npm run e2e    # needs cargo build first
+cd packages/edge && npm install && npm test && npm run e2e
 
 # The dashboard, in headless Chromium against real Core and a seeded history.
 cargo build && cd dashboard && npm install && npx playwright install chromium

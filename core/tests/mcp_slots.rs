@@ -203,7 +203,10 @@ async fn update_slot_refuses_an_activated_slot(pool: PgPool) {
 async fn update_slot_refuses_a_field_it_does_not_own(pool: PgPool) {
     let (app, t) = setup(&pool).await;
     promo(&app, &t).await;
-    err_text(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "kind": "picker" }))).await);
+    // A valid field rides along, so only the unknown one can make the call fail.
+    err_text(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "selector": "#moved", "kind": "picker" }))).await);
+    let sel: String = sqlx::query_scalar("SELECT selector FROM slots WHERE key = 'promo'").fetch_one(&pool).await.unwrap();
+    assert_eq!(sel, "#promo");
 }
 
 #[sqlx::test(migrations = false)]
