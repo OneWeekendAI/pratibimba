@@ -140,8 +140,9 @@ async fn a_stop_before_the_start_is_refused(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_stop_already_past_is_refused(pool: PgPool) {
     let app = setup(&pool).await;
-    let bad = with(body(), "stops_at", json!((Utc::now() - Duration::minutes(5)).to_rfc3339()));
-    refused_then_fixed(&app, bad, StatusCode::BAD_REQUEST, body()).await;
+    let began = with(body(), "starts_at", json!((Utc::now() - Duration::days(2)).to_rfc3339()));
+    let bad = with(began.clone(), "stops_at", json!((Utc::now() - Duration::minutes(5)).to_rfc3339()));
+    refused_then_fixed(&app, bad, StatusCode::BAD_REQUEST, began).await;
 }
 
 #[sqlx::test(migrations = false)]
@@ -399,7 +400,10 @@ async fn a_paused_site_serves_the_baseline_during_an_experiment(pool: PgPool) {
     let r = api_post(&app, "/api/sites/demo/pause", json!({ "paused": true, "actor": "owner" })).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     for i in 0..10 {
-        assert_eq!(shown(&app, &format!("p{i}"), json!({})).await["variant"], "baseline");
+        let d = shown(&app, &format!("p{i}"), json!({})).await;
+        assert_eq!(d["variant"], "baseline", "{d}");
+        // Paused traffic is not the experiment's: counting it would load the baseline arm.
+        assert_eq!(d["explanation"]["allocation"], "bandit", "{d}");
     }
     api_post(&app, "/api/sites/demo/pause", json!({ "paused": false, "actor": "owner" })).await;
     let mut n = 0;
