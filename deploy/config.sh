@@ -11,4 +11,4 @@ SERVICE=pratibimba-core
 JOB=pratibimba-worker
 SCHEDULER=pratibimba-worker-every-minute
 SITE_ORIGIN=https://pratibimba.meetdev.in
-DOMAINS="pratibimbaapi.meetdev.in pratibimbamcp.meetdev.in"
+DOMAINS="pratibimbaapi.meetdev.in"
