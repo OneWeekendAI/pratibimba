@@ -78,7 +78,7 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
     };
     let slots: Vec<(String, i64)> = sqlx::query_as("SELECT key, id FROM slots WHERE site_id = $1").bind(&req.site).fetch_all(&state.pool).await?;
     let slots: HashMap<String, i64> = slots.into_iter().collect();
-    let client = crate::adapt::check(&state.pool, &req.site, &req.subject, &req.events).await?;
+    let client = crate::adapt::check(&state.pool, &req.site, &req.subject, &req.events, identified).await?;
 
     let mut tx = state.pool.begin().await?;
     crate::privacy::admit(&mut tx, &req.site, &raw).await?;

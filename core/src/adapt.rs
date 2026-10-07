@@ -64,7 +64,10 @@ pub struct ClientDecision {
 
 /// Validate the batch's picks and rescores. Returns the client decisions to record (none for a
 /// holdout visitor or a paused site). Plain events pass through untouched.
-pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn]) -> Result<Vec<ClientDecision>, ApiError> {
+///
+/// A rescore may carry the site's declared features as `feature:<key>`; a PII one is dropped
+/// from a request that is not `identified`, as it is from a server decision.
+pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn], identified: bool) -> Result<Vec<ClientDecision>, ApiError> {
     let bad = |m: String| Err(ApiError::BadRequest(m));
     let special = |e: &EventIn| e.name == "pick" || e.name == "rescore" || e.picks.is_some() || e.variant.is_some() || e.features.is_some() || e.score.is_some();
     if !events.iter().any(special) {
@@ -72,6 +75,8 @@ pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn])
     }
     let slots = slots(pool, site).await?;
     let site_keys = stated::site_keys(pool, site).await?;
+    let declared = crate::features::declared(pool, site).await?;
+    let feature_name = |k: &String| format!("{}{k}", crate::features::PREFIX);
     let mut out = vec![];
     for e in events {
         if e.name != "pick" && e.picks.is_some() {
@@ -101,8 +106,12 @@ pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn])
                 return bad("score must be a probability".into());
             }
             let Some(fm) = features.as_object() else { return bad("features must be an object".into()) };
-            let allowed: BTreeSet<String> =
-                bandit::FEATURE_NAMES.iter().map(|n| n.to_string()).chain(site_keys.iter().map(|k| stated::feature_name(k))).collect();
+            let allowed: BTreeSet<String> = bandit::FEATURE_NAMES
+                .iter()
+                .map(|n| n.to_string())
+                .chain(site_keys.iter().map(|k| stated::feature_name(k)))
+                .chain(declared.keys().map(feature_name))
+                .collect();
             if let Some(k) = fm.keys().find(|k| !allowed.contains(*k)) {
                 return bad(format!("feature {k:?} is not part of the decision context"));
             }
@@ -110,6 +119,14 @@ pub async fn check(pool: &PgPool, site: &str, subject: &str, events: &[EventIn])
                 return bad("feature values must be numbers in 0-1".into());
             }
             let Some(x) = from_named(features) else { return bad("features must include every base feature".into()) };
+            // A PII feature never reaches scoring or storage on an unidentified request.
+            let mut kept = fm.clone();
+            if !identified {
+                for (k, _) in declared.iter().filter(|(_, pii)| **pii) {
+                    kept.remove(&feature_name(k));
+                }
+            }
+            let features = &Value::Object(kept);
             let arms: Vec<(i64, String)> =
                 sqlx::query_as("SELECT id, key FROM variants WHERE slot_id = $1 AND status = 'approved' ORDER BY id").bind(s.id).fetch_all(pool).await?;
             let Some(variant_id) = arms.iter().find(|a| &a.1 == variant).map(|a| a.0) else {
@@ -182,7 +199,9 @@ pub async fn enrich(pool: &PgPool, manifest: &mut Manifest) -> Result<(), ApiErr
     let site = manifest.site.clone();
     let slots = slots(pool, &site).await?;
     let paused: bool = sqlx::query_scalar("SELECT paused_at IS NOT NULL FROM sites WHERE id = $1").bind(&site).fetch_one(pool).await?;
-    let site_keys = stated::site_keys(pool, &site).await?;
+    // The model's extension, as the server scores it: the stated tastes and the declared features.
+    let mut site_keys = stated::site_keys(pool, &site).await?;
+    site_keys.extend(manifest.features.iter().map(|f| format!("{}{}", crate::features::PREFIX, f.key)));
     for ms in &mut manifest.slots {
         let Some(info) = slots.get(&ms.key) else { continue };
         if info.kind == "picker" {

@@ -40,7 +40,8 @@
  * frame: a dot product per variant. Hard rule: it never swaps a slot that is in the viewport,
  * holds focus, or is under the pointer. Those, and slots not on this page, are cached for the
  * next page instead. Each on-device decision is posted as a `rescore` event. A holdout visitor
- * is never re-scored.
+ * is never re-scored. The weights include the declared features (`feature:<key>`): the SDK
+ * fills them from what it sends as ctx.features, and leaves a PII one out unless identified.
  */
 (function () {
   'use strict';
@@ -142,7 +143,11 @@
   var pageFeatures = window.__prb_features;
   var sentFeatures = {};
   var anyFeature = false;
+  // feature:<key> -> whether the on-device scorer may use it: declared, and not a PII one on
+  // an unidentified visit. The rest are left out of the vector and the rescore event.
+  var usableFeature = {};
   (manifest.features || []).forEach(function (f) {
+    if (!f.pii || useCookie) usableFeature['feature:' + f.key] = true;
     if (!pageFeatures || typeof pageFeatures[f.key] !== 'boolean') return;
     if (f.pii && !useCookie) return;
     sentFeatures[f.key] = pageFeatures[f.key];
@@ -343,6 +348,8 @@
       else if (n.indexOf('stated:') === 0) {
         var k = n.slice(7);
         x[n] = st.indexOf(k) >= 0 ? 1 : (intent[k] || 0);
+      } else if (n.indexOf('feature:') === 0) {
+        if (usableFeature[n]) x[n] = sentFeatures[n.slice(8)] ? 1 : 0;
       } else x[n] = 0;
     });
     return x;
