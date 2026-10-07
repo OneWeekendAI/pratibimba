@@ -60,9 +60,9 @@ pub const TIME_FEATURES: [&str; 5] = ["sin_hour", "cos_hour", "is_night_local", 
 /// The policy name of a decision scored with the extension for time features alone.
 pub const TIME_POLICY: &str = "lints_time";
 
-/// True for the two policies scored by the extension model.
+/// True for the policies scored by the extension model.
 pub fn is_extended(policy: &str) -> bool {
-    policy == POLICY || policy == TIME_POLICY
+    policy == POLICY || policy == TIME_POLICY || policy == crate::features::POLICY
 }
 
 /// The model keys of the time features, in the order they are appended to a model.
@@ -73,6 +73,9 @@ pub fn time_keys() -> Vec<String> {
 /// A model key's decision feature name: `time:sin_hour` is `sin_hour`, an option key `k` is
 /// `stated:k`.
 pub fn feature_name(key: &str) -> String {
+    if key.starts_with(crate::features::PREFIX) {
+        return key.to_string();
+    }
     match key.strip_prefix(TIME_PREFIX) {
         Some(n) => n.to_string(),
         None => format!("{PREFIX}{key}"),
@@ -86,6 +89,12 @@ pub fn ext_from_features(features: &Value) -> BTreeMap<String, f64> {
     for n in TIME_FEATURES {
         if let Some(v) = features.get(n).and_then(Value::as_f64) {
             out.insert(format!("{TIME_PREFIX}{n}"), v);
+        }
+    }
+    // Declared features keep one name in both places: `feature:<key>`.
+    for (k, v) in features.as_object().into_iter().flatten() {
+        if let (true, Some(v)) = (k.starts_with(crate::features::PREFIX), v.as_f64()) {
+            out.insert(k.clone(), v);
         }
     }
     out

@@ -77,6 +77,8 @@ impl Policy {
             tz_offset: ctx.tz_offset.filter(|_| self.allows("tz_offset")),
             tz: ctx.tz.clone().filter(|_| self.allows("tz_offset")),
             consent: ctx.consent,
+            // Declared features are filtered in decide, which knows which are PII.
+            features: ctx.features.clone(),
         }
     }
 

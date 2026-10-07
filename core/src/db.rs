@@ -23,6 +23,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0060_privacy", include_str!("../migrations/0060_privacy.sql")),
     ("0070_agent_tools", include_str!("../migrations/0070_agent_tools.sql")),
     ("0080_cold_start", include_str!("../migrations/0080_cold_start.sql")),
+    ("0090_features", include_str!("../migrations/0090_features.sql")),
 ];
 
 /// Arbitrary constant: "prb" in ASCII.

@@ -33,6 +33,10 @@ pub struct SiteFile {
     /// current list (a new site collects every field).
     #[serde(default)]
     pub fields_allowed: Option<Vec<String>>,
+    /// Features the client may send in `ctx.features`, each tagged `pii` (see
+    /// [`crate::features`]). Omitted: keep the current list; `[]` clears it.
+    #[serde(default)]
+    pub features: Option<Vec<crate::features::FeatureSpec>>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -111,6 +115,9 @@ impl SiteFile {
         if let Err(e) = crate::privacy::validate(self.privacy_mode.as_deref(), self.fields_allowed.as_deref()) {
             bail!("{e}");
         }
+        if let Some(f) = &self.features {
+            crate::features::validate(f)?;
+        }
         if let Some(h) = self.holdout_fraction {
             if !(0.0..=0.5).contains(&h) {
                 bail!("holdout_fraction must be between 0 and 0.5");
@@ -179,6 +186,17 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(&file.fields_allowed)
         .execute(&mut *tx)
         .await?;
+    if let Some(features) = &file.features {
+        sqlx::query("DELETE FROM site_features WHERE site_id = $1").bind(&file.site).execute(&mut *tx).await?;
+        for f in features {
+            sqlx::query("INSERT INTO site_features (site_id, key, pii) VALUES ($1, $2, $3)")
+                .bind(&file.site)
+                .bind(&f.key)
+                .bind(f.pii)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
             "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures)

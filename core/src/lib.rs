@@ -5,6 +5,7 @@ pub mod checks;
 pub mod conversions;
 pub mod db;
 pub mod explain;
+pub mod features;
 pub mod guard;
 pub mod hash;
 pub mod mcp;

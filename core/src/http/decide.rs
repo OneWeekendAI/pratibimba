@@ -59,6 +59,10 @@ pub struct Ctx {
     /// (see [`crate::privacy`]); it is not a feature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consent: Option<bool>,
+    /// The site's declared features (see [`crate::features`]): name -> on. An undeclared name is
+    /// refused; a PII one is dropped unless the request is identified.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub features: std::collections::BTreeMap<String, bool>,
 }
 
 impl Ctx {
@@ -222,6 +226,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let site_keys = stated::site_keys(pool, &req.site).await?;
     let said = stated::resolve(pool, &req.site, &req.subject, &site_keys, &ctx.stated).await?;
     let said_now = stated::from_features(&stated::with_stated(json!({}), &site_keys, &said));
+    let declared = crate::features::values(&crate::features::declared(pool, &req.site).await?, &ctx.features, identified)?;
     let key_of = |id: i64| arms.iter().find(|a| a.0 == id).map(|a| (a.1.clone(), a.2.clone()));
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
@@ -268,6 +273,8 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     // The extension: the site's stated tastes, plus the local clock when the visitor reported it.
     let mut ext_keys = site_keys.clone();
     let mut ext = said.clone();
+    ext_keys.extend(declared.keys().cloned());
+    ext.extend(declared.clone());
     if let Some(off) = ctx.tz_offset {
         let local = crate::insights::localtime::LocalTime::at(at, Some(off), night);
         ext_keys.extend(stated::time_keys());
@@ -278,7 +285,13 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         (p, s, bandit::POLICY, named(&x))
     } else {
         let (p, s) = stated::choose(&model, &ext_keys, &ids, &x, &ext, seed);
-        let policy = if site_keys.is_empty() { stated::TIME_POLICY } else { stated::POLICY };
+        let policy = if !site_keys.is_empty() {
+            stated::POLICY
+        } else if !declared.is_empty() {
+            crate::features::POLICY
+        } else {
+            stated::TIME_POLICY
+        };
         (p, s, policy, stated::with_stated(named(&x), &ext_keys, &ext))
     };
     let held = in_holdout && baseline.is_some();
