@@ -155,9 +155,11 @@ the timeout. The two server-side installs above decide before any HTML is sent, 
 no flicker at all.
 
 Clicks inside a slot are reported automatically. For other goals, call
-`window.prb.track('purchase')`. The subject id lives in `sessionStorage` by default. Add
-`data-cookie="on"` to use a one-year first-party `_prb_subject` cookie, which turns on the
-`returning` feature, and collect consent before you do.
+`window.prb.track('purchase')`. Where the subject id lives follows the site's privacy mode (see
+[Privacy](#privacy)): `sessionStorage`, or a one-year first-party `_prb_subject` cookie (which
+turns on the `returning` feature). On a `consent_aware` site the script uses the cookie only
+with consent: `data-cookie="on"` on the tag, a granted Google Consent Mode `analytics_storage`,
+or OneTrust's performance group.
 
 To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, then serve
 `examples/plain/` on port 5173.
@@ -394,6 +396,47 @@ The rules:
   decision's record is corrected without teaching the model.
 - A request with a missing, wrong or stale signature gets 400 and writes nothing.
 
+## Privacy
+
+Each site has a **privacy mode**, set with `"privacy_mode"` in the site file or
+`POST /api/sites/:id/privacy`:
+
+| Mode | What Core stores and uses |
+|---|---|
+| `consent_aware` (default for a new site) | `full` for a request with `consent: true` (`ctx.consent` on decide), `cookieless` otherwise |
+| `cookieless` | a pseudonym of the subject that changes every UTC day (the day's salt is deleted when the next is made), and no `returning` |
+| `full` | the subject as the client sent it, and every feature |
+
+Sites that existed before this release were moved to `full`, which is what they did before.
+
+**Minimum collection.** `"fields_allowed"` lists the optional fields a site collects: any of
+`returning`, `mobile`, `from_ad`, `stated`, `tz_offset` (also covers `ctx.tz`), `slot`,
+`decision_id`, `picks`, `rescore`. Anything else is dropped at `/decide` and `/e` before it is
+written. With no list, every field is collected. Undeclared names (`gender`) are refused as
+always.
+
+**Right to erase.** `pratibimba erase <site> <subject> --by <who> [--reason ...]`, or
+`POST /api/sites/:id/erase {subject, actor, reason?}`, deletes the subject's events, visitor
+row and retention weeks and removes it from webhook payloads. Its decisions stay, with their
+variant, features and outcome, under a random token, so results and rollups still add up. Any
+open decision settles without teaching the model. Only a hash of the subject is kept, as a
+tombstone: later requests with that subject get `410 Gone`, and its platform conversions are
+ignored. Each erase writes an audit row (`GET /api/sites/:id/erasures`,
+`pratibimba erasures <site>`). What a model has already learned stays, because a model's state
+is an aggregate. `GET /api/sites/:id/subjects/:subject` lists everything held for a subject.
+
+**Visitors.** Core keeps one `visitors` row per stored subject: when it was first and last seen,
+an event count and the last 20 event names.
+
+## Backups
+
+`pratibimba backup [dir-or-file]` writes a timestamped plain-SQL dump
+(`pratibimba-backup-20261007T031500Z.sql`) with `pg_dump`. It never overwrites a file, and it
+leaves out the privacy salts, so a backup cannot link one day's cookieless visitors to the next.
+`pratibimba restore <file>` loads a dump into an **empty** database (`PRB_DB`) in one
+transaction. The Docker image includes `pg_dump` and `psql` (Debian's 17, so the server must be
+17 or older). `examples/compose.yml` runs a backup once a day.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -405,6 +448,7 @@ The rules:
 | `PRB_DB_MAX_CONNECTIONS` | `10` | pool size |
 | `PRB_ADMIN_TOKEN` | (none) | turns on the dashboard API at `/api`; without it `/api` answers 503 |
 | `PRB_DASHBOARD_DIR` | (none; set in the Docker image) | the built dashboard (`dashboard/out`), served at `/app` |
+| `PRB_PG_BIN` | (`PATH`) | the directory holding `pg_dump` and `psql`, for `backup` and `restore` |
 | `RUST_LOG` | `info` | log filter |
 
 ## HTTP API
@@ -424,8 +468,9 @@ The rules:
 The dashboard API lives under `/api` and needs `Authorization: Bearer $PRB_ADMIN_TOKEN` (or the
 session cookie that `POST /api/session` sets). It covers each site's overview and live stream,
 results, slots, decisions (with replay and the counterfactual), drafts, the approve, reject
-and comment actions, install probes, model versions with manual rollback, the simulator and
-conversion sources. `POST /api/variants/:id/audience {audience: <segment id> | null, actor}`
+and comment actions, install probes, model versions with manual rollback, the simulator,
+conversion sources and privacy (mode, fields, erase, the erasure log, subject access).
+`POST /api/variants/:id/audience {audience: <segment id> | null, actor}`
 restricts a variant to a promoted audience, or lifts the restriction.
 
 ### Visitor insights
