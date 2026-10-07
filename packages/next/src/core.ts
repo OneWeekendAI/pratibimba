@@ -1,5 +1,7 @@
 // The two calls this package makes to Pratibimba Core, typed.
 
+import { Agent, fetch as undiciFetch } from 'undici';
+
 export interface Ctx {
   returning: boolean;
   mobile: boolean;
@@ -34,6 +36,23 @@ export interface SlotError {
 }
 
 export type Fetch = typeof fetch;
+
+/**
+ * How long an idle connection to Core is kept for the next render.
+ *
+ * Node's own fetch drops an idle socket after 4 s unless the server sends a `Keep-Alive:
+ * timeout` hint, and Core behind Cloudflare sends none. So a render that came more than 4 s after
+ * the last one paid a new TCP+TLS handshake: measured live from India, p50 800 ms after a 4 s gap
+ * against 266 ms warm, while the endpoint kept an idle connection for 30 s and more. A server
+ * that does send the hint still wins when it is shorter.
+ */
+export const KEEP_ALIVE_MS = 30_000;
+
+const agent = new Agent({ keepAliveTimeout: KEEP_ALIVE_MS, keepAliveMaxTimeout: 10 * 60_000 });
+
+/** fetch on this package's own connection pool (undici's, which is what Node's fetch is). */
+export const pooledFetch = ((input: Parameters<Fetch>[0], init?: RequestInit) =>
+  undiciFetch(input as never, { ...(init as object), dispatcher: agent } as never)) as unknown as Fetch;
 
 /** How long a server render waits for Core before it renders the baseline. */
 export const DEFAULT_TIMEOUT_MS = 300;
@@ -71,7 +90,7 @@ export async function decideBatch(
   ctx: Ctx,
   slots: string[],
 ): Promise<(Decision | SlotError)[]> {
-  const f = opts.fetch ?? fetch;
+  const f = opts.fetch ?? pooledFetch;
   const ms = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const work = (async () => {
     const res = await f(`${opts.core.replace(/\/$/, '')}/decide/batch`, {
@@ -101,7 +120,7 @@ export async function postEvents(
   events: EventIn[],
   consent?: boolean,
 ): Promise<void> {
-  const f = opts.fetch ?? fetch;
+  const f = opts.fetch ?? pooledFetch;
   const res = await f(`${opts.core.replace(/\/$/, '')}/e`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

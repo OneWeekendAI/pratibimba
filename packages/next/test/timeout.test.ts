@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
-import { decideBatch } from '../src/core.ts';
+import { decideBatch, postEvents } from '../src/core.ts';
 
 const ANSWER = JSON.stringify({ decisions: [{ decision_id: 'd-1', slot: 'hero', variant: 'gift', payload: null, explanation: {} }] });
 const CTX = { returning: false, mobile: false, from_ad: false };
@@ -17,7 +17,7 @@ const CTX = { returning: false, mobile: false, from_ad: false };
 /** Core that answers after `delayMs` (never, for `null`), counting the connections it accepts. */
 async function slowCore(delayMs: number | null) {
   const sockets: Socket[] = [];
-  const server: Server = createServer((req, res) => {
+  const server: Server = createServer({ keepAliveTimeout: 0 }, (req, res) => {
     req.resume();
     req.on('end', () => {
       if (delayMs === null) return;
@@ -86,3 +86,32 @@ test('a_decide_inside_its_deadline_still_returns_the_decisions', async () => {
   }
 });
 
+
+// Measured live from India (E4): a render after 4 s with no other render paid a new TLS handshake,
+// p50 800 ms against 266 ms warm, because Node's fetch drops an idle socket after 4 s. The
+// endpoint itself kept an idle connection for 30 s and more, and sends no `Keep-Alive: timeout`
+// hint. Core here is the same (keepAliveTimeout 0: no idle limit, no hint), so only the client
+// can close an idle socket.
+test('an_idle_gap_longer_than_4_s_reuses_the_connection', async () => {
+  const core = await slowCore(5);
+  try {
+    await decideBatch({ core: core.url, site: 'shop', timeoutMs: 500 }, 'v1', CTX, ['hero']);
+    await sleep(5_000);
+    await decideBatch({ core: core.url, site: 'shop', timeoutMs: 500 }, 'v2', CTX, ['hero']);
+    assert.equal(core.sockets.length, 1, `two decides 5 s apart opened ${core.sockets.length} connections`);
+  } finally {
+    await core.close();
+  }
+});
+
+test('events_after_an_idle_gap_reuse_the_decide_connection', async () => {
+  const core = await slowCore(5);
+  try {
+    await decideBatch({ core: core.url, site: 'shop', timeoutMs: 500 }, 'v1', CTX, ['hero']);
+    await sleep(5_000);
+    await postEvents({ core: core.url, site: 'shop' }, 'v1', [{ id: 'e1', name: 'purchase' }]);
+    assert.equal(core.sockets.length, 1, `a decide and an event 5 s apart opened ${core.sockets.length} connections`);
+  } finally {
+    await core.close();
+  }
+});
