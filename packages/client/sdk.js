@@ -24,6 +24,11 @@
  * (or a TCF answer that arrives after the read) applies from the next one. Every decide and
  * event batch says whether the visitor consented, and Core stores a daily pseudonym otherwise.
  *
+ * Declared features: a page may set window.__prb_features = { name: true|false } before this
+ * tag. The SDK sends, as ctx.features, only the names the manifest declares and only boolean
+ * values; a feature the site tagged pii is sent only when the visitor is identified (`full`, or
+ * `consent_aware` with consent), so it never leaves the device otherwise.
+ *
  * Picker slots (kind "picker"): when the decision is `picker`, the SDK renders the owner's
  * options, 1 to max_picks of them, with Done and Skip. Done sends a `pick` event with the keys;
  * the picks become `ctx.stated` on every later decide (sessionStorage, or localStorage only
@@ -131,6 +136,19 @@
     tz_offset: -new Date().getTimezoneOffset(),
     consent: useCookie
   };
+  // Declared features: the page sets window.__prb_features = { name: true|false } before this
+  // tag. Only names the manifest declares, only booleans, and a PII one only when the visitor
+  // is identified (useCookie is Core's "identified": full, or consent_aware with consent).
+  var pageFeatures = window.__prb_features;
+  var sentFeatures = {};
+  var anyFeature = false;
+  (manifest.features || []).forEach(function (f) {
+    if (!pageFeatures || typeof pageFeatures[f.key] !== 'boolean') return;
+    if (f.pii && !useCookie) return;
+    sentFeatures[f.key] = pageFeatures[f.key];
+    anyFeature = true;
+  });
+  if (anyFeature) ctx.features = sentFeatures;
 
   // --- stated preferences: picks by picker slot; only the owner's option keys -----------------
   var optionKeys = {};

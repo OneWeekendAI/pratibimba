@@ -21,6 +21,10 @@ pub struct Manifest {
     /// (see [`crate::privacy`]).
     pub privacy_mode: String,
     pub slots: Vec<ManifestSlot>,
+    /// The site's declared features with their PII tags (see [`crate::features`]): the SDK
+    /// sends only these names, and a PII one only when the visitor is identified.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<crate::features::FeatureSpec>,
 }
 
 #[derive(Serialize)]
@@ -73,7 +77,8 @@ pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError>
         }
         slots.last_mut().unwrap().variants.push(ManifestVariant { key: vkey, baseline, payload: None, weights: None });
     }
-    let mut manifest = Manifest { site: site.to_string(), privacy_mode, slots };
+    let features = crate::features::declared(pool, site).await?.into_iter().map(|(key, pii)| crate::features::FeatureSpec { key, pii }).collect();
+    let mut manifest = Manifest { site: site.to_string(), privacy_mode, slots, features };
     crate::adapt::enrich(pool, &mut manifest).await?;
     Ok(manifest)
 }

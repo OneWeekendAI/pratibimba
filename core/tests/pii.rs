@@ -176,3 +176,20 @@ async fn features_are_kept_when_the_site_file_omits_them(pool: PgPool) {
     pratibimba::site_file::apply(&pool, &file_from(f)).await.unwrap();
     assert_eq!(count(&pool, "SELECT count(*) FROM site_features").await, 2);
 }
+
+// The manifest lists the declared features with their tags, so the SDK sends only declared
+// names and keeps a PII one on the device unless the visitor is identified.
+#[sqlx::test(migrations = false)]
+async fn manifest_lists_declared_features_with_their_pii_tag(pool: PgPool) {
+    setup(&pool, "consent_aware").await;
+    let m = get(&app(&pool), "/manifest/demo").await.json();
+    assert_eq!(m["features"], fixture());
+}
+
+#[sqlx::test(migrations = false)]
+async fn manifest_without_declared_features_has_no_features_field(pool: PgPool) {
+    pratibimba::db::migrate(&pool).await.unwrap();
+    pratibimba::site_file::apply(&pool, &file_from(site("full", json!([])))).await.unwrap();
+    let m = get(&app(&pool), "/manifest/demo").await.json();
+    assert!(m.get("features").is_none());
+}
