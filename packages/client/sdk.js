@@ -15,8 +15,13 @@
  *      that lands after it is NOT swapped (that would be the flicker this exists to avoid) and is
  *      reported as `missed`.
  *
- * The subject lives in sessionStorage (cookieless) unless the tag has data-cookie="on", which
- * sets a first-party `_prb_subject` cookie for a year. Get consent before turning that on.
+ * The subject lives in sessionStorage (cookieless) or in a first-party `_prb_subject` cookie for
+ * a year, by the site's privacy_mode (from the manifest): `full` always uses the cookie,
+ * `cookieless` never does, and `consent_aware` (the default) uses it only with consent. Consent
+ * is the tag's data-cookie="on" (the page says it has it), or else the latest Google Consent
+ * Mode `analytics_storage` in dataLayer, or else OneTrust's performance group (C0002). It is
+ * read once per page; a choice made on the page applies from the next one. Every decide and
+ * event batch says whether the visitor consented, and Core stores a daily pseudonym otherwise.
  *
  * Picker slots (kind "picker"): when the decision is `picker`, the SDK renders the owner's
  * options, 1 to max_picks of them, with Done and Skip. Done sends a `pick` event with the keys;
@@ -40,7 +45,18 @@
   var site = script.getAttribute('data-site') || manifest.site;
   var base = script.getAttribute('data-base') || (script.src || '').replace(/sdk\.js(\?.*)?$/, '');
   var timeoutMs = parseInt(script.getAttribute('data-timeout') || '400', 10);
-  var useCookie = script.getAttribute('data-cookie') === 'on';
+  var mode = manifest.privacy_mode || 'consent_aware';
+  function consented() {
+    if (script.getAttribute('data-cookie') === 'on') return true;
+    var google = null;
+    (window.dataLayer || []).forEach(function (e) {
+      if (e && e[0] === 'consent' && e[2] && e[2].analytics_storage) google = e[2].analytics_storage;
+    });
+    if (google) return google === 'granted';
+    if (typeof window.OptanonActiveGroups === 'string') return window.OptanonActiveGroups.indexOf(',C0002,') !== -1;
+    return false;
+  }
+  var useCookie = mode === 'full' || (mode === 'consent_aware' && consented());
   var adaptMin = parseInt(script.getAttribute('data-adapt-min') || '1', 10);
   var slots = manifest.slots;
 
@@ -86,7 +102,8 @@
     mobile: /Mobi|Android/i.test(navigator.userAgent || ''),
     from_ad: /[?&](utm_source|utm_medium|utm_campaign|gclid|fbclid|msclkid)=/.test(location.search || ''),
     // The local clock is a decision feature (sin_hour, cos_hour, is_night_local) in Core.
-    tz_offset: -new Date().getTimezoneOffset()
+    tz_offset: -new Date().getTimezoneOffset(),
+    consent: useCookie
   };
 
   // --- stated preferences: picks by picker slot; only the owner's option keys -----------------
@@ -152,7 +169,7 @@
 
   function sendAll(evs) {
     evs.forEach(function (ev) { ev.id = newId(); });
-    post('e', { site: site, subject: subject, events: evs, tz_offset: -new Date().getTimezoneOffset() })['catch'](function () { /* best effort */ });
+    post('e', { site: site, subject: subject, events: evs, tz_offset: -new Date().getTimezoneOffset(), consent: useCookie })['catch'](function () { /* best effort */ });
   }
 
   function send(name, slotKey, decisionId, extra) {
