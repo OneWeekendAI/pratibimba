@@ -249,3 +249,40 @@ async fn every_update_appends_a_model_version(pool: PgPool) {
     assert_eq!(stored, current, "the history row is not the state that was written");
     assert_eq!(versions[1].2, "learn: conversion");
 }
+
+/// `pratibimba worker --once` (the Cloud Run job): one full pass, then exit 0. It must drain the
+/// outbox and learn, and it must not fall into the forever loop.
+#[sqlx::test(migrations = false)]
+async fn worker_once_drains_the_outbox_and_exits(pool: PgPool) {
+    setup_learning(&pool).await;
+    let app = app(&pool);
+    let d = decided(&app, "v").await;
+    event(&app, "v", "exposure", Some(&d.to_string())).await;
+    event(&app, "v", "click", Some(&d.to_string())).await;
+    assert!(count(&pool, "SELECT count(*) FROM pending_events").await > 0, "nothing queued to drain");
+    let db: String = sqlx::query_scalar("SELECT current_database()").fetch_one(&pool).await.unwrap();
+    let base = std::env::var("DATABASE_URL").unwrap();
+    let url = format!("{}/{db}", base.rsplit_once('/').unwrap().0);
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_pratibimba"))
+        .args(["worker", "--once"])
+        .env("PRB_DB", &url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(30) {
+            child.kill().ok();
+            panic!("worker --once did not exit within 30s");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert!(status.success(), "worker --once exited with {status}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM pending_events").await, 0, "the outbox was not drained");
+    assert_eq!(outcome(&pool, d).await, (Some(1), true));
+    assert_eq!(model(&pool).await.0, 1, "the model did not learn");
+}

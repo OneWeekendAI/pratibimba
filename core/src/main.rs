@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
 use std::time::Duration;
 
-const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]
+const USAGE: &str = "usage: pratibimba <serve | worker [--once] | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]
                   | erase <site> <subject> --by <actor> [--reason R] | erasures <site>
                   | backup [dir-or-file] | restore <file>>
 
@@ -94,6 +94,11 @@ async fn main() -> Result<()> {
         }
         Some("worker") => {
             db::migrate(&pool).await?;
+            if args.get(1).map(String::as_str) == Some("--once") {
+                worker::run_drain(&pool).await?;
+                tracing::info!("worker pass done (--once)");
+                return Ok(());
+            }
             let tick = std::env::var("PRB_WORKER_TICK_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
             tracing::info!(tick_ms = tick, "worker running");
             tokio::select! {

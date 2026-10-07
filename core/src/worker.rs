@@ -429,38 +429,10 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
     let mut last_guard: Option<std::time::Instant> = None;
     let http = webhooks::client();
     loop {
-        match run_once(&pool, Utc::now()).await {
-            Ok(s) if s != Stats::default() => tracing::info!(?s, "worker pass"),
-            Ok(_) => {}
-            Err(e) => tracing::error!(error = %e, "worker pass failed"),
-        }
-        // Traffic sent to a sandbox (by the simulator or a local SDK) learns at its own clock.
-        match sqlx::query_as::<_, (String, DateTime<Utc>)>("SELECT id, sim_now FROM sites WHERE sandbox_of IS NOT NULL").fetch_all(&pool).await {
-            Ok(sandboxes) => {
-                for (id, at) in sandboxes {
-                    if let Err(e) = run_sandbox(&pool, &id, at).await {
-                        tracing::error!(error = %e, sandbox = %id, "sandbox pass failed");
-                    }
-                }
-            }
-            Err(e) => tracing::error!(error = %e, "listing sandboxes failed"),
-        }
-        match webhooks::deliver_once(&pool, &http, Utc::now()).await {
-            Ok(p) if p != webhooks::Pass::default() => tracing::info!(?p, "webhook pass"),
-            Ok(_) => {}
-            Err(e) => tracing::error!(error = %e, "webhook pass failed"),
-        }
-        if last_guard.is_none_or(|t| t.elapsed() >= guard_every) {
-            if let Err(e) = crate::guard::run(&pool, Utc::now()).await {
-                tracing::error!(error = %e, "guard pass failed");
-            }
-            if let Err(e) = webhooks::prune(&pool, Utc::now()).await {
-                tracing::error!(error = %e, "webhook prune failed");
-            }
+        let guard = last_guard.is_none_or(|t| t.elapsed() >= guard_every);
+        let _ = pass(&pool, &http, guard).await;
+        if guard {
             last_guard = Some(std::time::Instant::now());
-        }
-        if let Err(e) = crate::insights::maybe_run(&pool, Utc::now()).await {
-            tracing::error!(error = %e, "insights pass failed");
         }
         tokio::select! {
             r = listener.recv() => if let Err(e) = r {
@@ -470,4 +442,49 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
             _ = tokio::time::sleep(tick) => {}
         }
     }
+}
+
+/// One full pass of everything the loop does: real sites, sandboxes, webhooks, insights, and the
+/// guard and webhook prune when `guard` is set. Every step runs; each error is logged, and the
+/// real-site pass's error (the outbox) is also returned.
+pub async fn pass(pool: &PgPool, http: &reqwest::Client, guard: bool) -> Result<()> {
+    let main = run_once(pool, Utc::now()).await;
+    match &main {
+        Ok(s) if *s != Stats::default() => tracing::info!(?s, "worker pass"),
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, "worker pass failed"),
+    }
+    // Traffic sent to a sandbox (by the simulator or a local SDK) learns at its own clock.
+    match sqlx::query_as::<_, (String, DateTime<Utc>)>("SELECT id, sim_now FROM sites WHERE sandbox_of IS NOT NULL").fetch_all(pool).await {
+        Ok(sandboxes) => {
+            for (id, at) in sandboxes {
+                if let Err(e) = run_sandbox(pool, &id, at).await {
+                    tracing::error!(error = %e, sandbox = %id, "sandbox pass failed");
+                }
+            }
+        }
+        Err(e) => tracing::error!(error = %e, "listing sandboxes failed"),
+    }
+    match webhooks::deliver_once(pool, http, Utc::now()).await {
+        Ok(p) if p != webhooks::Pass::default() => tracing::info!(?p, "webhook pass"),
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, "webhook pass failed"),
+    }
+    if guard {
+        if let Err(e) = crate::guard::run(pool, Utc::now()).await {
+            tracing::error!(error = %e, "guard pass failed");
+        }
+        if let Err(e) = webhooks::prune(pool, Utc::now()).await {
+            tracing::error!(error = %e, "webhook prune failed");
+        }
+    }
+    if let Err(e) = crate::insights::maybe_run(pool, Utc::now()).await {
+        tracing::error!(error = %e, "insights pass failed");
+    }
+    main.map(|_| ())
+}
+
+/// `pratibimba worker --once`: drain, settle, purge and guard once, then return (a Cloud Run job).
+pub async fn run_drain(pool: &PgPool) -> Result<()> {
+    pass(pool, &webhooks::client(), true).await
 }
