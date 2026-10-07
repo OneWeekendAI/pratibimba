@@ -1,5 +1,5 @@
-// The visitor's time zone on the edge path: the edge names it from its own geolocation (the
-// Cloudflare `request.cf` object or a platform header), else from the cookie the beacon sets,
+// The visitor's time zone on the edge path: the edge names it from the cookie the beacon sets,
+// else from its own geolocation (the Cloudflare `request.cf` object or a platform header),
 // and sends it to Core as `ctx.tz`.
 
 import { test } from 'node:test';
@@ -37,8 +37,22 @@ test('edge_falls_back_to_the_tz_cookie', async () => {
   assert.equal((await ctxSent(get({ cookie: '_prb_tz=America%2FNew_York' }))).tz, 'America/New_York');
 });
 
-test('edge_geo_time_zone_wins_over_the_cookie', async () => {
-  assert.equal((await ctxSent(get({ 'cf-timezone': 'Asia/Tokyo', cookie: '_prb_tz=America%2FNew_York' }))).tz, 'Asia/Tokyo');
+test('edge_cookie_wins_over_the_geo_header', async () => {
+  assert.equal((await ctxSent(get({ 'cf-timezone': 'Asia/Tokyo', cookie: '_prb_tz=America%2FNew_York' }))).tz, 'America/New_York');
+});
+
+test('edge_cookie_wins_over_the_cloudflare_request_cf_time_zone', async () => {
+  const r = Object.assign(get({ cookie: '_prb_tz=America%2FNew_York' }), { cf: { timezone: 'Europe/London' } });
+  assert.equal((await ctxSent(r)).tz, 'America/New_York');
+});
+
+test('edge_request_cf_time_zone_wins_over_a_geo_header', async () => {
+  const r = Object.assign(get({ 'x-vercel-ip-timezone': 'Asia/Tokyo' }), { cf: { timezone: 'Europe/London' } });
+  assert.equal((await ctxSent(r)).tz, 'Europe/London');
+});
+
+test('edge_bad_cookie_falls_through_to_the_geo_header', async () => {
+  assert.equal((await ctxSent(get({ 'cf-timezone': 'Asia/Tokyo', cookie: '_prb_tz=Mars%2FOlympus_Mons' }))).tz, 'Asia/Tokyo');
 });
 
 test('edge_sends_no_time_zone_that_is_not_a_real_zone', async () => {
@@ -47,8 +61,8 @@ test('edge_sends_no_time_zone_that_is_not_a_real_zone', async () => {
 });
 
 test('edge_geo_headers_can_be_switched_off', async () => {
-  const ctx = await ctxSent(get({ 'x-vercel-ip-timezone': 'Asia/Tokyo', cookie: '_prb_tz=Europe%2FParis' }), { timeZoneHeaders: [] });
-  assert.equal(ctx.tz, 'Europe/Paris');
+  const ctx = await ctxSent(get({ 'x-vercel-ip-timezone': 'Asia/Tokyo' }), { timeZoneHeaders: [] });
+  assert.equal('tz' in ctx, false, JSON.stringify(ctx));
 });
 
 // --- the beacon sets the cookie and reports the offset -----------------------------------------

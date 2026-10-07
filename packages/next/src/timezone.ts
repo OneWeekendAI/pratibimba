@@ -2,15 +2,17 @@
 // zone name into the local-time features (hour, night, weekend, business hours) at its own
 // clock, so the name is all a server-side SDK sends.
 //
-// Where the name comes from, in order:
-// 1. The edge's IP geolocation header. Vercel sets `x-vercel-ip-timezone`, Cloudflare sets
+// Where the name comes from, in order (backend.md, "Local time as a context signal": the
+// browser's own zone, when it sent one, is preferred over the IP's):
+// 1. The first-party cookie `_prb_tz`, which the browser half (the beacon) sets from
+//    `Intl.DateTimeFormat().resolvedOptions().timeZone`. It names the device's zone, which
+//    is right where IP geolocation is not (mobile carriers, VPNs). The first page of a visit
+//    has no cookie yet.
+// 2. The edge's IP geolocation header. Vercel sets `x-vercel-ip-timezone`, Cloudflare sets
 //    `cf-timezone` (with the "visitor location headers" managed transform), CloudFront sets
 //    `cloudfront-viewer-time-zone`. Each platform strips a client-sent copy; off those
 //    platforms a geo header is just something the visitor sent, so `timeZoneHeaders: []`
-//    switches them off. A forged zone only mislabels the forger's own hour.
-// 2. A first-party session cookie, `_prb_tz`, that the browser half (the beacon) sets from
-//    `Intl.DateTimeFormat().resolvedOptions().timeZone`. The first page of a visit off a geo
-//    edge has no zone; later pages do.
+//    switches them off. A forged zone (header or cookie) only mislabels the forger's own hour.
 
 export const TZ_COOKIE = '_prb_tz';
 export const TZ_HEADER = 'x-prb-tz';
@@ -38,14 +40,15 @@ function decode(v: string | undefined): string | undefined {
   }
 }
 
-/** The visitor's zone: the first valid geo header, else the cookie, else `undefined`. */
+/** The visitor's zone: the browser's cookie, else the first valid geo header, else `undefined`. */
 export function visitorTimeZone(headers: HeaderBag, cookie: string | undefined, names: readonly string[] = GEO_TZ_HEADERS): string | undefined {
+  const c = decode(cookie);
+  if (validTimeZone(c)) return c;
   for (const n of names) {
     const v = headers.get(n);
     if (validTimeZone(v)) return v;
   }
-  const c = decode(cookie);
-  return validTimeZone(c) ? c : undefined;
+  return undefined;
 }
 
 /** Browser side: keep the zone in the first-party session cookie the server reads next time. */

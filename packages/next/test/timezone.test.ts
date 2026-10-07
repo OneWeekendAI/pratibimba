@@ -1,6 +1,6 @@
 // The visitor's time zone on the server path. A server render has no browser clock, so the
-// proxy names the zone from the edge's IP geolocation header, or from the cookie the browser
-// half sets, and the slot sends it to Core as `ctx.tz`.
+// proxy names the zone from the cookie the browser half sets, or else from the edge's IP
+// geolocation header, and the slot sends it to Core as `ctx.tz`.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,9 +38,10 @@ test('tz_falls_back_to_the_cookie_the_browser_set', () => {
   assert.equal(forwarded(res, 'x-prb-tz'), 'America/New_York');
 });
 
-test('tz_geo_header_wins_over_the_cookie', () => {
+test('tz_cookie_wins_over_the_geo_header', () => {
+  // The browser names its own zone; IP geolocation is wrong on some carriers and every VPN.
   const res = createProxy()(tzReq({ 'x-vercel-ip-timezone': 'Asia/Tokyo', cookie: '_prb_tz=America%2FNew_York' }));
-  assert.equal(forwarded(res, 'x-prb-tz'), 'Asia/Tokyo');
+  assert.equal(forwarded(res, 'x-prb-tz'), 'America/New_York');
 });
 
 test('tz_that_is_not_a_real_zone_is_not_forwarded', () => {
@@ -48,8 +49,13 @@ test('tz_that_is_not_a_real_zone_is_not_forwarded', () => {
   assert.equal(forwarded(res, 'x-prb-tz'), null);
 });
 
-test('tz_bad_geo_header_falls_through_to_the_cookie', () => {
-  const res = createProxy()(tzReq({ 'x-vercel-ip-timezone': 'Mars/Olympus_Mons', cookie: '_prb_tz=Europe%2FParis' }));
+test('tz_bad_cookie_falls_through_to_the_geo_header', () => {
+  const res = createProxy()(tzReq({ 'x-vercel-ip-timezone': 'Europe/Paris', cookie: '_prb_tz=Mars%2FOlympus_Mons' }));
+  assert.equal(forwarded(res, 'x-prb-tz'), 'Europe/Paris');
+});
+
+test('tz_bad_geo_header_falls_through_to_the_next_header', () => {
+  const res = createProxy()(tzReq({ 'x-vercel-ip-timezone': 'Mars/Olympus_Mons', 'cf-timezone': 'Europe/Paris' }));
   assert.equal(forwarded(res, 'x-prb-tz'), 'Europe/Paris');
 });
 
@@ -61,8 +67,8 @@ test('tz_request_header_sent_by_the_client_is_dropped', () => {
 
 test('tz_geo_headers_can_be_switched_off', () => {
   // Off a platform that sets them, a geo header is just something the client sent.
-  const res = createProxy({ timeZoneHeaders: [] })(tzReq({ 'x-vercel-ip-timezone': 'Asia/Tokyo', cookie: '_prb_tz=Europe%2FParis' }));
-  assert.equal(forwarded(res, 'x-prb-tz'), 'Europe/Paris');
+  const res = createProxy({ timeZoneHeaders: [] })(tzReq({ 'x-vercel-ip-timezone': 'Asia/Tokyo' }));
+  assert.equal(forwarded(res, 'x-prb-tz'), null);
 });
 
 // --- the slot sends it ------------------------------------------------------------------------

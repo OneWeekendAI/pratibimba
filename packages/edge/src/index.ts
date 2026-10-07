@@ -30,7 +30,8 @@ export interface EdgeOptions {
   timeoutMs?: number;
   fetch?: typeof fetch;
   /**
-   * Geolocation headers trusted to name the visitor's time zone, first match wins. Default:
+   * Geolocation headers trusted to name the visitor's time zone when the browser's `_prb_tz`
+   * cookie names none, first match wins. Default:
    * Vercel's, Cloudflare's and CloudFront's. Pass `[]` off those platforms, so a client-sent
    * copy is ignored. Cloudflare's `request.cf.timezone` is always read: a client cannot set it.
    */
@@ -129,7 +130,7 @@ export function createEdge(opts: EdgeOptions) {
     };
     // The local clock is read on every request, never fixed in the session cookie.
     const cf = (request as Request & { cf?: { timezone?: unknown } }).cf?.timezone;
-    const tz = typeof cf === 'string' && validTimeZone(cf) ? cf : visitorTimeZone(request.headers, jar.get(TZ_COOKIE), opts.timeZoneHeaders ?? GEO_TZ_HEADERS);
+    const tz = visitorTimeZone(request.headers, jar.get(TZ_COOKIE), opts.timeZoneHeaders ?? GEO_TZ_HEADERS, cf);
     const consent = visitorConsent(jar, opts.consent);
     const decideCtx: Ctx = { ...ctx, ...(tz ? { tz } : {}), consent };
 

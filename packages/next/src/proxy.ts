@@ -25,7 +25,8 @@ export interface ProxyOptions {
    */
   persist?: boolean;
   /**
-   * The edge geolocation headers trusted to name the visitor's time zone, first match wins.
+   * The edge geolocation headers trusted to name the visitor's time zone when the browser's
+   * `_prb_tz` cookie names none, first match wins.
    * Default: Vercel's, Cloudflare's and CloudFront's. Pass `[]` when the app does not run
    * behind one of them, so a client-sent copy is ignored and only the browser's cookie counts.
    */
