@@ -13,6 +13,9 @@
 //! taught the model. `advance` moves the clock forward and runs the sandbox's worker pass, which
 //! closes attribution windows exactly as the real worker would at that time.
 //!
+//! Experiments production has not ended (running or scheduled) are copied with their windows,
+//! so they start, stop and can be stopped on the sandbox's clock; a stop there is the sandbox's.
+//!
 //! What the sandbox does not copy: the real model (it learns from scratch), the kill switch,
 //! and the conversion sources (simulated conversions are the simulator's ground truth, so no
 //! goal is platform-authoritative in a sandbox).
@@ -182,6 +185,25 @@ pub async fn reset(pool: &PgPool, site: &str, at: DateTime<Utc>) -> Result<Strin
         ))
         .bind(real_slot)
         .bind(new_slot)
+        .execute(&mut *tx)
+        .await?;
+        // Experiments production has not ended, so the sandbox decides as production does. Their
+        // windows are copied as they are and play out on the sandbox's clock; arms map by key.
+        sqlx::query(
+            "INSERT INTO experiments (site_id, slot_id, name, metric, arms, starts_at, stops_at, created_by, created_at)
+             SELECT $3, $2, e.name, e.metric,
+                    (SELECT jsonb_agg(jsonb_build_object('variant_id', nv.id, 'weight', a->'weight') ORDER BY nv.id)
+                       FROM jsonb_array_elements(e.arms) a
+                       JOIN variants ov ON ov.id = (a->>'variant_id')::int8
+                       JOIN variants nv ON nv.slot_id = $2 AND nv.key = ov.key),
+                    e.starts_at, e.stops_at, e.created_by, e.created_at
+               FROM experiments e
+              WHERE e.slot_id = $1 AND e.stopped_at IS NULL AND now() < e.stops_at
+              ORDER BY e.id",
+        )
+        .bind(real_slot)
+        .bind(new_slot)
+        .bind(&id)
         .execute(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1)").bind(new_slot).execute(&mut *tx).await?;

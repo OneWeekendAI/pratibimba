@@ -1,6 +1,7 @@
 //! D1: experiments, a fixed-allocation A/B overlay on one slot. While one runs, decide assigns
 //! each visitor an arm by a hash of (experiment, subject) and weights instead of asking the
-//! bandit; the holdout, audiences and the kill switch still come first; stopping it hands the
+//! bandit; the holdout, traffic shares and the kill switch still come first (audiences never gate
+//! an arm, D3); stopping it hands the
 //! slot back to the bandit. Results per arm carry the sequential confidence sequences.
 //!
 //! Every refusal test also sends the one-field-fixed body and sees it accepted, so a refusal
@@ -10,6 +11,7 @@ mod common;
 use axum::{Router, body::Body, http::Request};
 use chrono::{Duration, Utc};
 use common::*;
+use pratibimba::sim;
 use pratibimba::stats::{self, ALPHA};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -371,26 +373,25 @@ async fn the_holdout_still_gets_the_baseline(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn audiences_still_gate_the_arms(pool: PgPool) {
+async fn a_traffic_share_still_gates_the_arms(pool: PgPool) {
     let app = setup(&pool).await;
-    let r = api_post(&app, "/api/sites/demo/segments", json!({ "predicate": { "returning": true }, "actor": "owner" })).await;
-    let aud = r.json()["id"].as_i64().unwrap();
-    api_post(&app, &format!("/api/segments/{aud}/promote"), json!({ "actor": "owner" })).await;
     let gift = variant_id(&pool, "gift").await;
-    let r = api_post(&app, &format!("/api/variants/{gift}/audience"), json!({ "audience": aud, "actor": "owner" })).await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    sqlx::query("UPDATE variants SET traffic_share = 0.5 WHERE key = 'gift'").execute(&pool).await.unwrap();
     create(&app, with(body(), "arms", json!([{ "variant": "baseline", "weight": 1 }, { "variant": "gift", "weight": 1000 }]))).await;
-    for i in 0..20 {
-        let d = shown(&app, &format!("new{i}"), json!({ "returning": false })).await;
-        assert_eq!(d["variant"], "baseline", "a visitor outside the audience got gift: {d}");
+    let (inside, outside): (Vec<String>, Vec<String>) =
+        (0..80).map(|i| format!("s{i}")).partition(|s| pratibimba::hash::within_share(gift, s, 0.5));
+    for s in outside.iter().take(20) {
+        let d = shown(&app, s, json!({})).await;
+        assert_eq!(d["variant"], "baseline", "a visitor outside the share got gift: {d}");
     }
-    let mut gifts = 0;
-    for i in 0..20 {
-        if shown(&app, &format!("back{i}"), json!({ "returning": true })).await["variant"] == "gift" {
-            gifts += 1;
+    assert!(inside.len() >= 20 && outside.len() >= 20, "{} inside, {} outside", inside.len(), outside.len());
+    let mut got = 0;
+    for s in inside.iter().take(20) {
+        if shown(&app, s, json!({})).await["variant"] == "gift" {
+            got += 1;
         }
     }
-    assert!(gifts >= 18, "{gifts}/20 matching visitors got the 99.9% arm");
+    assert!(got >= 18, "{got}/20 visitors inside the share got the 99.9% arm");
 }
 
 #[sqlx::test(migrations = false)]
@@ -564,4 +565,204 @@ async fn there_is_no_mcp_tool_that_writes_an_experiment(pool: PgPool) {
     let names: Vec<String> = r.json()["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
     assert!(names.contains(&"list_experiments".to_string()), "{names:?}");
     assert!(names.iter().filter(|n| n.contains("experiment")).count() == 1, "{names:?}");
+}
+
+// ---- D3: audiences and experiments do not mix ----
+//
+// An audience gates its variant by who the visitor is, so an arm closed to some visitors would be
+// compared on a different population from the others. POST /experiments refuses such an arm, and
+// an arm of an experiment that has not ended cannot be given an audience.
+
+async fn audience(app: &Router) -> i64 {
+    let r = api_post(app, "/api/sites/demo/segments", json!({ "predicate": { "returning": true }, "actor": "owner" })).await;
+    let aud = r.json()["id"].as_i64().unwrap();
+    let r = api_post(app, &format!("/api/segments/{aud}/promote"), json!({ "actor": "owner" })).await;
+    assert!(r.status.is_success(), "{}", r.text);
+    aud
+}
+
+async fn gate(app: &Router, variant: i64, aud: Option<i64>) -> Resp {
+    api_post(app, &format!("/api/variants/{variant}/audience"), json!({ "audience": aud, "actor": "owner" })).await
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_arm_with_an_audience_is_refused(pool: PgPool) {
+    let app = setup(&pool).await;
+    let aud = audience(&app).await;
+    let gift = variant_id(&pool, "gift").await;
+    assert_eq!(gate(&app, gift, Some(aud)).await.status, StatusCode::OK);
+    let r = api_post(&app, "/api/experiments", body()).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
+    assert!(r.text.contains("audience"), "{}", r.text);
+    assert_eq!(gate(&app, gift, None).await.status, StatusCode::OK);
+    create(&app, body()).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_audience_on_a_running_arm_is_refused(pool: PgPool) {
+    let app = setup(&pool).await;
+    let aud = audience(&app).await;
+    let gift = variant_id(&pool, "gift").await;
+    let e = create(&app, body()).await;
+    let r = gate(&app, gift, Some(aud)).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text);
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants WHERE audience_id IS NOT NULL").await, 0);
+    api_post(&app, &format!("/api/experiments/{}/stop", e["id"]), json!({ "actor": "owner" })).await;
+    let r = gate(&app, gift, Some(aud)).await;
+    assert_eq!(r.status, StatusCode::OK, "after the stop: {}", r.text);
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_audience_on_a_scheduled_arm_is_refused(pool: PgPool) {
+    let app = setup(&pool).await;
+    let aud = audience(&app).await;
+    let gift = variant_id(&pool, "gift").await;
+    create(&app, with(body(), "starts_at", json!((Utc::now() + Duration::days(1)).to_rfc3339()))).await;
+    let r = gate(&app, gift, Some(aud)).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text);
+    sqlx::query("UPDATE experiments SET starts_at = now() - interval '2 days', stops_at = now() - interval '1 second'").execute(&pool).await.unwrap();
+    let r = gate(&app, gift, Some(aud)).await;
+    assert_eq!(r.status, StatusCode::OK, "after it ended: {}", r.text);
+}
+
+/// An arm gated before this rule existed can still be freed while its experiment runs.
+#[sqlx::test(migrations = false)]
+async fn clearing_an_audience_on_a_running_arm_is_accepted(pool: PgPool) {
+    let app = setup(&pool).await;
+    let aud = audience(&app).await;
+    let gift = variant_id(&pool, "gift").await;
+    create(&app, body()).await;
+    sqlx::query("UPDATE variants SET audience_id = $1 WHERE key = 'gift'").bind(aud).execute(&pool).await.unwrap();
+    let r = gate(&app, gift, None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants WHERE audience_id IS NOT NULL").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_audience_on_a_variant_outside_the_arms_is_accepted(pool: PgPool) {
+    let app = setup(&pool).await;
+    let aud = audience(&app).await;
+    sqlx::query("INSERT INTO variants (slot_id, key, payload, status, approved_by) SELECT slot_id, 'other', payload, status, approved_by FROM variants WHERE key = 'gift'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    create(&app, body()).await;
+    let r = gate(&app, variant_id(&pool, "other").await, Some(aud)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let r = gate(&app, variant_id(&pool, "gift").await, Some(aud)).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text);
+}
+
+// ---- D2: a sandbox copies the experiments production would run ----
+
+async fn sim_shown(app: &Router, subject: &str) -> Value {
+    let r = post(app, "/decide", json!({ "site": "demo~sim", "slot": "hero", "subject": subject })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    r.json()
+}
+
+async fn sim_list(app: &Router) -> Value {
+    let r = api_get(app, "/api/sites/demo~sim/experiments").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    r.json()
+}
+
+fn heavy_gift() -> Value {
+    with(body(), "arms", json!([{ "variant": "baseline", "weight": 1 }, { "variant": "gift", "weight": 1000 }]))
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_running_experiment_is_copied_into_the_sandbox(pool: PgPool) {
+    let app = setup(&pool).await;
+    let e = create(&app, heavy_gift()).await;
+    sim::reset(&pool, "demo", Utc::now()).await.unwrap();
+    let mut gifts = 0;
+    for i in 0..20 {
+        let d = sim_shown(&app, &format!("v{i}")).await;
+        assert_eq!(d["explanation"]["allocation"], "experiment", "{d}");
+        assert_eq!(d["explanation"]["experiment"]["name"], "gift vs baseline", "{d}");
+        assert_ne!(d["explanation"]["experiment"]["id"], e["id"], "the sandbox decided under the real experiment: {d}");
+        gifts += (d["variant"] == "gift") as i32;
+    }
+    assert!(gifts >= 18, "{gifts}/20 sandbox visitors got the 99.9% arm");
+    let copy = &sim_list(&app).await["experiments"][0];
+    assert_eq!(copy["status"], "running", "{copy}");
+    assert_eq!(copy["stops_at"], e["stops_at"], "{copy}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_stopped_experiment_is_not_copied_into_the_sandbox(pool: PgPool) {
+    let app = setup(&pool).await;
+    let old = create(&app, with(body(), "name", json!("old"))).await;
+    api_post(&app, &format!("/api/experiments/{}/stop", old["id"]), json!({ "actor": "owner" })).await;
+    create(&app, with(body(), "name", json!("new"))).await;
+    sim::reset(&pool, "demo", Utc::now()).await.unwrap();
+    let names: Vec<Value> = sim_list(&app).await["experiments"].as_array().unwrap().iter().map(|e| e["name"].clone()).collect();
+    assert_eq!(names, vec![json!("new")]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_ended_experiment_is_not_copied_into_the_sandbox(pool: PgPool) {
+    let app = setup(&pool).await;
+    create(&app, with(body(), "name", json!("old"))).await;
+    sqlx::query("UPDATE experiments SET starts_at = now() - interval '2 days', stops_at = now() - interval '1 day'").execute(&pool).await.unwrap();
+    create(&app, with(body(), "name", json!("new"))).await;
+    sim::reset(&pool, "demo", Utc::now()).await.unwrap();
+    let names: Vec<Value> = sim_list(&app).await["experiments"].as_array().unwrap().iter().map(|e| e["name"].clone()).collect();
+    assert_eq!(names, vec![json!("new")]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_sandbox_copy_ends_at_the_sandbox_clock(pool: PgPool) {
+    let app = setup(&pool).await;
+    create(&app, heavy_gift()).await;
+    sim::reset(&pool, "demo", Utc::now()).await.unwrap();
+    assert_eq!(sim_shown(&app, "early").await["explanation"]["allocation"], "experiment");
+    sim::advance(&pool, "demo", 8 * sim::DAY, None).await.unwrap();
+    let d = sim_shown(&app, "late").await;
+    assert_eq!(d["explanation"]["allocation"], "bandit", "the copy outlived its stops_at on the sandbox clock: {d}");
+    assert_eq!(sim_list(&app).await["experiments"][0]["status"], "stopped");
+    assert_eq!(list(&app).await["experiments"][0]["status"], "running", "the real experiment ended too");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_scheduled_experiment_starts_at_the_sandbox_clock(pool: PgPool) {
+    let app = setup(&pool).await;
+    create(&app, with(heavy_gift(), "starts_at", json!((Utc::now() + Duration::days(2)).to_rfc3339()))).await;
+    sim::reset(&pool, "demo", Utc::now()).await.unwrap();
+    assert_eq!(sim_shown(&app, "early").await["explanation"]["allocation"], "bandit");
+    sim::advance(&pool, "demo", 3 * sim::DAY, None).await.unwrap();
+    let d = sim_shown(&app, "late").await;
+    assert_eq!(d["explanation"]["allocation"], "experiment", "{d}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn stopping_in_the_sandbox_dates_the_stop_by_the_sandbox_clock(pool: PgPool) {
+    let app = setup(&pool).await;
+    create(&app, heavy_gift()).await;
+    let t0 = Utc::now();
+    sim::reset(&pool, "demo", t0).await.unwrap();
+    sim::advance(&pool, "demo", 2 * sim::DAY, None).await.unwrap();
+    let copy = sim_list(&app).await["experiments"][0]["id"].clone();
+    let r = api_post(&app, &format!("/api/experiments/{copy}/stop"), json!({ "actor": "owner" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let at: chrono::DateTime<Utc> = serde_json::from_value(r.json()["stopped_at"].clone()).unwrap();
+    assert_eq!((at - t0).num_days(), 2, "stopped at {at}, clock started {t0}");
+    assert_eq!(sim_shown(&app, "after").await["explanation"]["allocation"], "bandit");
+    assert_eq!(list(&app).await["experiments"][0]["status"], "running", "the sandbox stop reached the real experiment");
+}
+
+#[sqlx::test(migrations = false)]
+async fn creating_in_the_sandbox_starts_at_the_sandbox_clock(pool: PgPool) {
+    let app = setup(&pool).await;
+    let t0 = Utc::now();
+    sim::reset(&pool, "demo", t0).await.unwrap();
+    sim::advance(&pool, "demo", 10 * sim::DAY, None).await.unwrap();
+    let b = with(body(), "site", json!("demo~sim"));
+    let r = api_post(&app, "/api/experiments", b.clone()).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "a week from the wall clock is already past on the sandbox's: {}", r.text);
+    let e = create(&app, with(b, "stops_at", json!((t0 + Duration::days(20)).to_rfc3339()))).await;
+    let at: chrono::DateTime<Utc> = serde_json::from_value(e["starts_at"].clone()).unwrap();
+    assert_eq!((at - t0).num_days(), 10, "started at {at}, clock started {t0}");
+    assert_eq!(e["status"], "running");
 }

@@ -9,8 +9,12 @@
 //! - the **kill switch** wins: a paused site serves its baseline and ignores the experiment;
 //! - the **holdout** still gets the baseline (its decisions carry the experiment id, so a stop
 //!   ends their stickiness too, but not its allocation);
-//! - **audiences** and planned **traffic shares** still close arms: the hash picks among the
-//!   arms still open to this visitor, reweighted; with none open the bandit decides.
+//! - planned **traffic shares** still close arms: the hash picks among the arms still open to
+//!   this visitor, reweighted; with none open the bandit decides. A share closes an arm by a hash
+//!   of the subject, so the visitors left on each arm are still a random draw;
+//! - **audiences** never meet an experiment: an audience closes an arm by who the visitor is, so
+//!   its lift would compare different populations. Creating an experiment refuses an arm with an
+//!   audience, and an arm of an experiment that has not ended cannot be given one.
 //!
 //! The bandit **learns from** experiment decisions. LinTS fits each arm's reward against the
 //! context; an assignment that depends only on a hash of the subject is independent of the
@@ -130,19 +134,25 @@ pub async fn create(pool: &PgPool, n: New) -> Result<Value, ApiError> {
         if !(a.weight.is_finite() && a.weight > 0.0) {
             return Err(ApiError::BadRequest(format!("arm {:?}: weight must be a positive number", a.variant)));
         }
-        let status: Option<(i64, String)> = sqlx::query_as("SELECT id, status FROM variants WHERE slot_id = $1 AND key = $2")
+        let status: Option<(i64, String, Option<i64>)> = sqlx::query_as("SELECT id, status, audience_id FROM variants WHERE slot_id = $1 AND key = $2")
             .bind(slot_id)
             .bind(&a.variant)
             .fetch_optional(&mut *tx)
             .await?;
         match status {
-            Some((id, s)) if s == "approved" => {
+            Some((_, s, Some(_))) if s == "approved" => {
+                return Err(ApiError::BadRequest(format!(
+                    "arm {:?} is gated by an audience; its visitors are not comparable with the other arms'. Clear the audience first",
+                    a.variant
+                )));
+            }
+            Some((id, s, None)) if s == "approved" => {
                 if arms.iter().any(|x| x.0 == id) {
                     return Err(ApiError::BadRequest(format!("arm {:?} is named twice", a.variant)));
                 }
                 arms.push((id, a.variant.clone(), a.weight));
             }
-            Some((_, s)) => return Err(ApiError::BadRequest(format!("arm {:?} is {s}; only approved variants can be arms", a.variant))),
+            Some((_, s, _)) => return Err(ApiError::BadRequest(format!("arm {:?} is {s}; only approved variants can be arms", a.variant))),
             None => return Err(ApiError::BadRequest(format!("slot {:?} has no variant {:?}", n.slot, a.variant))),
         }
     }
@@ -183,6 +193,20 @@ pub async fn create(pool: &PgPool, n: New) -> Result<Value, ApiError> {
     .await?;
     tx.commit().await?;
     one(pool, id).await
+}
+
+/// The experiment, not yet ended at its site's clock, that has `variant` as an arm. Call it with
+/// the slot row locked, as `create` holds it, so the answer cannot change before the caller acts.
+pub async fn unended_with_arm(conn: &mut sqlx::PgConnection, variant: i64) -> Result<Option<i64>, ApiError> {
+    Ok(sqlx::query_scalar(
+        "SELECT e.id FROM experiments e JOIN variants v ON v.slot_id = e.slot_id JOIN sites t ON t.id = e.site_id
+          WHERE v.id = $1 AND e.arms @> jsonb_build_array(jsonb_build_object('variant_id', $1::int8))
+            AND COALESCE(t.sim_now, now()) < least(e.stops_at, coalesce(e.stopped_at, 'infinity'))
+          ORDER BY e.id LIMIT 1",
+    )
+    .bind(variant)
+    .fetch_optional(conn)
+    .await?)
 }
 
 /// End an experiment now. Its slot returns to the bandit on the next decision.

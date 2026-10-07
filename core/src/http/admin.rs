@@ -897,7 +897,18 @@ async fn set_audience(State(state): State<Arc<AppState>>, Path(id): Path<i64>, J
             _ => {}
         }
     }
-    sqlx::query("UPDATE variants SET audience_id = $2 WHERE id = $1").bind(id).bind(b.audience).execute(&state.pool).await?;
+    // The slot row lock orders this against POST /experiments, which takes it first.
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT 1 FROM slots WHERE id = (SELECT slot_id FROM variants WHERE id = $1) FOR UPDATE").bind(id).execute(&mut *tx).await?;
+    if b.audience.is_some() {
+        if let Some(e) = crate::experiments::unended_with_arm(&mut tx, id).await? {
+            return Err(ApiError::Conflict(format!(
+                "variant {id} is an arm of experiment {e}; an audience would make its arms compare different visitors. Stop the experiment first"
+            )));
+        }
+    }
+    sqlx::query("UPDATE variants SET audience_id = $2 WHERE id = $1").bind(id).bind(b.audience).execute(&mut *tx).await?;
+    tx.commit().await?;
     tracing::info!(variant = id, audience = ?b.audience, actor = %who, "variant audience set");
     Ok(Json(json!({ "variant": id, "audience": b.audience })))
 }

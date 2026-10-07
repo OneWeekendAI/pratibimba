@@ -518,7 +518,7 @@ results, slots, decisions (with replay and the counterfactual), drafts, the appr
 and comment actions, install probes, model versions with manual rollback, the simulator,
 conversion sources and privacy (mode, fields, erase, the erasure log, subject access).
 `POST /api/variants/:id/audience {audience: <segment id> | null, actor}`
-restricts a variant to a promoted audience, or lifts the restriction.
+restricts a variant to a promoted audience, or lifts the restriction. 409 while the variant is an arm of an experiment that has not ended.
 
 ### Visitor insights
 
@@ -635,9 +635,13 @@ While it runs, each visitor gets the arm a hash of (experiment, subject) lands o
 to the weights, so a visitor keeps their arm across visits. The decision says so
 (`explanation.allocation: "experiment"` and `explanation.experiment`). The other gates come
 first, as always: a paused site serves its baseline, the holdout gets the baseline, and an arm
-an audience or a planned traffic share closes to a visitor is skipped (with every arm closed,
-the bandit decides). Stopping it, or reaching `stops_at`, hands the slot back to the bandit on
-the next decision.
+a planned traffic share closes to a visitor is skipped (with every arm closed, the bandit
+decides). Stopping it, or reaching `stops_at`, hands the slot back to the bandit on the next
+decision.
+
+Arms carry no audiences: an audience closes an arm by who the visitor is, so its lift would compare different people, and refusing that at `POST /experiments` (and refusing an audience on an arm until the experiment ends) is simpler than restricting every result to visitors eligible for every arm, which would need each decision's eligibility recorded and would throw away the rest of the traffic; a traffic share closes arms by a hash of the subject, so it leaves the arms comparable.
+
+A simulator sandbox copies the experiments production has not ended, windows and all, so it decides as production does; they start, stop and can be stopped on the sandbox's clock, and a stop there touches only the copy.
 
 The bandit learns from experiment traffic: LinTS fits each arm's outcome against the context, and an assignment by a hash of the visitor is independent of the outcome, so the fit stays unbiased and the test's visitors are not wasted.
 
@@ -649,7 +653,7 @@ may look as often as you like.
 | Method and path (admin token) | What it does |
 |---|---|
 | `GET /api/sites/:site/experiments` | Every experiment, newest first: arms and weights, `control`, `starts_at`, `stops_at`, `status` (`scheduled`, `running`, `stopped`) and `results.arms[]` with `counts`, `rate` and `lift`. |
-| `POST /api/experiments` | `{site, slot, name, actor, arms: [{variant, weight}], stops_at, starts_at?, metric?}`. 201. Refuses fewer than two arms, a variant that is not approved on the slot, a repeated arm, a weight that is not positive, a stop not after the start or already past, a metric other than the slot's, and (409) a window that overlaps another experiment on the slot. |
+| `POST /api/experiments` | `{site, slot, name, actor, arms: [{variant, weight}], stops_at, starts_at?, metric?}`. 201. Refuses fewer than two arms, a variant that is not approved on the slot, a repeated arm, a weight that is not positive, a stop not after the start or already past, a metric other than the slot's, an arm gated by an audience, and (409) a window that overlaps another experiment on the slot. |
 | `POST /api/experiments/:id/stop` | `{actor}`. Ends it now; 409 if it has already stopped. |
 
 ## Development
