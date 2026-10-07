@@ -182,6 +182,15 @@ A person approves. You do not, and you cannot.
 - A plugin marked `deanonymiser` sends visitor identity to a third party. Do not request one
   unless the user asked for that plugin by name, and tell them the dashboard will show a warning.
 
+## Experiments: you read, the owner runs them
+
+- `list_experiments` shows the site's A/B experiments: arms and weights, start and stop,
+  status, and each arm's rate and lift over the control with confidence intervals. While one
+  runs on a slot, a hash of the visitor picks the arm, not the bandit.
+- There is no tool to create or stop one. If the user wants a formal test, tell them to start it
+  in the dashboard API (`POST /api/experiments`). Read a lift as a winner only when its interval
+  excludes zero.
+
 ## The simulator is a sandbox
 
 `simulate` and `fast_forward_visitor` run only in the site's sandbox, a copy of the site with
