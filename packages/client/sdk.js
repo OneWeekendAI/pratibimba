@@ -18,9 +18,10 @@
  * The subject lives in sessionStorage (cookieless) or in a first-party `_prb_subject` cookie for
  * a year, by the site's privacy_mode (from the manifest): `full` always uses the cookie,
  * `cookieless` never does, and `consent_aware` (the default) uses it only with consent. Consent
- * is the tag's data-cookie="on" (the page says it has it), or else the latest Google Consent
- * Mode `analytics_storage` in dataLayer, or else OneTrust's performance group (C0002). It is
- * read once per page; a choice made on the page applies from the next one. Every decide and
+ * is the tag's data-cookie="on" (the page says it has it), or else IAB TCF v2 purpose 1 from
+ * __tcfapi, or else the latest Google Consent Mode `analytics_storage` in dataLayer, or else
+ * OneTrust's performance group (C0002). It is read once per page; a choice made on the page
+ * (or a TCF answer that arrives after the read) applies from the next one. Every decide and
  * event batch says whether the visitor consented, and Core stores a daily pseudonym otherwise.
  *
  * Picker slots (kind "picker"): when the decision is `picker`, the SDK renders the owner's
@@ -46,8 +47,33 @@
   var base = script.getAttribute('data-base') || (script.src || '').replace(/sdk\.js(\?.*)?$/, '');
   var timeoutMs = parseInt(script.getAttribute('data-timeout') || '400', 10);
   var mode = manifest.privacy_mode || 'consent_aware';
+  // IAB TCF v2 (purpose 1, "store and/or access information on a device"). __tcfapi is
+  // asynchronous: a CMP that already holds the choice answers at once and that answer counts on
+  // this page; a later answer is kept in sessionStorage and counts from the next page. A CMP
+  // that says GDPR does not apply, or whose banner is still up, is no answer.
+  function tcf() {
+    var now = null;
+    if (typeof window.__tcfapi === 'function') {
+      try {
+        window.__tcfapi('addEventListener', 2, function (d, ok) {
+          if (!ok || !d) return;
+          var v = null;
+          if (d.gdprApplies === false) v = 'na';
+          else if (d.eventStatus === 'tcloaded' || d.eventStatus === 'useractioncomplete')
+            v = d.purpose && d.purpose.consents && d.purpose.consents[1] === true ? '1' : '0';
+          if (v === null) return;
+          now = v;
+          try { window.sessionStorage.setItem('prb_tcf', v); } catch (e) { /* private mode */ }
+        });
+      } catch (e) { /* a broken CMP is no answer */ }
+    }
+    if (now === null) { try { now = window.sessionStorage.getItem('prb_tcf'); } catch (e) { /* private mode */ } }
+    return now === '1' ? true : now === '0' ? false : null;
+  }
   function consented() {
     if (script.getAttribute('data-cookie') === 'on') return true;
+    var iab = tcf();
+    if (iab !== null) return iab;
     var google = null;
     (window.dataLayer || []).forEach(function (e) {
       if (e && e[0] === 'consent' && e[2] && e[2].analytics_storage) google = e[2].analytics_storage;
