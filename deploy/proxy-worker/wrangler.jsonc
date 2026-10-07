@@ -1,0 +1,11 @@
+{
+  "name": "pratibimba-api-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  // Core on Cloud Run in asia-northeast3 (Seoul), next to Supabase.
+  "vars": { "ORIGIN": "https://pratibimba-core-7i7wb4r5qa-du.a.run.app" },
+  "observability": { "enabled": true }
+  // The live route is added by deploy/proxy-worker/switch.sh (on|off), not here, so a plain
+  // `wrangler deploy` never moves production traffic.
+}

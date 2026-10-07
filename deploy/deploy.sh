@@ -2,6 +2,9 @@
 # Build locally (linux/amd64), push to Artifact Registry, and deploy the service and the job
 # by digest, so what runs is exactly what was pushed. Usage: deploy/deploy.sh
 # To redeploy an image already pushed (no build): IMAGE=<repo>@sha256:... deploy/deploy.sh
+# REGION picks the region (default asia-northeast3, see config.sh). While Taiwan (asia-east1)
+# is the rollback target, deploy the same digest there too, or a rollback serves an old build:
+#   REGION=asia-east1 IMAGE=<the digest printed below> deploy/deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . deploy/config.sh

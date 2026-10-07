@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # One-time: map the API hostnames to the service and add DNS-only CNAMEs in Cloudflare.
 # Needs CLOUDFLARE_API_TOKEN with Zone:DNS:Edit on meetdev.in. Never touches other records.
+# Cloud Run domain mappings exist only in some regions (asia-east1 yes, asia-northeast3 no), so
+# this runs with REGION=asia-east1. For Seoul the hostname goes through deploy/proxy-worker/.
 set -euo pipefail
+REGION=${REGION:-asia-east1}
 . "$(dirname "$0")/config.sh"
 ZONE=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/zones?name=meetdev.in" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"][0]["id"])')
 for d in $DOMAINS; do
