@@ -180,7 +180,9 @@ Google Consent Mode `analytics_storage`, or OneTrust's performance group, in tha
 To send [declared features](#the-site-file), set them before the script tag:
 `window.__prb_features = { loyalty_member: true }`. The script sends only names the manifest
 declares, only booleans, and a PII one only when the visitor is identified, so it never leaves
-the browser otherwise.
+the browser otherwise. On a server install, pass `features` to `createPratibimba` (a function of
+the request headers) or `createEdge` (a function of the `Request`); the same rule applies, against
+the manifest's declared list, and in-session weights carry the features too.
 
 To try it locally, run `serve` with `PRB_SITE_ORIGIN=http://localhost:5173`, then serve
 `examples/plain/` on port 5173.
