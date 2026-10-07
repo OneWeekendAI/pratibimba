@@ -8,6 +8,8 @@ export interface Ctx {
   tz?: string;
   /** Whether the visitor consented to being remembered (see consent.ts). */
   consent?: boolean;
+  /** Declared features, name -> on (see features.ts). */
+  features?: Record<string, boolean>;
 }
 
 export interface Decision {

@@ -19,6 +19,7 @@ export { createProxy, createRoute, createSlot };
 export { encodeCtx, decodeCtx, contextFor, SUBJECT_COOKIE, SESSION_COOKIE, SDK_HEADER, VERSION } from './context.ts';
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone } from './timezone.ts';
 export { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
+export { MANIFEST_TTL_MS, type FeatureValues } from './features.ts';
 
 export interface PratibimbaConfig extends SlotConfig, ProxyOptions {}
 

@@ -10,10 +10,12 @@ import { BEACON_JS } from './beacon.ts';
 import { beforeBodyEnd, rewriter, type Replacement } from './markers.ts';
 import { GEO_TZ_HEADERS, TZ_COOKIE, validTimeZone, visitorTimeZone } from './timezone.ts';
 import { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
+import { MANIFEST_TTL_MS, featuresFor, manifestReader, type FeatureValues } from './features.ts';
 
 export { rewriter, beforeBodyEnd, BEACON_JS };
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone, CONSENT_COOKIE, visitorConsent };
-export type { ConsentOption };
+export { MANIFEST_TTL_MS };
+export type { ConsentOption, FeatureValues };
 export const VERSION = '0.1.0';
 export const SUBJECT_COOKIE = '_prb_subject';
 export const SESSION_COOKIE = '_prb_s';
@@ -42,6 +44,14 @@ export interface EdgeOptions {
    * (`_prb_consent`, TCF's `euconsent-v2`, OneTrust's `OptanonConsent`). Default: those cookies.
    */
   consent?: ConsentOption;
+  /**
+   * The visitor's declared features for this request, name -> on (the server twin of the
+   * browser's `window.__prb_features`), read from the request: your session cookie, say. Sent
+   * as `ctx.features`: only names the site file declares (from Core's manifest, cached for a
+   * minute), only booleans, and a pii one only when the visitor is identified (`full`, or
+   * `consent_aware` with consent).
+   */
+  features?: (request: Request) => FeatureValues | undefined | Promise<FeatureValues | undefined>;
 }
 
 interface Ctx {
@@ -52,6 +62,8 @@ interface Ctx {
   tz?: string;
   /** Whether the visitor consented to being remembered (see consent.ts). */
   consent?: boolean;
+  /** Declared features, name -> on (see features.ts). */
+  features?: Record<string, boolean>;
 }
 
 const MOBILE = /Mobi|Android|iPhone|iPad|iPod/i;
@@ -91,6 +103,7 @@ function attr(json: unknown) {
 export function createEdge(opts: EdgeOptions) {
   const f = opts.fetch ?? fetch;
   const core = opts.core.replace(/\/$/, '');
+  const readManifest = manifestReader(opts);
 
   async function forward(request: Request, path: string): Promise<Response> {
     if (path === 'beacon.js') {
@@ -132,14 +145,20 @@ export function createEdge(opts: EdgeOptions) {
     const cf = (request as Request & { cf?: { timezone?: unknown } }).cf?.timezone;
     const tz = visitorTimeZone(request.headers, jar.get(TZ_COOKIE), opts.timeZoneHeaders ?? GEO_TZ_HEADERS, cf);
     const consent = visitorConsent(jar, opts.consent);
-    const decideCtx: Ctx = { ...ctx, ...(tz ? { tz } : {}), consent };
+    const baseCtx: Ctx = { ...ctx, ...(tz ? { tz } : {}), consent };
+    // Read once per page, and only when the first slot needs it: the origin never waits.
+    let ctxP: Promise<Ctx> | null = null;
+    const decideCtx = () =>
+      (ctxP ??= opts.features
+        ? featuresFor(readManifest, () => opts.features!(request), consent).then((features) => (features ? { ...baseCtx, features } : baseCtx))
+        : Promise.resolve(baseCtx));
 
     const decided: { slot: string; id: string }[] = [];
     async function decide(slot: string): Promise<Replacement> {
       const r = await f(`${core}/decide`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ site: opts.site, slot, subject, ctx: decideCtx }),
+        body: JSON.stringify({ site: opts.site, slot, subject, ctx: await decideCtx() }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 300),
       });
       if (!r.ok) return { html: null };

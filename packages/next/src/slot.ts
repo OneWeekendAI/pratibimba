@@ -10,6 +10,9 @@ import { decideBatch, isDecision, type Ctx, type Decision, type Fetch } from './
 import { CTX_HEADER, SUBJECT_HEADER, decodeCtx } from './context.ts';
 import { TZ_HEADER, validTimeZone } from './timezone.ts';
 import { CONSENT_HEADER } from './consent.ts';
+import { featuresFor, manifestReader, type FeatureValues } from './features.ts';
+
+type HeaderReader = Headers | { get(name: string): string | null };
 
 export interface Visitor {
   subject: string;
@@ -24,9 +27,17 @@ export interface SlotConfig {
   /** Where the browser posts events; the route file mounts it. */
   eventsPath?: string;
   /** Reads the request headers. Default: Next.js's `headers()`. */
-  headers?: () => Promise<Headers | { get(name: string): string | null }>;
+  headers?: () => Promise<HeaderReader>;
   /** One object per request; slots that share it share a batch. Default: React's `cache`. */
   requestScope?: () => object;
+  /**
+   * The visitor's declared features for this request, name -> on (the server twin of the
+   * browser's `window.__prb_features`). Called once per render with the request headers; it
+   * may also use Next's `cookies()` or your session. Sent as `ctx.features`: only names the
+   * site file declares, only booleans, and a pii one only when the visitor is identified
+   * (`full`, or `consent_aware` with consent).
+   */
+  features?: (headers: HeaderReader) => FeatureValues | undefined | Promise<FeatureValues | undefined>;
 }
 
 export interface SlotProps {
@@ -45,9 +56,11 @@ class Batch {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private config: SlotConfig;
   private visitor: Visitor;
-  constructor(config: SlotConfig, visitor: Visitor) {
+  private ctx: Promise<Ctx>;
+  constructor(config: SlotConfig, visitor: Visitor, ctx: Promise<Ctx>) {
     this.config = config;
     this.visitor = visitor;
+    this.ctx = ctx;
   }
 
   decide(slot: string): Promise<Decision | null> {
@@ -64,7 +77,7 @@ class Batch {
     const slots = [...new Set(batch.map((p) => p.slot))];
     let results: Map<string, Decision> = new Map();
     try {
-      const ds = await decideBatch(this.config, this.visitor.subject, this.visitor.ctx, slots);
+      const ds = await decideBatch(this.config, this.visitor.subject, await this.ctx, slots);
       results = new Map(ds.filter(isDecision).map((d) => [d.slot, d]));
     } catch (e) {
       // Core down or slow: every slot renders its baseline. The page never waits on us.
@@ -82,6 +95,15 @@ async function defaultHeaders() {
 export function createSlot(config: SlotConfig) {
   const scope = config.requestScope ?? cache(() => ({}));
   const batches = new WeakMap<object, Batch>();
+  const readManifest = manifestReader(config);
+
+  /** The visit's context plus its declared features, for the one batch of this request. */
+  async function decideCtx(v: Visitor): Promise<Ctx> {
+    if (!config.features) return v.ctx;
+    const h = await (config.headers ?? defaultHeaders)();
+    const features = await featuresFor(readManifest, () => config.features!(h), v.ctx.consent);
+    return features ? { ...v.ctx, features } : v.ctx;
+  }
 
   async function visitor(): Promise<Visitor | null> {
     const h = await (config.headers ?? defaultHeaders)();
@@ -104,7 +126,7 @@ export function createSlot(config: SlotConfig) {
     const key = scope();
     let b = batches.get(key);
     if (!b) {
-      b = new Batch(config, v);
+      b = new Batch(config, v, decideCtx(v));
       batches.set(key, b);
     }
     return b.decide(slot);
