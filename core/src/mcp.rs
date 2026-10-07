@@ -15,6 +15,9 @@
 //! - **Retirement, proposed:** `retire_variant` records a proposal; the variant keeps serving
 //!   until a person confirms it (`POST /api/retire-requests/{id}/confirm`). backend.md leaves the
 //!   retire permission open, so this takes the drafts-only floor.
+//! - **Plugins, requested:** `list_plugins` reads the compiled-in catalogue as this site has it;
+//!   `install_plugin` records a request that a person confirms
+//!   (`POST /api/plugin-requests/{id}/confirm`) before anything is installed.
 //! - **Audiences:** `list_audiences` reads the site's segments and what each gates;
 //!   `create_audience` writes a DRAFT segment. Promotion (the permission to gate a decision) is
 //!   the owner's, in the dashboard, exactly like approval.
@@ -152,13 +155,14 @@ This token sees one site. Read slots, variants, results and decision explanation
 propose_variant submits a DRAFT: a person approves it in the dashboard; you cannot. \
 create_slot makes a DRAFT slot (live only once a person approves its baseline); update_slot edits only draft slots. \
 retire_variant PROPOSES a retirement; the variant keeps serving until a person confirms. \
+install_plugin REQUESTS a plugin; nothing is installed until a person confirms. \
 simulate and fast_forward_visitor run only in the site's sandbox, never on real traffic. \
 Every tool needs `agent` (your name, e.g. \"Claude Code\") and a one-line `justification`; both are \
 recorded and shown to the reviewer. Reviewer comments come back on list_variants.";
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 15] = [
+const TOOLS: [&str; 17] = [
     "list_sites",
     "get_site",
     "list_slots",
@@ -174,6 +178,8 @@ const TOOLS: [&str; 15] = [
     "create_slot",
     "update_slot",
     "retire_variant",
+    "list_plugins",
+    "install_plugin",
 ];
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
@@ -228,6 +234,11 @@ fn catalogue() -> Vec<Value> {
         tool("retire_variant", "PROPOSE retiring a live variant (your justification is the reason the reviewer reads). It keeps serving until a person confirms in the dashboard; you cannot retire it yourself. The baseline cannot be retired. The answer appears on list_variants.",
              json!({ "slot": slot, "variant": { "type": "string", "description": "The variant key." } }),
              &["slot", "variant"]),
+        tool("list_plugins", "The compiled-in plugin catalogue as this site has it: each plugin's kind, whether it is a de-anonymiser, its install (or null) and your latest request with its answer; plus the site's warnings.", json!({}), &[]),
+        tool("install_plugin", "REQUEST installing a plugin on this site (your justification is the reason the reviewer reads). Nothing is installed until a person confirms in the dashboard API; you cannot install it yourself. The answer appears on list_plugins.",
+             json!({ "plugin": { "type": "string", "description": "The plugin name from list_plugins, e.g. \"attribution.linear\"." },
+                     "config": { "type": "object", "description": "Optional: the plugin's config, e.g. {\"url\": \"https://...\"} for an event sink." } }),
+             &["plugin"]),
         tool("list_audiences", "The site's segments (draft, active, audience) with their predicates, and the variants each promoted audience restricts.", json!({}), &[]),
         tool("create_audience", "Draft a segment from a predicate over behaviour and situation features (returning, mobile, from_ad, is_night_local, is_weekend_local, is_business_hours_local, hour_local: [from, to]). It lands as a DRAFT: a person promotes it to an audience in the dashboard before it can restrict any variant. Demographic attributes are refused.",
              json!({ "predicate": { "type": "object", "description": "e.g. {\"returning\": true, \"is_night_local\": true}" },
@@ -456,6 +467,14 @@ struct SlotUpdate {
     metric: Option<String>,
     attribution_window_secs: Option<i32>,
     decision_ttl_secs: Option<i32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginArgs {
+    plugin: String,
+    #[serde(default)]
+    config: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -789,6 +808,14 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
         "create_slot" => create_slot(pool, site, parse(args)?, call_row, agent).await,
         "update_slot" => update_slot(pool, site, parse(args)?).await,
         "retire_variant" => retire_variant(pool, site, parse(args)?, call_row, who).await,
+        "list_plugins" => {
+            parse::<NoArgs>(args)?;
+            crate::plugins::listing(pool, site).await
+        }
+        "install_plugin" => {
+            let a: PluginArgs = parse(args)?;
+            crate::plugins::request(pool, site, &a.plugin, a.config.as_ref(), call_row, who.agent, who.justification).await
+        }
         _ => unreachable!("tools/call checks the catalogue first"),
     }
 }

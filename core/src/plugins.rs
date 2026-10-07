@@ -8,6 +8,9 @@
 //! - **`event_sink`**: forwards the site's events somewhere. It is a webhook subscription
 //!   ([`crate::webhooks`]) the plugin owns: created on install, deleted on uninstall.
 //!
+//! An agent cannot install one: MCP's `install_plugin` records a request ([`request`]) that a
+//! person confirms or declines (`/api/plugin-requests/{id}/...`), as with `retire_variant`.
+//!
 //! Each plugin declares `deanonymiser`: whether it hands visitor identity to a third party. Core
 //! ships none switched on; while one is installed the site carries a warning ([`warnings`]),
 //! which the API returns and the dashboard shows.
@@ -186,12 +189,95 @@ pub async fn listing(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
     site_exists(&mut *pool.acquire().await?, site).await?;
     let rows: Vec<(String, Value, String, chrono::DateTime<chrono::Utc>)> =
         sqlx::query_as("SELECT name, config, installed_by, installed_at FROM plugins WHERE site_id = $1").bind(site).fetch_all(pool).await?;
+    // Each plugin's latest request, so an agent reads its answer (and a decline's reason).
+    let reqs: Vec<(String, Value)> = sqlx::query_as(
+        "SELECT DISTINCT ON (name) name, jsonb_build_object('id', id, 'status', status, 'config', config, 'agent', agent,
+                'decided_by', decided_by, 'comment', comment, 'at', created_at)
+           FROM plugin_requests WHERE site_id = $1 ORDER BY name, id DESC",
+    )
+    .bind(site)
+    .fetch_all(pool)
+    .await?;
     let plugins: Vec<Value> = CATALOGUE
         .iter()
         .map(|p| {
             let installed = rows.iter().find(|r| r.0 == p.name).map(|(_, c, by, at)| json!({ "config": c, "by": by, "at": at }));
-            json!({ "name": p.name, "kind": p.kind.as_str(), "description": p.description, "deanonymiser": p.deanonymiser, "installed": installed })
+            let request = reqs.iter().find(|r| r.0 == p.name).map(|r| r.1.clone());
+            json!({ "name": p.name, "kind": p.kind.as_str(), "description": p.description, "deanonymiser": p.deanonymiser,
+                    "installed": installed, "request": request })
         })
         .collect();
     Ok(json!({ "site": site, "plugins": plugins, "warnings": warnings(pool, site).await? }))
+}
+
+/// An agent's install request: checked now (known plugin, valid config, not installed, no open
+/// request), installed only when a person confirms it.
+pub async fn request(pool: &PgPool, site: &str, name: &str, config: Option<&Value>, call_row: i64, agent: &str, reason: &str) -> Result<Value, ApiError> {
+    let p = known(name)?;
+    let config = check_config(p, config)?;
+    let installed: Option<i32> = sqlx::query_scalar("SELECT 1 FROM plugins WHERE site_id = $1 AND name = $2").bind(site).bind(p.name).fetch_optional(pool).await?;
+    if installed.is_some() {
+        return Err(ApiError::Conflict(format!("{} is already installed on {site:?}", p.name)));
+    }
+    let id: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO plugin_requests (site_id, name, config, mcp_call_id, agent, reason) VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (site_id, name) WHERE status = 'pending' DO NOTHING RETURNING id",
+    )
+    .bind(site)
+    .bind(p.name)
+    .bind(&config)
+    .bind(call_row)
+    .bind(agent.chars().take(128).collect::<String>())
+    .bind(reason)
+    .fetch_optional(pool)
+    .await?;
+    let Some(id) = id else {
+        return Err(ApiError::Conflict(format!("{} already has an open install request; see list_plugins", p.name)));
+    };
+    Ok(json!({
+        "id": id, "plugin": p.name, "config": config, "status": "requested", "deanonymiser": p.deanonymiser,
+        "next": "Request recorded. Nothing is installed until a person confirms it; the answer appears on list_plugins.",
+    }))
+}
+
+/// A person's answer to a request: confirm installs the plugin with the requested config, in the
+/// same transaction; decline needs a reason.
+pub async fn decide(pool: &PgPool, id: i64, confirm: bool, by: &str, comment: Option<&str>) -> Result<Value, ApiError> {
+    let mut tx = pool.begin().await?;
+    let row: Option<(String, String, Value, String)> =
+        sqlx::query_as("SELECT site_id, name, config, status FROM plugin_requests WHERE id = $1 FOR UPDATE").bind(id).fetch_optional(&mut *tx).await?;
+    let Some((site, name, config, status)) = row else {
+        return Err(ApiError::NotFound(format!("unknown plugin request {id}")));
+    };
+    if status != "pending" {
+        return Err(ApiError::Conflict(format!("plugin request {id} is already {status}")));
+    }
+    let mut out = json!({ "id": id, "plugin": name, "status": if confirm { "confirmed" } else { "declined" } });
+    if confirm {
+        out["install"] = install(&mut tx, &site, known(&name)?, config, by).await?;
+    }
+    sqlx::query("UPDATE plugin_requests SET status = $2, decided_by = $3, decided_at = now(), comment = $4 WHERE id = $1")
+        .bind(id)
+        .bind(if confirm { "confirmed" } else { "declined" })
+        .bind(by)
+        .bind(comment)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// Open requests for the approvals queue, oldest first, with the audited call behind each.
+pub async fn open_requests(pool: &PgPool, site: &str) -> Result<Vec<Value>, ApiError> {
+    let rows: Vec<(Value,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('id', r.id, 'plugin', r.name, 'config', r.config, 'reason', r.reason, 'at', r.created_at,
+                'agent', jsonb_build_object('name', r.agent, 'justification', c.justification, 'on_behalf_of', c.on_behalf_of,
+                                            'token', k.name, 'audit_id', c.id, 'tool', c.tool))
+           FROM plugin_requests r LEFT JOIN mcp_calls c ON c.id = r.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
+          WHERE r.site_id = $1 AND r.status = 'pending' ORDER BY r.created_at, r.id",
+    )
+    .bind(site)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
 }

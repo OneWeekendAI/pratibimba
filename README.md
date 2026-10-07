@@ -300,6 +300,8 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
 | `propose_variant` | Submits a variant as a **draft**, with an optional note to the reviewer. Returns the constraint checks. |
 | `create_slot`, `update_slot` | Declares a swap slot whose baseline is a **draft**: it is in no manifest and decides nothing until a person approves that baseline (which activates the slot). `update_slot` edits only such draft slots. |
 | `retire_variant` | **Proposes** retiring a live variant. It keeps serving until a person confirms (`POST /api/retire-requests/:id/confirm {actor}`) or declines (`.../decline {actor, comment}`); open proposals are in the approvals API, and the answer on `list_variants`. |
+| `list_plugins` | The compiled-in plugin catalogue as the site has it: kind, `deanonymiser`, install, the agent's latest request and its answer, and the site's warnings. |
+| `install_plugin` | **Requests** a plugin (`{plugin, config?}`). Nothing is installed until a person confirms (`POST /api/plugin-requests/:id/confirm {actor}`) or declines (`.../decline {actor, comment}`); open requests are in the approvals API (`plugin_requests`). |
 | `list_audiences`, `create_audience` | The site's segments and what each audience gates; a new segment lands as a **draft** that a person promotes. |
 | `simulate` | Runs a synthetic cohort (optionally for N simulated days) in the site's **sandbox**, creating it on first use. |
 | `fast_forward_visitor` | Moves the sandbox's clock forward (its worker and auto-rollback run) and decides every slot for one subject at the new time. |
@@ -615,6 +617,7 @@ dynamic code loading, so a plugin is a build of Core, not a file you drop in. Th
 | `GET /api/sites/:site/plugins` | Every plugin with its kind, `deanonymiser` flag and install (`{config, by, at}` or null), plus the site's `warnings`. |
 | `POST /api/plugins/:name/install` | `{site, actor, config?}`. 201 with the install; an event sink also returns its signing `secret`, once. Unknown keys in `config` are refused; installing twice is 409. |
 | `POST /api/plugins/:name/uninstall` | `{site, actor}`. Removes the install and anything it owned. |
+| `POST /api/plugin-requests/:id/confirm` | `{actor}`. Installs what an agent requested over MCP, with its config. `.../decline {actor, comment}` refuses it. |
 
 ## Development
 

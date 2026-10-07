@@ -506,7 +506,8 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
         })
         .collect();
     Ok(Json(json!({
-        "drafts": cards, "retirements": retirements, "max_share": 0.5, "default_share": 0.1,
+        "drafts": cards, "retirements": retirements,
+        "plugin_requests": crate::plugins::open_requests(&state.pool, &site).await?, "max_share": 0.5, "default_share": 0.1,
         "recent": recent.into_iter().map(|(a, by, slot, key, c, share, at)| json!({
             "action": a, "actor": by, "slot": slot, "variant": key, "comment": c, "traffic_share": share, "at": at })).collect::<Vec<_>>(),
     })))

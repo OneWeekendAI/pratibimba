@@ -40,6 +40,8 @@ const MUTANTS = [
   ['the pack lets a new slot go live at once', G, 'reaches no visitor until a\n  person approves that baseline', 'goes live at once, before a\n  person looks at that baseline'],
   ['the pack lets update_slot edit live slots', G, '**`update_slot` changes only a draft slot.**', '**`update_slot` changes any slot.**'],
   ['the pack says retire_variant retires', G, '**`retire_variant` only proposes.**', '**`retire_variant` retires the variant.**'],
+  ['the pack says install_plugin installs', G, '**`install_plugin` only requests.** Nothing is installed until a person confirms', '**`install_plugin` installs the plugin.** It is on at once'],
+  ['the pack lets agents request de-anonymisers freely', G, 'Do not request one\n  unless the user asked for that plugin by name', 'Request one\n  whenever it helps'],
   ['the pack drops the keeps-serving rule', G, 'The variant **keeps serving** until a person confirms.', 'The variant stops serving at once.'],
   ['the pack drops the justification rule', G, '## Every call needs `agent` and `justification`', '## Calls'],
   ['the pack stops grounding in the repo', G, '- **Use only true facts.**', '- **Be persuasive.**'],

@@ -193,6 +193,8 @@ const RULES = {
   'a new slot is a draft until a person activates it': /`create_slot` makes a draft slot\.[\s\S]*reaches no visitor until a\s+person approves that baseline/,
   'update_slot changes only a draft slot': /`update_slot` changes only a draft slot\./,
   'retire_variant only proposes and the variant keeps serving': /`retire_variant` only proposes\.[\s\S]*\*\*keeps serving\*\* until a person confirms/,
+  'install_plugin only requests': /\*\*`install_plugin` only requests\.\*\* Nothing is installed until a person confirms/,
+  'a de-anonymiser only when asked by name': /`deanonymiser`[\s\S]*Do not request one\s+unless the user asked for that plugin by name/,
 };
 for (const p of PACK) {
   for (const [name, re] of Object.entries(RULES)) {

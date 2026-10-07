@@ -172,6 +172,16 @@ A person approves. You do not, and you cannot.
 - Never create, change or retire slots through the site file. Applying it is the owner's own
   act and skips the person who reviews your work.
 
+## Plugins: you request, a person installs
+
+- `list_plugins` shows the plugins built into Core (there is no way to add new code), whether
+  each is installed, and your latest request with its answer.
+- **`install_plugin` only requests.** Nothing is installed until a person confirms, so the site
+  keeps working exactly as before. Say why in `justification`. Never say a plugin is installed,
+  on or active because you requested it.
+- A plugin marked `deanonymiser` sends visitor identity to a third party. Do not request one
+  unless the user asked for that plugin by name, and tell them the dashboard will show a warning.
+
 ## The simulator is a sandbox
 
 `simulate` and `fast_forward_visitor` run only in the site's sandbox, a copy of the site with
