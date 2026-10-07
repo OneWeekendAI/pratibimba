@@ -239,7 +239,8 @@ async fn candidates(
     platform: bool,
 ) -> Result<Vec<(Uuid, f64)>> {
     let rows: Vec<(Uuid, i64, String, bool)> = sqlx::query_as(
-        "SELECT d.id, d.slot_id, coalesce(s.attribution, t.attribution),
+        "SELECT d.id, d.slot_id,
+                coalesce(s.attribution, (SELECT p.attributor FROM plugins p WHERE p.site_id = d.site_id AND p.kind = 'attributor'), t.attribution),
                 d.settled_at IS NULL OR ($6 AND d.outcome = 0 AND d.corrected_at IS NULL)
            FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
           WHERE d.site_id = $1 AND d.subject = $2 AND s.metric = $3 AND d.exposed_at IS NOT NULL

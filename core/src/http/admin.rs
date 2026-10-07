@@ -55,6 +55,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(super::webhooks::admin_routes())
         .merge(crate::insights::api::routes())
         .merge(super::hooks::router())
+        .merge(super::plugins::routes())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }
@@ -520,7 +521,7 @@ struct Approve {
     comment: Option<String>,
 }
 
-fn actor(name: &str) -> Result<String, ApiError> {
+pub(crate) fn actor(name: &str) -> Result<String, ApiError> {
     let n = name.trim();
     if n.is_empty() || n.chars().count() > 128 {
         return Err(ApiError::BadRequest("name the person approving (1-128 characters)".into()));

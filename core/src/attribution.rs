@@ -1,13 +1,14 @@
 //! Attributors: how one conversion's credit is shared among the decisions that may have caused it.
 //!
+//! A site picks one in its site file (`attribution`), an installed attributor plugin
+//! ([`crate::plugins`]) overrides that, and a slot that names its own overrides both.
+//!
 //! The worker gathers the **touches** of one slot: the subject's exposed decisions in that slot
 //! whose attribution window contains the conversion, oldest first. A touch is **open** when it can
 //! still take credit (unsettled, or a settled miss a platform conversion may correct). The
 //! attributor turns the touches, and the decision the event named if any, into `(decision,
 //! share)` pairs. The shares one conversion hands a slot sum to at most 1, which is what keeps
 //! results consistent: one conversion counts once whichever attributor ran.
-//!
-//! The site file picks one per site (`attribution`) and may override it per slot.
 
 use uuid::Uuid;
 

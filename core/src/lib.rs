@@ -10,6 +10,7 @@ pub mod features;
 pub mod guard;
 pub mod hash;
 pub mod mcp;
+pub mod plugins;
 pub mod privacy;
 pub mod probes;
 pub mod adapt;

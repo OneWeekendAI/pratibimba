@@ -38,6 +38,8 @@ looking at it.
   the slot's window. The bandit learns each share as a fractional reward (the same logistic
   update with `y` in [0, 1], so 0 and 1 are exactly a miss and a conversion), and results add
   up shares, so one conversion counts once whichever attributor ran.
+  An installed attributor plugin (see [Plugins](#plugins)) overrides the site file's choice;
+  a slot that names its own still wins.
 - **A holdout keeps it honest.** Each site sends a fixed share of visitors (default 10%,
   `holdout_fraction` in the site file, at most 50%) the baseline regardless. Lift is always the
   policy against that holdout, with a 95% confidence sequence that stays valid however often
@@ -597,6 +599,22 @@ first one per decision), `conversion` (a credited conversion), `variant.approved
 | `POST /api/sites/:site/webhooks` | `{url, events}`. Returns the endpoint and its `secret`, the only time it is shown. |
 | `DELETE /api/webhooks/:id` | Removes the endpoint and its pending deliveries. |
 | `GET /api/webhooks/:id/deliveries` | The last 50 delivery records. |
+
+## Plugins
+
+Plugins are compiled into Core: named extensions of known kinds, chosen per site. There is no
+dynamic code loading, so a plugin is a build of Core, not a file you drop in. This build has:
+
+| Plugin | Kind | De-anonymiser | What installing it does |
+|---|---|---|---|
+| `attribution.linear` | `attributor` | no | The site's attributor becomes `linear` (see How it works). A slot that names its own attributor keeps it. Uninstall returns to the site file's choice. No config. |
+| `sink.identity_resolver` | `event_sink` | **yes** | Forwards every `exposure` and `conversion` (subject id included) to `config.url`, as a signed webhook endpoint the plugin owns. Uninstall deletes the endpoint. |
+
+| Method and path (admin token) | What it does |
+|---|---|
+| `GET /api/sites/:site/plugins` | Every plugin with its kind, `deanonymiser` flag and install (`{config, by, at}` or null), plus the site's `warnings`. |
+| `POST /api/plugins/:name/install` | `{site, actor, config?}`. 201 with the install; an event sink also returns its signing `secret`, once. Unknown keys in `config` are refused; installing twice is 409. |
+| `POST /api/plugins/:name/uninstall` | `{site, actor}`. Removes the install and anything it owned. |
 
 ## Development
 

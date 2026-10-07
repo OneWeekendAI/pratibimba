@@ -15,6 +15,7 @@ pub mod decide;
 pub mod events;
 pub mod hooks;
 pub mod manifest;
+pub mod plugins;
 pub mod privacy;
 pub mod sim;
 pub mod webhooks;
