@@ -37,6 +37,10 @@ const MUTANTS = [
   ['the pack no longer says a person approves', G, 'A person approves. You do not, and you cannot.', 'A person usually approves.'],
   ['the pack drops the site-file rule', G, '- **Never add variants to the site file**', '- **Prefer not to edit the site file**'],
   ['the pack no longer reads before proposing', G, '### 1. Read before you write', '### 1. Optionally, look around'],
+  ['the pack lets a new slot go live at once', G, 'reaches no visitor until a\n  person approves that baseline', 'goes live at once, before a\n  person looks at that baseline'],
+  ['the pack lets update_slot edit live slots', G, '**`update_slot` changes only a draft slot.**', '**`update_slot` changes any slot.**'],
+  ['the pack says retire_variant retires', G, '**`retire_variant` only proposes.**', '**`retire_variant` retires the variant.**'],
+  ['the pack drops the keeps-serving rule', G, 'The variant **keeps serving** until a person confirms.', 'The variant stops serving at once.'],
   ['the pack drops the justification rule', G, '## Every call needs `agent` and `justification`', '## Calls'],
   ['the pack stops grounding in the repo', G, '- **Use only true facts.**', '- **Be persuasive.**'],
 ];

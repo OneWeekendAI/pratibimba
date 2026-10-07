@@ -78,10 +78,10 @@ pub struct VariantSpec {
 fn default_metric() -> String {
     "click".into()
 }
-fn default_window() -> i32 {
+pub fn default_window() -> i32 {
     1800
 }
-fn default_ttl() -> i32 {
+pub fn default_ttl() -> i32 {
     60
 }
 

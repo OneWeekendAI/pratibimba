@@ -141,6 +141,7 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
         names,
         [
             "create_audience",
+            "create_slot",
             "explain_decision",
             "fast_forward_visitor",
             "get_results",
@@ -151,7 +152,9 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
             "list_slots",
             "list_variants",
             "propose_variant",
-            "simulate"
+            "retire_variant",
+            "simulate",
+            "update_slot"
         ]
     );
     for tool in &tools {

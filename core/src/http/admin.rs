@@ -46,6 +46,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/variants/{id}/reject", post(reject))
         .route("/variants/{id}/comment", post(comment))
         .route("/variants/{id}/audience", post(set_audience))
+        .route("/retire-requests/{id}/confirm", post(confirm_retire))
+        .route("/retire-requests/{id}/decline", post(decline_retire))
         .route("/models/{slot}/rollback", post(rollback))
         .route("/models/{slot}/versions", get(versions))
         .merge(super::privacy::routes())
@@ -434,11 +436,11 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let (forbidden, facts): (Vec<String>, Option<String>) =
         sqlx::query_as("SELECT forbidden_claims, facts FROM sites WHERE id = $1").bind(&site).fetch_one(&state.pool).await?;
     #[allow(clippy::type_complexity)]
-    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>)> = sqlx::query_as(
+    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>, bool)> = sqlx::query_as(
         "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id,
                 CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
                      'on_behalf_of', c.on_behalf_of, 'token', k.name, 'call_id', c.call_id, 'at', c.created_at,
-                     'audit_id', c.id, 'tool', c.tool) END
+                     'audit_id', c.id, 'tool', c.tool) END, v.is_baseline
            FROM variants v JOIN slots s ON s.id = v.slot_id
            LEFT JOIN mcp_calls c ON c.id = v.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
           WHERE s.site_id = $1 AND v.status = 'draft' ORDER BY v.created_at, v.id",
@@ -449,7 +451,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let now = Utc::now();
     let r = results::site(&state.pool, &site, now - Duration::days(7), now).await?.expect("site exists");
     let mut cards = vec![];
-    for (id, slot, key, payload, author, created, slot_id, agent) in drafts {
+    for (id, slot, key, payload, author, created, slot_id, agent, activates_slot) in drafts {
         let sr = r.slots.iter().find(|s| s.id == slot_id);
         let live: Vec<&results::VariantResult> = sr.map(|s| s.variants.iter().filter(|v| v.status == "approved").collect()).unwrap_or_default();
         let champ = live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline));
@@ -467,6 +469,8 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
                 .await?;
         cards.push(json!({
             "id": id, "slot": slot, "key": key, "html": payload, "author": author, "created_at": created, "agent": agent,
+            // Approving a draft baseline turns on a slot an agent created.
+            "activates_slot": activates_slot,
             "champion": champion, "checks": checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() }),
             "comments": comments.into_iter().map(|(a, by, c, at)| json!({ "action": a, "actor": by, "comment": c, "at": at })).collect::<Vec<_>>(),
         }));
@@ -474,13 +478,34 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let recent: Vec<(String, String, String, String, Option<String>, Option<f32>, DateTime<Utc>)> = sqlx::query_as(
         "SELECT a.action, a.actor, s.key, v.key, a.comment, a.traffic_share, a.created_at
            FROM approvals a JOIN variants v ON v.id = a.variant_id JOIN slots s ON s.id = v.slot_id
-          WHERE s.site_id = $1 AND a.action IN ('approve', 'reject') ORDER BY a.created_at DESC LIMIT 20",
+          WHERE s.site_id = $1 AND a.action IN ('approve', 'reject', 'retire', 'keep') ORDER BY a.created_at DESC LIMIT 20",
     )
     .bind(&site)
     .fetch_all(&state.pool)
     .await?;
+    // Retirements an agent proposed; each waits for a person (confirm or decline).
+    #[allow(clippy::type_complexity)]
+    let retires: Vec<(i64, String, String, i64, String, String, DateTime<Utc>, Option<Value>)> = sqlx::query_as(
+        "SELECT r.id, s.key, v.key, v.id, r.agent, r.reason, r.created_at,
+                CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
+                     'on_behalf_of', c.on_behalf_of, 'token', k.name, 'audit_id', c.id, 'tool', c.tool) END
+           FROM retire_requests r JOIN variants v ON v.id = r.variant_id JOIN slots s ON s.id = v.slot_id
+           LEFT JOIN mcp_calls c ON c.id = r.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
+          WHERE s.site_id = $1 AND r.status = 'pending' ORDER BY r.created_at, r.id",
+    )
+    .bind(&site)
+    .fetch_all(&state.pool)
+    .await?;
+    let retirements: Vec<Value> = retires
+        .into_iter()
+        .map(|(id, slot, key, vid, agent, reason, at, call)| {
+            let mut a = call.unwrap_or_else(|| json!({ "name": agent }));
+            a["name"] = json!(agent);
+            json!({ "id": id, "slot": slot, "variant": key, "variant_id": vid, "reason": reason, "at": at, "agent": a })
+        })
+        .collect();
     Ok(Json(json!({
-        "drafts": cards, "max_share": 0.5, "default_share": 0.1,
+        "drafts": cards, "retirements": retirements, "max_share": 0.5, "default_share": 0.1,
         "recent": recent.into_iter().map(|(a, by, slot, key, c, share, at)| json!({
             "action": a, "actor": by, "slot": slot, "variant": key, "comment": c, "traffic_share": share, "at": at })).collect::<Vec<_>>(),
     })))
@@ -510,20 +535,27 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
     }
     let mut tx = state.pool.begin().await?;
     #[allow(clippy::type_complexity)]
-    let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>)> = sqlx::query_as(
-        "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims, v.author, t.facts FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
+    let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims, v.author, t.facts, v.is_baseline FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
           WHERE v.id = $1 FOR UPDATE OF v",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((slot_id, status, payload, forbidden, author, facts)) = row else {
+    let Some((slot_id, status, payload, forbidden, author, facts, is_baseline)) = row else {
         return Err(ApiError::NotFound(format!("unknown variant {id}")));
     };
     if status != "draft" {
         return Err(ApiError::Conflict(format!("variant {id} is {status}; only a draft can be approved")));
     }
-    let report = checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() });
+    // A draft baseline belongs to a slot an agent created (`create_slot`). It is the page's own
+    // content, so there is no copy to check and no share to cap: approving it activates the slot.
+    let report = if is_baseline {
+        vec![]
+    } else {
+        checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() })
+    };
+    let share = (!is_baseline).then_some(b.traffic_share);
     if checks::blocks(&report) {
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "a constraint check failed", "checks": report }))).into_response());
     }
@@ -534,7 +566,7 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
     )
     .bind(id)
     .bind(&approver)
-    .bind(b.traffic_share)
+    .bind(share)
     .bind(slot_id)
     .execute(&mut *tx)
     .await?;
@@ -542,16 +574,16 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
         .bind(id)
         .bind(&approver)
         .bind(&b.comment)
-        .bind(b.traffic_share)
+        .bind(share)
         .bind(json!(report))
         .execute(&mut *tx)
         .await?;
     let (site, slot_key, variant_key): (String, String, String) =
         sqlx::query_as("SELECT s.site_id, s.key, v.key FROM variants v JOIN slots s ON s.id = v.slot_id WHERE v.id = $1").bind(id).fetch_one(&mut *tx).await?;
-    let data = json!({ "variant_id": id, "slot": slot_key, "variant": variant_key, "approved_by": approver, "traffic_share": b.traffic_share });
+    let data = json!({ "variant_id": id, "slot": slot_key, "variant": variant_key, "approved_by": approver, "traffic_share": share });
     crate::webhooks::enqueue(&mut *tx, &site, "variant.approved", data).await?;
     tx.commit().await?;
-    Ok(Json(json!({ "id": id, "status": "approved", "traffic_share": b.traffic_share })).into_response())
+    Ok(Json(json!({ "id": id, "status": "approved", "traffic_share": share, "activated_slot": is_baseline })).into_response())
 }
 
 #[derive(Deserialize)]
@@ -559,6 +591,79 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
 struct Remark {
     actor: String,
     comment: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetireDecision {
+    actor: String,
+    #[serde(default)]
+    comment: Option<String>,
+}
+
+/// Lock an open retirement proposal: `(variant_id, site, slot key, variant key)`.
+async fn open_retire_request(tx: &mut sqlx::PgConnection, id: i64) -> Result<(i64, String, String, String), ApiError> {
+    let row: Option<(i64, String, String, String, String)> = sqlx::query_as(
+        "SELECT r.variant_id, r.status, s.site_id, s.key, v.key FROM retire_requests r
+           JOIN variants v ON v.id = r.variant_id JOIN slots s ON s.id = v.slot_id
+          WHERE r.id = $1 FOR UPDATE OF r",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((variant_id, status, site, slot, key)) = row else {
+        return Err(ApiError::NotFound(format!("unknown retirement proposal {id}")));
+    };
+    if status != "pending" {
+        return Err(ApiError::Conflict(format!("retirement proposal {id} is already {status}")));
+    }
+    Ok((variant_id, site, slot, key))
+}
+
+/// A person confirms an agent's retirement proposal: the variant leaves the arm set.
+async fn confirm_retire(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<RetireDecision>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let mut tx = state.pool.begin().await?;
+    let (variant_id, site, slot, key) = open_retire_request(&mut tx, id).await?;
+    sqlx::query("UPDATE variants SET status = 'retired' WHERE id = $1 AND status IN ('approved', 'paused')").bind(variant_id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE retire_requests SET status = 'confirmed', decided_by = $2, decided_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(&who)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment) VALUES ($1, 'retire', $2, $3)")
+        .bind(variant_id)
+        .bind(&who)
+        .bind(&b.comment)
+        .execute(&mut *tx)
+        .await?;
+    let data = json!({ "variant_id": variant_id, "slot": slot, "variant": key, "retired_by": who, "proposal": id });
+    crate::webhooks::enqueue(&mut *tx, &site, "variant.retired", data).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "id": id, "status": "confirmed", "variant": key, "variant_status": "retired" })))
+}
+
+/// A person declines it: the variant keeps serving, and the reason goes back to the agent.
+async fn decline_retire(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<RetireDecision>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let Some(comment) = b.comment.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+        return Err(ApiError::BadRequest("say why the variant stays".into()));
+    };
+    let mut tx = state.pool.begin().await?;
+    let (variant_id, _, _, key) = open_retire_request(&mut tx, id).await?;
+    sqlx::query("UPDATE retire_requests SET status = 'declined', decided_by = $2, decided_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(&who)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment) VALUES ($1, 'keep', $2, $3)")
+        .bind(variant_id)
+        .bind(&who)
+        .bind(comment)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "id": id, "status": "declined", "variant": key })))
 }
 
 async fn reject(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<Remark>) -> Result<Json<Value>, ApiError> {

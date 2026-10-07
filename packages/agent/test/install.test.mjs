@@ -190,6 +190,9 @@ const RULES = {
   'a justification on every call': /Every call needs `agent` and `justification`/,
   'never claim a draft is live': /## Never claim a draft is live[\s\S]*A person approves\. You do not, and you cannot\./,
   'never add variants through the site file': /Never add variants to the site file/,
+  'a new slot is a draft until a person activates it': /`create_slot` makes a draft slot\.[\s\S]*reaches no visitor until a\s+person approves that baseline/,
+  'update_slot changes only a draft slot': /`update_slot` changes only a draft slot\./,
+  'retire_variant only proposes and the variant keeps serving': /`retire_variant` only proposes\.[\s\S]*\*\*keeps serving\*\* until a person confirms/,
 };
 for (const p of PACK) {
   for (const [name, re] of Object.entries(RULES)) {

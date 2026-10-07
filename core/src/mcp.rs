@@ -8,6 +8,13 @@
 //!   `list_decisions`, `explain_decision`.
 //! - **One write:** `propose_variant`, which always lands as a draft. There is no approve tool,
 //!   and the `/api` approve route refuses an MCP token, so an agent cannot approve its own work.
+//! - **Slots, as drafts:** `create_slot` makes a slot whose baseline is a DRAFT, so it is in
+//!   no manifest and decides nothing until a person approves that baseline in the dashboard
+//!   (which activates it). `update_slot` edits a slot only while it is such a draft; a live
+//!   slot's settings are the owner's.
+//! - **Retirement, proposed:** `retire_variant` records a proposal; the variant keeps serving
+//!   until a person confirms it (`POST /api/retire-requests/{id}/confirm`). backend.md leaves the
+//!   retire permission open, so this takes the drafts-only floor.
 //! - **Audiences:** `list_audiences` reads the site's segments and what each gates;
 //!   `create_audience` writes a DRAFT segment. Promotion (the permission to gate a decision) is
 //!   the owner's, in the dashboard, exactly like approval.
@@ -143,13 +150,15 @@ pub async fn handler(State(state): State<Arc<AppState>>, headers: HeaderMap, bod
 const INSTRUCTIONS: &str = "Pratibimba personalises page slots with a bandit over approved variants. \
 This token sees one site. Read slots, variants, results and decision explanations freely. \
 propose_variant submits a DRAFT: a person approves it in the dashboard; you cannot. \
+create_slot makes a DRAFT slot (live only once a person approves its baseline); update_slot edits only draft slots. \
+retire_variant PROPOSES a retirement; the variant keeps serving until a person confirms. \
 simulate and fast_forward_visitor run only in the site's sandbox, never on real traffic. \
 Every tool needs `agent` (your name, e.g. \"Claude Code\") and a one-line `justification`; both are \
 recorded and shown to the reviewer. Reviewer comments come back on list_variants.";
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 12] = [
+const TOOLS: [&str; 15] = [
     "list_sites",
     "get_site",
     "list_slots",
@@ -162,6 +171,9 @@ const TOOLS: [&str; 12] = [
     "fast_forward_visitor",
     "list_audiences",
     "create_audience",
+    "create_slot",
+    "update_slot",
+    "retire_variant",
 ];
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
@@ -200,6 +212,22 @@ fn catalogue() -> Vec<Value> {
                      "html": { "type": "string", "description": "The HTML fragment that replaces the slot's content. No scripts or event handlers." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "html"]),
+        tool("create_slot", "Declare a new swap slot. It lands as a DRAFT: its baseline (the page's own content) is a draft, so the slot is in no manifest and decides nothing until a person approves that baseline in the dashboard, which activates it. Then propose variants for it with propose_variant.",
+             json!({ "key": { "type": "string", "description": "A new lowercase slug for the slot (a-z, 0-9, - and _), e.g. \"promo\"." },
+                     "selector": { "type": "string", "description": "The CSS selector of the element the slot replaces, e.g. \"#promo\"." },
+                     "metric": { "type": "string", "description": "Optional: the event that counts as success (default \"click\")." },
+                     "attribution_window_secs": { "type": "integer", "minimum": 1, "description": "Optional: how long after a decision a success still counts (default 1800)." },
+                     "decision_ttl_secs": { "type": "integer", "minimum": 0, "description": "Optional: how long a visitor keeps the same decision (default 60)." },
+                     "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
+             &["key", "selector"]),
+        tool("update_slot", "Change a DRAFT slot's selector, metric, attribution window or decision TTL (only the fields you send). A live slot's settings belong to the site owner and are refused.",
+             json!({ "slot": slot,
+                     "selector": { "type": "string" }, "metric": { "type": "string" },
+                     "attribution_window_secs": { "type": "integer", "minimum": 1 }, "decision_ttl_secs": { "type": "integer", "minimum": 0 } }),
+             &["slot"]),
+        tool("retire_variant", "PROPOSE retiring a live variant (your justification is the reason the reviewer reads). It keeps serving until a person confirms in the dashboard; you cannot retire it yourself. The baseline cannot be retired. The answer appears on list_variants.",
+             json!({ "slot": slot, "variant": { "type": "string", "description": "The variant key." } }),
+             &["slot", "variant"]),
         tool("list_audiences", "The site's segments (draft, active, audience) with their predicates, and the variants each promoted audience restricts.", json!({}), &[]),
         tool("create_audience", "Draft a segment from a predicate over behaviour and situation features (returning, mobile, from_ad, is_night_local, is_weekend_local, is_business_hours_local, hour_local: [from, to]). It lands as a DRAFT: a person promotes it to an audience in the dashboard before it can restrict any variant. Demographic attributes are refused.",
              json!({ "predicate": { "type": "object", "description": "e.g. {\"returning\": true, \"is_night_local\": true}" },
@@ -308,7 +336,8 @@ async fn tools_call(state: &AppState, caller: &Caller, id: &Value, params: &Valu
     for k in ["agent", "justification", "on_behalf_of"] {
         rest.remove(k);
     }
-    let out = run(state, caller, name, Value::Object(rest), row, audit.agent.as_deref().unwrap_or("")).await;
+    let who = Who { agent: audit.agent.as_deref().unwrap_or(""), justification: audit.justification.as_deref().unwrap_or("") };
+    let out = run(state, caller, name, Value::Object(rest), row, &who).await;
     match out {
         Ok(mut v) => {
             // The audit stub, returned on every result so the agent sees what was recorded.
@@ -405,6 +434,183 @@ struct FastForwardArgs {
     days: Option<f64>,
     seconds: Option<i64>,
     ctx: Option<crate::http::decide::Ctx>,
+}
+
+/// Exactly what an agent may set on a new slot: a swap slot, never a picker or an on-device one.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewSlot {
+    key: String,
+    selector: String,
+    metric: Option<String>,
+    attribution_window_secs: Option<i32>,
+    decision_ttl_secs: Option<i32>,
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlotUpdate {
+    slot: String,
+    selector: Option<String>,
+    metric: Option<String>,
+    attribution_window_secs: Option<i32>,
+    decision_ttl_secs: Option<i32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetireArgs {
+    slot: String,
+    variant: String,
+}
+
+fn check_slot_settings(selector: &str, metric: &str, window: i32, ttl: i32) -> Result<(), ApiError> {
+    if selector.trim().is_empty() || selector.len() > 512 {
+        return Err(ApiError::BadRequest("selector must be a CSS selector of 1 to 512 characters".into()));
+    }
+    if !crate::site_file::is_event_name(metric) {
+        return Err(ApiError::BadRequest("metric must be an event name (lowercase letters, digits, _ and :)".into()));
+    }
+    if window <= 0 || ttl < 0 {
+        return Err(ApiError::BadRequest("attribution_window_secs must be > 0 and decision_ttl_secs >= 0".into()));
+    }
+    Ok(())
+}
+
+/// A slot is a draft while its baseline awaits approval and nothing of it is live.
+async fn is_draft_slot(pool: &PgPool, slot_id: i64) -> Result<bool, ApiError> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM variants WHERE slot_id = $1 AND is_baseline AND status = 'draft')
+            AND NOT EXISTS (SELECT 1 FROM variants WHERE slot_id = $1 AND status = 'approved')",
+    )
+    .bind(slot_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// `create_slot`: a slot whose baseline is a draft, so nothing of it reaches a visitor.
+async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent: &str) -> Result<Value, ApiError> {
+    if !crate::site_file::is_slug(&a.key) {
+        return Err(ApiError::BadRequest("key must be a lowercase slug (a-z, 0-9, - and _)".into()));
+    }
+    let metric = a.metric.unwrap_or_else(|| "click".into());
+    let window = a.attribution_window_secs.unwrap_or_else(crate::site_file::default_window);
+    let ttl = a.decision_ttl_secs.unwrap_or_else(crate::site_file::default_ttl);
+    let selector = a.selector.trim().to_string();
+    check_slot_settings(&selector, &metric, window, ttl)?;
+    let mut tx = pool.begin().await?;
+    let slot_id: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, created_by, mcp_call_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'swap', $7, $8) ON CONFLICT (site_id, key) DO NOTHING RETURNING id",
+    )
+    .bind(site)
+    .bind(&a.key)
+    .bind(&selector)
+    .bind(&metric)
+    .bind(window)
+    .bind(ttl)
+    .bind(format!("mcp:{agent}"))
+    .bind(call_row)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(slot_id) = slot_id else {
+        return Err(ApiError::Conflict(format!("site {site:?} already has a slot called {:?}; pick a new key or use update_slot", a.key)));
+    };
+    sqlx::query("INSERT INTO models (slot_id) VALUES ($1)").bind(slot_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO model_versions (slot_id, version, state, reason) SELECT slot_id, version, state, 'init' FROM models WHERE slot_id = $1")
+        .bind(slot_id)
+        .execute(&mut *tx)
+        .await?;
+    // The baseline is the page's own content. As a draft, it keeps the whole slot dark.
+    let baseline: i64 = sqlx::query_scalar(
+        "INSERT INTO variants (slot_id, key, payload, is_baseline, author, status, mcp_call_id)
+         VALUES ($1, 'baseline', NULL, true, 'agent', 'draft', $2) RETURNING id",
+    )
+    .bind(slot_id)
+    .bind(call_row)
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(note) = a.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment) VALUES ($1, 'comment', $2, $3)")
+            .bind(baseline)
+            .bind(agent.chars().take(128).collect::<String>())
+            .bind(note)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(json!({
+        "slot": a.key, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl,
+        "status": "draft", "baseline_id": baseline,
+        "next": "Draft slot saved. It reaches no visitor until a person approves its baseline in the dashboard. Propose variants for it with propose_variant.",
+    }))
+}
+
+/// `update_slot`: only a draft slot's settings are the agent's to change.
+async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate) -> Result<Value, ApiError> {
+    let slot_id = slot_id(pool, site, &u.slot).await?;
+    if u.selector.is_none() && u.metric.is_none() && u.attribution_window_secs.is_none() && u.decision_ttl_secs.is_none() {
+        return Err(ApiError::BadRequest("send at least one of selector, metric, attribution_window_secs, decision_ttl_secs".into()));
+    }
+    if !is_draft_slot(pool, slot_id).await? {
+        return Err(ApiError::Conflict(format!(
+            "slot {:?} is live: its settings belong to the site owner (site file or dashboard). Tell the person what to change instead.",
+            u.slot
+        )));
+    }
+    let (selector, metric, window, ttl): (String, String, i32, i32) =
+        sqlx::query_as("SELECT selector, metric, attribution_window_secs, decision_ttl_secs FROM slots WHERE id = $1").bind(slot_id).fetch_one(pool).await?;
+    let selector = u.selector.map(|s| s.trim().to_string()).unwrap_or(selector);
+    let metric = u.metric.unwrap_or(metric);
+    let window = u.attribution_window_secs.unwrap_or(window);
+    let ttl = u.decision_ttl_secs.unwrap_or(ttl);
+    check_slot_settings(&selector, &metric, window, ttl)?;
+    sqlx::query("UPDATE slots SET selector = $2, metric = $3, attribution_window_secs = $4, decision_ttl_secs = $5 WHERE id = $1")
+        .bind(slot_id)
+        .bind(&selector)
+        .bind(&metric)
+        .bind(window)
+        .bind(ttl)
+        .execute(pool)
+        .await?;
+    Ok(json!({ "slot": u.slot, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl, "status": "draft" }))
+}
+
+/// `retire_variant`: a proposal only. The variant's status is never touched here.
+async fn retire_variant(pool: &PgPool, site: &str, a: RetireArgs, call_row: i64, who: &Who<'_>) -> Result<Value, ApiError> {
+    let slot_id = slot_id(pool, site, &a.slot).await?;
+    let row: Option<(i64, String, bool)> = sqlx::query_as("SELECT id, status, is_baseline FROM variants WHERE slot_id = $1 AND key = $2")
+        .bind(slot_id)
+        .bind(&a.variant)
+        .fetch_optional(pool)
+        .await?;
+    let Some((variant_id, status, is_baseline)) = row else {
+        return Err(ApiError::NotFound(format!("slot {:?} has no variant {:?}", a.slot, a.variant)));
+    };
+    if is_baseline {
+        return Err(ApiError::BadRequest("the baseline is the page's own content and cannot be retired".into()));
+    }
+    if status != "approved" && status != "paused" {
+        return Err(ApiError::Conflict(format!("variant {:?} is {status}; only a live variant can be retired", a.variant)));
+    }
+    let id: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO retire_requests (variant_id, mcp_call_id, agent, reason) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (variant_id) WHERE status = 'pending' DO NOTHING RETURNING id",
+    )
+    .bind(variant_id)
+    .bind(call_row)
+    .bind(who.agent.chars().take(128).collect::<String>())
+    .bind(who.justification)
+    .fetch_optional(pool)
+    .await?;
+    let Some(id) = id else {
+        return Err(ApiError::Conflict(format!("variant {:?} already has an open retirement proposal; see list_variants", a.variant)));
+    };
+    Ok(json!({
+        "id": id, "slot": a.slot, "variant": a.variant, "status": "proposed", "variant_status": status,
+        "next": "Proposal recorded. The variant keeps serving until a person confirms the retirement in the dashboard; the answer appears on list_variants.",
+    }))
 }
 
 #[derive(Deserialize)]
@@ -510,7 +716,14 @@ async fn fast_forward(pool: &PgPool, site: &str, a: FastForwardArgs) -> Result<V
     Ok(json!({ "sandbox": sandbox, "subject": a.subject, "clock_before": before, "clock": clock, "settled": settled, "decisions": decisions }))
 }
 
-async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_row: i64, agent: &str) -> Result<Value, ApiError> {
+/// Who made a call, as audited: the agent's name and its justification.
+struct Who<'a> {
+    agent: &'a str,
+    justification: &'a str,
+}
+
+async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_row: i64, who: &Who<'_>) -> Result<Value, ApiError> {
+    let agent = who.agent;
     let pool = &state.pool;
     let site = caller.site.as_str();
     match tool {
@@ -575,6 +788,9 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
         }
         "create_audience" => create_audience(pool, site, parse(args)?, agent).await,
         "fast_forward_visitor" => fast_forward(pool, site, parse(args)?).await,
+        "create_slot" => create_slot(pool, site, parse(args)?, call_row, agent).await,
+        "update_slot" => update_slot(pool, site, parse(args)?).await,
+        "retire_variant" => retire_variant(pool, site, parse(args)?, call_row, who).await,
         _ => unreachable!("tools/call checks the catalogue first"),
     }
 }
@@ -636,16 +852,30 @@ async fn list_variants(pool: &PgPool, site: &str, slot: &str) -> Result<Value, A
     .bind(slot_id)
     .fetch_all(pool)
     .await?;
+    #[allow(clippy::type_complexity)]
+    let retires: Vec<(i64, i64, String, String, Option<String>, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT DISTINCT ON (r.variant_id) r.variant_id, r.id, r.status, r.reason, r.decided_by, r.created_at
+           FROM retire_requests r JOIN variants v ON v.id = r.variant_id
+          WHERE v.slot_id = $1 ORDER BY r.variant_id, r.created_at DESC, r.id DESC",
+    )
+    .bind(slot_id)
+    .fetch_all(pool)
+    .await?;
     let variants: Vec<Value> = rows
         .into_iter()
         .map(|(id, key, status, author, base, html, share, by, at, created)| {
+            let retire = retires
+                .iter()
+                .find(|r| r.0 == id)
+                .map(|(_, rid, st, reason, by, at)| json!({ "id": rid, "status": st, "reason": reason, "decided_by": by, "at": at }));
             let comments: Vec<Value> = notes
                 .iter()
                 .filter(|n| n.0 == id)
                 .map(|(_, action, actor, comment, at)| json!({ "action": action, "actor": actor, "comment": comment, "at": at }))
                 .collect();
             json!({ "id": id, "key": key, "status": status, "author": author, "is_baseline": base, "html": html,
-                    "traffic_share": share, "approved_by": by, "approved_at": at, "created_at": created, "comments": comments })
+                    "traffic_share": share, "approved_by": by, "approved_at": at, "created_at": created, "comments": comments,
+                    "retire_request": retire })
         })
         .collect();
     Ok(json!({ "slot": slot, "variants": variants }))

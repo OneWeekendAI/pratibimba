@@ -154,6 +154,24 @@ A person approves. You do not, and you cannot.
   this. Do not ask for the admin token. Do not call the `/api` routes. Do not edit the site
   file to make it happen.
 
+## Slots and retirement: you propose, a person decides
+
+- **`create_slot` makes a draft slot.** Give it a new `key`, the `selector` of the element it
+  replaces and, if it is not `click`, the success `metric`. Its baseline (the page's own
+  content) starts as a draft, so the slot is in no manifest and reaches no visitor until a
+  person approves that baseline in the dashboard. Then propose variants for it as usual. In
+  the code, mark the element the same way as any other slot (see step 2).
+- **`update_slot` changes only a draft slot.** Once a person has activated a slot, its selector,
+  metric and windows belong to the site owner, and the tool refuses. Tell the user what you
+  would change and why instead.
+- **`retire_variant` only proposes.** Your `justification` is the reason the reviewer reads, so
+  cite the evidence (for example *"gift has lost to the holdout for 21 days, lift -3.1% [-5.0,
+  -1.2], n=4,800"*). The variant **keeps serving** until a person confirms. The baseline cannot
+  be retired. Read the answer on `list_variants` (`retire_request`). Never say a variant is
+  retired, removed or switched off because you proposed it.
+- Never create, change or retire slots through the site file. Applying it is the owner's own
+  act and skips the person who reviews your work.
+
 ## The simulator is a sandbox
 
 `simulate` and `fast_forward_visitor` run only in the site's sandbox, a copy of the site with
