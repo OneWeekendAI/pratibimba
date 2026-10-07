@@ -82,6 +82,8 @@ export interface Overview {
   pending_approvals: number;
   /** The kill switch: set while every slot on the site serves only its baseline. */
   paused: { at: string; by: string } | null;
+  /** One line per installed de-anonymiser plugin. */
+  warnings: string[];
   slots: {
     key: string;
     metric: string;

@@ -612,6 +612,10 @@ dynamic code loading, so a plugin is a build of Core, not a file you drop in. Th
 | `attribution.linear` | `attributor` | no | The site's attributor becomes `linear` (see How it works). A slot that names its own attributor keeps it. Uninstall returns to the site file's choice. No config. |
 | `sink.identity_resolver` | `event_sink` | **yes** | Forwards every `exposure` and `conversion` (subject id included) to `config.url`, as a signed webhook endpoint the plugin owns. Uninstall deletes the endpoint. |
 
+Core ships no de-anonymiser switched on. While a plugin flagged `deanonymiser` is installed, the
+site carries a warning: `warnings` on the plugin listing and on the overview, shown as a plain
+banner on every dashboard page. Uninstalling clears it.
+
 | Method and path (admin token) | What it does |
 |---|---|
 | `GET /api/sites/:site/plugins` | Every plugin with its kind, `deanonymiser` flag and install (`{config, by, at}` or null), plus the site's `warnings`. |

@@ -428,6 +428,27 @@ test('kill_switch_pauses_every_slot_and_resumes', async ({ page }) => {
   }
 });
 
+test('no_warning_banner_without_a_deanonymiser', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/results/?site=shop');
+  await expect(page.getByTestId('live-banner')).toBeVisible();
+  await expect(page.getByTestId('warning-banner')).toHaveCount(0);
+});
+
+test('installing_a_deanonymiser_shows_a_warning_banner', async ({ page }) => {
+  await signIn(page);
+  const r = await apiPost('/api/plugins/sink.identity_resolver/install', { site: 'shop', actor: 'e2e', config: { url: 'https://resolver.example.com/in' } });
+  expect(r.status()).toBe(201);
+  try {
+    await page.goto('/app/results/?site=shop');
+    const banner = page.getByTestId('warning-banner');
+    await expect(banner).toContainText('sink.identity_resolver is a de-anonymiser');
+    await expect(banner).toContainText('https://resolver.example.com/in');
+  } finally {
+    await apiPost('/api/plugins/sink.identity_resolver/uninstall', { site: 'shop', actor: 'e2e' });
+  }
+});
+
 test('lift_axis_ticks_sit_on_round_values', async ({ page }) => {
   await signIn(page);
   await page.goto('/app/slot/?site=shop&slot=hero');

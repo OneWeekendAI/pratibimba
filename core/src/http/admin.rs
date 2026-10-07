@@ -218,6 +218,8 @@ pub async fn overview(state: &AppState, site: &str, now: DateTime<Utc>) -> Resul
         "lift_today": r_today.lift, "treated_today": r_today.treated, "holdout_today": r_today.holdout,
         "sparkline": sparkline, "stale": stale, "pending_approvals": pending, "slots": slots,
         "paused": paused.map(|(at, by)| json!({ "at": at, "by": by })),
+        // One line per installed de-anonymiser plugin; the dashboard shows them as a banner.
+        "warnings": crate::plugins::warnings(&state.pool, site).await?,
     }))
 }
 

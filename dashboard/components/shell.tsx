@@ -91,6 +91,20 @@ function LiveBanner({ site }: { site: string }) {
   );
 }
 
+/** A plain warning for each installed de-anonymiser plugin; nothing when there is none. */
+function WarningBanner({ site }: { site: string }) {
+  const o = useQuery({ queryKey: ['overview', site], queryFn: () => api.get<Overview>(`/sites/${site}/overview`) });
+  const warnings = o.data?.warnings ?? [];
+  if (!warnings.length) return null;
+  return (
+    <div role="alert" data-testid="warning-banner" className="border-b-2 border-[color:var(--warn)] bg-surface px-8 py-2 text-[13px] text-warn-ink">
+      {warnings.map((w) => (
+        <p key={w}>{w}</p>
+      ))}
+    </div>
+  );
+}
+
 function ThemeToggle() {
   const [theme, setTheme] = useState<string | null>(null);
   useEffect(() => setTheme(document.documentElement.dataset.theme ?? null), []);
@@ -171,6 +185,7 @@ export function Shell({ site, title, actions, children }: { site: string | null;
       </aside>
       <div className="min-w-0 flex-1">
         {site && <LiveBanner site={site} />}
+        {site && <WarningBanner site={site} />}
         <div className="border-b border-line bg-surface-2/60 px-8 py-1.5 text-[11.5px] text-ink-2">
           <span className="font-medium">Privacy:</span> session-scoped subject ids unless the install opts into a persistent cookie; no demographic
           fields are accepted. Data stays in your own Postgres{current ? ` (holdout ${Math.round(current.holdout_fraction * 100)}%)` : ''}.

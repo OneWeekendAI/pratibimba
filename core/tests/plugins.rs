@@ -251,3 +251,66 @@ async fn uninstalling_a_plugin_that_is_not_installed_is_not_found(pool: PgPool) 
     let app = setup(&pool).await;
     assert_eq!(uninstall(&app, "attribution.linear").await.status, StatusCode::NOT_FOUND);
 }
+
+// ---- C3: the de-anonymiser flag and the site warning ----
+
+#[sqlx::test(migrations = false)]
+async fn every_plugin_declares_whether_it_deanonymises(pool: PgPool) {
+    let app = setup(&pool).await;
+    let l = listing(&app).await;
+    assert_eq!(plugin(&l, "attribution.linear")["deanonymiser"], json!(false));
+    assert_eq!(plugin(&l, "sink.identity_resolver")["deanonymiser"], json!(true));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_fresh_site_has_no_warning(pool: PgPool) {
+    let app = setup(&pool).await;
+    assert_eq!(listing(&app).await["warnings"], json!([]));
+}
+
+#[sqlx::test(migrations = false)]
+async fn installing_a_deanonymiser_sets_a_site_warning(pool: PgPool) {
+    let app = setup(&pool).await;
+    assert_eq!(install_sink(&app).await.status, StatusCode::CREATED);
+    let w = listing(&app).await["warnings"].clone();
+    assert_eq!(w.as_array().unwrap().len(), 1, "{w}");
+    assert!(w[0].as_str().unwrap().contains("sink.identity_resolver"), "{w}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn installing_a_plugin_that_is_not_a_deanonymiser_sets_no_warning(pool: PgPool) {
+    let app = setup(&pool).await;
+    assert_eq!(install_linear(&app).await.status, StatusCode::CREATED);
+    assert_eq!(listing(&app).await["warnings"], json!([]));
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_install_answer_carries_the_warning(pool: PgPool) {
+    let app = setup(&pool).await;
+    let r = install_sink(&app).await.json();
+    assert!(r["warning"].as_str().is_some_and(|w| w.contains("de-anonymiser")), "{r}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_overview_carries_the_site_warnings(pool: PgPool) {
+    let app = setup(&pool).await;
+    assert_eq!(install_sink(&app).await.status, StatusCode::CREATED);
+    let o = api_get(&app, "/api/sites/demo/overview").await.json();
+    assert_eq!(o["warnings"], listing(&app).await["warnings"], "{o}");
+    assert_eq!(o["warnings"].as_array().unwrap().len(), 1, "{o}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_overview_has_no_warning_without_a_deanonymiser(pool: PgPool) {
+    let app = setup(&pool).await;
+    let o = api_get(&app, "/api/sites/demo/overview").await.json();
+    assert_eq!(o["warnings"], json!([]), "{o}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn uninstalling_the_deanonymiser_clears_the_warning(pool: PgPool) {
+    let app = setup(&pool).await;
+    assert_eq!(install_sink(&app).await.status, StatusCode::CREATED);
+    assert_eq!(uninstall(&app, "sink.identity_resolver").await.status, StatusCode::OK);
+    assert_eq!(listing(&app).await["warnings"], json!([]));
+}
