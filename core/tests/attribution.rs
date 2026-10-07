@@ -311,6 +311,9 @@ async fn linear_teaches_the_bandit_each_share(pool: PgPool) {
     let before = model(&pool).await;
     event(&app, "v", "click", None).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
+    assert_eq!(model(&pool).await.0, before.0, "a share was learned before its window closed");
+    // Each share is learned when its decision's window closes (tests/delayed_feedback.rs).
+    worker::run_once(&pool, Utc::now() + Duration::minutes(31)).await.unwrap();
     let after = model(&pool).await;
     assert_eq!(after.0, before.0 + 2, "one model version per credited decision");
     let mut expected = before.1.clone();
@@ -329,6 +332,8 @@ async fn linear_holdout_records_credit_but_never_learns(pool: PgPool) {
     sqlx::query("UPDATE decisions SET in_holdout = true").execute(&pool).await.unwrap();
     event(&app, "v", "click", None).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
+    // Close the windows too: shares are learned at close, so only then is "never" tested.
+    worker::run_once(&pool, Utc::now() + Duration::minutes(31)).await.unwrap();
     assert_eq!(record(&pool, t[0]).await, (Some(1), Some(0.5)));
     assert_eq!(model(&pool).await.0, 0);
 }

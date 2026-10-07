@@ -157,6 +157,8 @@ async fn a_duplicate_stripe_conversion_is_counted_once(pool: PgPool) {
     assert_eq!(stripe(&app, &again).await.json()["duplicate"], true);
     let v0 = model_version(&pool).await;
     pratibimba::worker::run_once(&pool, Utc::now()).await.unwrap();
+    // The conversion is learned when the window (plus the platform grace) closes.
+    pratibimba::worker::run_once(&pool, Utc::now() + Duration::days(3)).await.unwrap();
     assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE name = 'purchase'").await, 1);
     assert_eq!(model_version(&pool).await, v0 + 1);
 }

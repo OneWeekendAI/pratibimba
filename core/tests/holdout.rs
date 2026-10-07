@@ -103,6 +103,8 @@ async fn holdout_conversion_is_recorded_not_learned(pool: PgPool) {
     let (app, s, id) = exposed_holdout_decision(&pool).await;
     event(&app, &s, "click", Some(&id.to_string())).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
+    // Conversions are learned when the window closes, so close it before saying "never".
+    worker::run_once(&pool, Utc::now() + Duration::hours(1)).await.unwrap();
     let outcome: Option<i16> = sqlx::query_scalar("SELECT outcome FROM decisions WHERE id = $1").bind(id).fetch_one(&pool).await.unwrap();
     assert_eq!(outcome, Some(1), "the holdout conversion was not recorded");
     assert_eq!(count(&pool, "SELECT version FROM models").await, 0, "the model learned from the holdout");

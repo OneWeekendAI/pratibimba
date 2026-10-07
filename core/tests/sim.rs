@@ -44,6 +44,8 @@ async fn simulated_traffic_never_reaches_the_real_sites_models_or_results(pool: 
     event(&app, "real-1", "exposure", Some(&id)).await;
     event(&app, "real-1", "click", Some(&id)).await;
     pratibimba::worker::run_once(&pool, Utc::now()).await.unwrap();
+    // Close its window, so the real model has learned it before the snapshot.
+    pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(1)).await.unwrap();
     let before = real_snapshot(&pool).await;
 
     sim::reset(&pool, "demo", Utc::now()).await.unwrap();

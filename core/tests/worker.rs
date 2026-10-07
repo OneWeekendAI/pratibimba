@@ -55,6 +55,8 @@ async fn goal_with_decision_id_credits_and_learns(pool: PgPool) {
     event(&app, "v", "click", Some(&d.to_string())).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
     assert_eq!(outcome(&pool, d).await, (Some(1), true));
+    // Learned when the window closes (tests/delayed_feedback.rs).
+    worker::run_once(&pool, Utc::now() + Duration::minutes(31)).await.unwrap();
     let (version, m) = model(&pool).await;
     assert_eq!(version, 1);
     assert!(dot(&m.arm(variant_of(&pool, d).await).mean, &X_RET) > 0.1, "the arm did not learn the conversion");
@@ -68,6 +70,7 @@ async fn second_goal_does_not_learn_twice(pool: PgPool) {
     event(&app, "v", "click", Some(&d.to_string())).await;
     event(&app, "v", "click", Some(&d.to_string())).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
+    worker::run_once(&pool, Utc::now() + Duration::minutes(31)).await.unwrap();
     assert_eq!(model(&pool).await.0, 1);
 }
 
@@ -79,6 +82,9 @@ async fn goal_on_unexposed_decision_is_not_credited(pool: PgPool) {
     event(&app, "v", "click", Some(&d.to_string())).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
     assert_eq!(outcome(&pool, d).await, (None, false));
+    // Lessons are taught at close, so close the window before saying it taught nothing.
+    worker::run_once(&pool, Utc::now() + Duration::minutes(31)).await.unwrap();
+    assert_eq!(outcome(&pool, d).await, (None, true));
     assert_eq!(model(&pool).await.0, 0);
 }
 
@@ -202,7 +208,8 @@ async fn concurrent_workers_lose_no_updates() {
             let (pool, b) = (pool.clone(), barrier.clone());
             handles.push(tokio::spawn(async move {
                 b.wait().await;
-                worker::run_once_with(&pool, Utc::now(), 10).await
+                // At window close, so the four race on the model as well as the outbox.
+                worker::run_once_with(&pool, Utc::now() + Duration::minutes(31), 10).await
             }));
         }
         for h in handles {
@@ -241,6 +248,7 @@ async fn every_update_appends_a_model_version(pool: PgPool) {
     let d = exposed(&app, &pool, "v").await;
     event(&app, "v", "click", Some(&d.to_string())).await;
     worker::run_once(&pool, Utc::now()).await.unwrap();
+    worker::run_once(&pool, Utc::now() + Duration::minutes(31)).await.unwrap();
     let versions: Vec<(i64, serde_json::Value, String)> =
         sqlx::query_as("SELECT version, state, reason FROM model_versions ORDER BY version").fetch_all(&pool).await.unwrap();
     assert_eq!(versions.iter().map(|v| v.0).collect::<Vec<_>>(), vec![0, 1], "{versions:?}");
@@ -259,6 +267,13 @@ async fn worker_once_drains_the_outbox_and_exits(pool: PgPool) {
     let d = decided(&app, "v").await;
     event(&app, "v", "exposure", Some(&d.to_string())).await;
     event(&app, "v", "click", Some(&d.to_string())).await;
+    // An older exposed decision whose window has closed: the pass must settle and learn it.
+    let old = decided(&app, "w").await;
+    sqlx::query("UPDATE decisions SET created_at = now() - interval '2 hours', exposed_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
     assert!(count(&pool, "SELECT count(*) FROM pending_events").await > 0, "nothing queued to drain");
     let db: String = sqlx::query_scalar("SELECT current_database()").fetch_one(&pool).await.unwrap();
     let base = std::env::var("DATABASE_URL").unwrap();
@@ -284,5 +299,6 @@ async fn worker_once_drains_the_outbox_and_exits(pool: PgPool) {
     assert!(status.success(), "worker --once exited with {status}");
     assert_eq!(count(&pool, "SELECT count(*) FROM pending_events").await, 0, "the outbox was not drained");
     assert_eq!(outcome(&pool, d).await, (Some(1), true));
-    assert_eq!(model(&pool).await.0, 1, "the model did not learn");
+    assert_eq!(outcome(&pool, old).await, (Some(0), true));
+    assert_eq!(model(&pool).await.0, 1, "the model did not learn the closed miss");
 }

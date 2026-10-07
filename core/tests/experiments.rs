@@ -425,6 +425,8 @@ async fn experiment_decisions_teach_the_model(pool: PgPool) {
     assert_eq!(event(&app, "v1", "exposure", Some(&id)).await.status, StatusCode::ACCEPTED);
     assert_eq!(event(&app, "v1", "click", Some(&id)).await.status, StatusCode::ACCEPTED);
     pratibimba::worker::run_once(&pool, Utc::now()).await.unwrap();
+    // Learned when the decision's window closes.
+    pratibimba::worker::run_once(&pool, Utc::now() + Duration::hours(1)).await.unwrap();
     assert_eq!(count(&pool, "SELECT count(*) FROM decisions WHERE outcome = 1 AND allocation = 'experiment'").await, 1);
     let learned = count(&pool, "SELECT count(*) FROM model_versions WHERE reason = 'learn: conversion'").await;
     assert_eq!(learned, 1, "the bandit did not learn from the experiment's conversion");

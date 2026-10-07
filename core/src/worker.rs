@@ -1,6 +1,7 @@
 //! The learning worker: drains the event outbox, credits conversions and updates bandits.
 //!
-//! Each decision teaches its slot's model exactly once, and only if the visitor saw it:
+//! Each decision teaches its slot's model exactly once, only if the visitor saw it, and only
+//! when its attribution window has closed (see [`settle_batch`] for why not sooner):
 //!
 //! - **Positive.** A goal event (any name other than `exposure` or `missed`) whose name is the
 //!   slot's metric credits exposed, unsettled decisions inside their attribution window. Which
@@ -8,7 +9,9 @@
 //!   `last_touch` (the default) the decision the event names (`decision_id`), or else the
 //!   subject's latest exposed decision per slot in the window, takes the whole conversion; under
 //!   `linear` every open exposed decision of the subject in the slot's window takes an equal
-//!   share, recorded in `decisions.credit` and learned as a fractional reward.
+//!   share, recorded in `decisions.credit`. The record (outcome, credit, webhook) is written at
+//!   once; the model learns the share as a fractional reward when the window closes
+//!   (`decisions.learn_pending` until then).
 //! - **Negative.** An exposed decision whose window closes with no conversion settles as 0.
 //! - **Holdout.** A decision in the holdout gets its outcome recorded like any other (it is the
 //!   control group's measurement) but never updates the model.
@@ -265,12 +268,13 @@ async fn candidates(
     Ok(out)
 }
 
-/// Credit one decision as converted with its `share` of the conversion, at most once, and teach
-/// its model that share. Returns whether it was credited.
+/// Credit one decision as converted with its `share` of the conversion, at most once. The model
+/// is not taught here: a treated decision is marked `learn_pending` and [`settle_batch`] teaches
+/// the share when the window closes. Returns whether it was credited.
 async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>, share: f64) -> Result<bool> {
     #[allow(clippy::type_complexity)]
     let row: Option<(i64, i64, Value, bool, String, String, String, String, String)> = sqlx::query_as(
-        "UPDATE decisions d SET outcome = 1, outcome_at = $2, settled_at = $3, credit = $4
+        "UPDATE decisions d SET outcome = 1, outcome_at = $2, settled_at = $3, credit = $4, learn_pending = NOT d.in_holdout
            FROM slots s, variants v
           WHERE d.id = $1 AND s.id = d.slot_id AND v.id = d.variant_id
             AND d.settled_at IS NULL AND d.exposed_at IS NOT NULL
@@ -284,17 +288,13 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
     .fetch_optional(&mut **tx)
     .await?;
     match row {
-        Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject)) => {
+        Some((_slot, _variant, _features, held, site, slot_key, variant_key, metric, subject)) => {
             let mut data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
                                    "subject": subject, "in_holdout": held, "converted_at": at });
             if share < 1.0 {
                 data["credit"] = json!(share);
             }
             webhooks::enqueue(&mut **tx, &site, "conversion", data).await?;
-            // A holdout outcome is the control group's measurement, never a lesson.
-            if !held {
-                learn(tx, slot, variant, &features, share).await?;
-            }
             Ok(true)
         }
         None => Ok(false),
@@ -340,13 +340,42 @@ async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTim
     Ok(true)
 }
 
+/// Close the windows that have ended: teach the model every treated, exposed decision whose
+/// window closed, a credited one its share and the rest a miss, and settle the unexposed.
+///
+/// **Why the model learns a decision only when its window closes (E4).** The worker used to learn
+/// a conversion the minute the click was drained and a miss only at window close, so for the
+/// newest window of traffic the posterior held successes with no matching failures: E4 measured
+/// an inferred 0.97 for an arm that converts at 5%, and the arm with the most recent traffic
+/// looked best (rich get richer). The two fixes considered:
+///
+/// - *Provisional miss at exposure, flipped on a click.* Every pending decision is then counted
+///   as a miss although it may still convert, so each arm is underrated by its share of
+///   conversions still to come. That share is largest for the arm with the most recent traffic,
+///   which is the arm the bandit just chose: the same recency bias with the sign flipped. It
+///   vanishes only when conversions arrive instantly; for a purchase metric with a long window it
+///   does not.
+/// - *Delay both: learn each decision once, at window close, with its final outcome* (this one).
+///   Which decisions the model has seen is decided by the clock alone, never by the outcome, so
+///   the learned set is an unbiased sample of every arm's outcomes and the posterior is the exact
+///   one for the data in it. The cost is lag, not bias: the model is one window behind. Thompson
+///   sampling tolerates that well (Chapelle and Li 2011, delayed batch feedback), because an arm
+///   with nothing learned keeps a wide posterior and is still explored. A slot that wants faster
+///   learning should shorten its window, which is the honest trade.
+///
+/// A late platform conversion for a settled miss still flips it ([`correct`]): that is new
+/// evidence about a decision already learned, not a pending one.
 async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option<&str>) -> Result<(u64, Stats)> {
     let mut tx = pool.begin().await?;
     // A slot measuring an authoritative goal waits the grace period for a late webhook.
-    let rows: Vec<(Uuid, i64, i64, Value, bool, bool)> = sqlx::query_as(&scoped(
-        "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL, d.in_holdout
+    // Credited decisions are already settled (their record is final); `learn_pending` brings them
+    // back once, at the same close, for their lesson.
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(Uuid, i64, i64, Value, bool, bool, bool, f64)> = sqlx::query_as(&scoped(
+        "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL, d.in_holdout,
+                d.learn_pending, coalesce(d.credit, 1)
            FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
-          WHERE d.settled_at IS NULL AND {scope}
+          WHERE (d.settled_at IS NULL OR d.learn_pending) AND {scope}
             AND d.created_at + make_interval(secs => s.attribution_window_secs
                   + CASE WHEN s.metric = ANY(t.authoritative_goals) THEN t.platform_grace_secs ELSE 0 END) < $1
           ORDER BY d.created_at LIMIT $2
@@ -359,8 +388,11 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();
-    for (id, slot, variant, features, exposed, held) in &rows {
-        if *exposed {
+    for (id, slot, variant, features, exposed, held, pending, credit) in &rows {
+        if *pending {
+            sqlx::query("UPDATE decisions SET learn_pending = false WHERE id = $1").bind(id).execute(&mut *tx).await?;
+            learn(&mut tx, *slot, *variant, features, *credit).await?;
+        } else if *exposed {
             sqlx::query("UPDATE decisions SET outcome = 0, settled_at = $2 WHERE id = $1").bind(id).bind(now).execute(&mut *tx).await?;
             if !*held {
                 learn(&mut tx, *slot, *variant, features, 0.0).await?;

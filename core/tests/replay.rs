@@ -25,6 +25,8 @@ async fn learned_then_moved(pool: &PgPool) -> (axum::Router, String) {
         event(&app, &s, "click", Some(&oid)).await;
     }
     worker::run_once(pool, Utc::now()).await.unwrap();
+    // The clicks are learned when their windows close.
+    worker::run_once(pool, Utc::now() + chrono::Duration::hours(1)).await.unwrap();
     (app, id)
 }
 
