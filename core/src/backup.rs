@@ -48,6 +48,17 @@ pub async fn backup(url: &str, out: &Path, pg_bin: Option<&Path>, at: DateTime<U
     if file.exists() {
         bail!("{} already exists; a backup never overwrites one", file.display());
     }
+    // pg_dump refuses a newer server with a terse "aborting because of server version
+    // mismatch"; say which two versions disagree and what to do about it.
+    let version = tokio::process::Command::new(tool(pg_bin, "pg_dump"))
+        .arg("--version")
+        .output()
+        .await
+        .context("cannot run pg_dump (set PRB_PG_BIN, or put it on PATH)")?;
+    let pool = crate::db::connect(url).await?;
+    let server: i64 = sqlx::query_scalar("SELECT current_setting('server_version_num')::int8").fetch_one(&pool).await?;
+    pool.close().await;
+    check_versions(&String::from_utf8_lossy(&version.stdout), server)?;
     let mut cmd = tokio::process::Command::new(tool(pg_bin, "pg_dump"));
     cmd.arg(format!("--dbname={url}")).args(["--format=plain", "--no-owner", "--no-privileges", "--quote-all-identifiers"]);
     for t in EXCLUDED_DATA {
@@ -60,6 +71,23 @@ pub async fn backup(url: &str, out: &Path, pg_bin: Option<&Path>, at: DateTime<U
         bail!("pg_dump failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(file)
+}
+
+/// `pg_dump` dumps a server of its own major version or older, never a newer one.
+/// `client` is `pg_dump --version` output; `server_num` is `server_version_num` (170006).
+pub fn check_versions(client: &str, server_num: i64) -> Result<()> {
+    let client_major: i64 = client
+        .split_whitespace()
+        .find_map(|w| w.split('.').next()?.parse().ok())
+        .with_context(|| format!("cannot read the pg_dump version from {:?}", client.trim()))?;
+    let server_major = server_num / 10000;
+    if server_major > client_major {
+        bail!(
+            "the database is PostgreSQL {server_major} but pg_dump is {client_major}; pg_dump cannot dump a newer server. \
+             Use a pg_dump {server_major} or later (set PRB_PG_BIN to its bin directory), or keep the server at {client_major}"
+        );
+    }
+    Ok(())
 }
 
 /// Load a backup into the empty database at `url`, in one transaction.
@@ -100,6 +128,23 @@ mod tests {
     #[test]
     fn tool_uses_the_given_directory() {
         assert_eq!(tool(Some(Path::new("/opt/pg/bin")), "pg_dump"), PathBuf::from("/opt/pg/bin/pg_dump"));
+    }
+
+    #[test]
+    fn pg_dump_may_be_newer_or_equal() {
+        assert!(check_versions("pg_dump (PostgreSQL) 17.6 (Debian 17.6-1)\n", 170006).is_ok());
+        assert!(check_versions("pg_dump (PostgreSQL) 18.1\n", 160004).is_ok());
+    }
+
+    #[test]
+    fn pg_dump_older_than_the_server_is_named() {
+        let e = check_versions("pg_dump (PostgreSQL) 17.6 (Debian 17.6-1)\n", 180001).unwrap_err().to_string();
+        assert!(e.contains("PostgreSQL 18 but pg_dump is 17"), "{e}");
+    }
+
+    #[test]
+    fn unreadable_pg_dump_version_is_an_error() {
+        assert!(check_versions("garbage", 170006).is_err());
     }
 
     #[test]

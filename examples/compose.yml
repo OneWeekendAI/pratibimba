@@ -26,10 +26,13 @@ services:
       PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
     depends_on: [db]
 
-  # The cron: one dump a day. The image's pg_dump is Debian's 17; keep the server at 17 or older.
+  # The cron: one dump a day. The image's pg_dump is Debian's 17; keep the server at 17 or older
+  # (against a newer one, backup stops with an error naming both versions).
+  # `migrate` first: it waits on serve's migration lock, so the dump taken at start-up never
+  # catches the schema half-built.
   backup:
     build: ..
-    entrypoint: ["/bin/sh", "-c", "while true; do pratibimba backup /backups; sleep 86400; done"]
+    entrypoint: ["/bin/sh", "-c", "while true; do pratibimba migrate && pratibimba backup /backups; sleep 86400; done"]
     # A bind mount is owned by the host user; root in the container can write to it.
     user: "0:0"
     environment:

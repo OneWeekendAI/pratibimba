@@ -477,7 +477,7 @@ an event count and the last 20 event names.
 leaves out the privacy salts, so a backup cannot link one day's cookieless visitors to the next.
 `pratibimba restore <file>` loads a dump into an **empty** database (`PRB_DB`) in one
 transaction. The Docker image includes `pg_dump` and `psql` (Debian's 17, so the server must be
-17 or older). `examples/compose.yml` runs a backup once a day.
+17 or older; `backup` checks this first and names both versions when the server is newer). `examples/compose.yml` runs a backup once a day.
 
 ## Configuration
 
