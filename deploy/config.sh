@@ -3,8 +3,8 @@
 PROJECT=instilplayv1
 # Supabase is in ap-northeast-2 (Seoul). REGION picks where Cloud Run runs; every script
 # reads it, so `REGION=asia-east1 deploy/deploy.sh` targets Taiwan. The default is
-# asia-northeast3 (Seoul), next to the database: /decide makes ~17 sequential queries, so the
-# Core<->DB round trip dominates. Seoul has no Cloud Run domain mappings, so the public
+# asia-northeast3 (Seoul), next to the database: /decide makes four sequential round trips
+# (it made ~17 before 2026-10-08), so the Core<->DB round trip still dominates. Seoul has no Cloud Run domain mappings, so the public
 # hostname reaches it through the Cloudflare Worker in deploy/proxy-worker/. Taiwan
 # (asia-east1) is the old deploy and keeps the domain mapping (deploy/domains.sh) as the
 # rollback path. The image repo stays in Tokyo; Cloud Run pulls across regions fine.

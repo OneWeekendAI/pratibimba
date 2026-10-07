@@ -467,19 +467,24 @@ pub async fn resolve(pool: &sqlx::PgPool, site: &str, subject: &str, site_keys: 
     if let Some(bad) = from_ctx.iter().find(|k| !site_keys.contains(k)) {
         return Err(crate::http::ApiError::BadRequest(format!("ctx.stated {bad:?} is not one of this site's picker options")));
     }
-    let mut out: BTreeMap<String, f64> = from_ctx.iter().map(|k| (k.clone(), 1.0)).collect();
     if site_keys.is_empty() {
-        return Ok(out);
+        return resolve_with(site_keys, from_ctx, vec![]);
     }
-    let picks: Vec<Vec<String>> = sqlx::query_scalar(
-        "SELECT DISTINCT ON (slot_id) picks FROM live_events
-          WHERE site_id = $1 AND subject = $2 AND picks IS NOT NULL
-          ORDER BY slot_id, received_at DESC",
-    )
-    .bind(site)
-    .bind(subject)
-    .fetch_all(pool)
-    .await?;
+    let picks: Vec<Vec<String>> = sqlx::query_scalar(LATEST_PICKS).bind(site).bind(subject).fetch_all(pool).await?;
+    resolve_with(site_keys, from_ctx, picks)
+}
+
+/// The latest pick on each picker slot of site `$1` by subject `$2`.
+pub const LATEST_PICKS: &str = "SELECT DISTINCT ON (slot_id) picks FROM live_events
+  WHERE site_id = $1 AND subject = $2 AND picks IS NOT NULL
+  ORDER BY slot_id, received_at DESC";
+
+/// [`resolve`] with the subject's latest picks already read ([`LATEST_PICKS`]).
+pub fn resolve_with(site_keys: &[String], from_ctx: &[String], picks: Vec<Vec<String>>) -> Result<BTreeMap<String, f64>, crate::http::ApiError> {
+    if let Some(bad) = from_ctx.iter().find(|k| !site_keys.contains(k)) {
+        return Err(crate::http::ApiError::BadRequest(format!("ctx.stated {bad:?} is not one of this site's picker options")));
+    }
+    let mut out: BTreeMap<String, f64> = from_ctx.iter().map(|k| (k.clone(), 1.0)).collect();
     for k in picks.into_iter().flatten().filter(|k| site_keys.contains(k)) {
         out.insert(k, 1.0);
     }

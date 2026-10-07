@@ -50,6 +50,10 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// How often `/api/sites/:id/stream` sends the overview.
     pub stream_every: Duration,
+    /// The last cookieless salt decide used, per site. Only a guess: every decide checks it
+    /// against the database in the same statement that reads everything else (see
+    /// [`decide`]), and makes or rereads the salt as before when it is stale.
+    pub salts: Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl AppState {
@@ -61,6 +65,7 @@ impl AppState {
             dashboard_dir: None,
             http: crate::probes::client(),
             stream_every: Duration::from_secs(3),
+            salts: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

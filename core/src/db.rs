@@ -43,7 +43,25 @@ pub fn database_url() -> Result<String> {
 
 pub async fn connect(url: &str) -> Result<PgPool> {
     let max = std::env::var("PRB_DB_MAX_CONNECTIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
-    PgPoolOptions::new().max_connections(max).connect(url).await.context("failed to connect to Postgres")
+    pool_options().max_connections(max).connect(url).await.context("failed to connect to Postgres")
+}
+
+/// A pooled connection idle longer than this is pinged before it is handed out.
+pub const PING_AFTER_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The pool's options. sqlx pings every connection it hands out by default, which is one more
+/// round trip per acquire: on a hosted database that is a few milliseconds each, several times
+/// per decide. A connection used in the last [`PING_AFTER_IDLE`] is handed out as is; an older
+/// one (a pooler or a NAT may have dropped it while the instance idled) is still pinged first.
+pub fn pool_options() -> PgPoolOptions {
+    PgPoolOptions::new().test_before_acquire(false).before_acquire(|conn, meta| {
+        Box::pin(async move {
+            if meta.idle_for > PING_AFTER_IDLE {
+                sqlx::Connection::ping(conn).await?;
+            }
+            Ok(true)
+        })
+    })
 }
 
 pub async fn migrate(pool: &PgPool) -> Result<()> {

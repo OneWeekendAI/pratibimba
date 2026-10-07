@@ -70,7 +70,7 @@ pub async fn running(pool: &PgPool, slot_id: i64, at: DateTime<Utc>) -> Result<O
     Ok(row.map(|(id, name, arms)| Running { id, name, arms: parse_arms(&arms) }))
 }
 
-fn parse_arms(v: &Value) -> Vec<(i64, f64)> {
+pub(crate) fn parse_arms(v: &Value) -> Vec<(i64, f64)> {
     v.as_array()
         .into_iter()
         .flatten()

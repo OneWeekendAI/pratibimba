@@ -161,6 +161,11 @@ pub fn day_of(at: DateTime<Utc>) -> NaiveDate {
 /// The site's salt for `day`, made on first use. Making a day's salt deletes every older one.
 /// A request still on a day whose salt is gone (it straddled midnight) gets the newest salt.
 pub async fn salt(pool: &PgPool, site: &str, day: NaiveDate) -> Result<String, ApiError> {
+    salt_on(&mut *pool.acquire().await?, site, day).await
+}
+
+/// [`salt`] on a connection the caller holds.
+pub async fn salt_on(conn: &mut sqlx::PgConnection, site: &str, day: NaiveDate) -> Result<String, ApiError> {
     for _ in 0..3 {
         let fresh = hex(&rand::random::<[u8; 32]>());
         let got: Option<String> = sqlx::query_scalar(
@@ -175,7 +180,7 @@ pub async fn salt(pool: &PgPool, site: &str, day: NaiveDate) -> Result<String, A
         .bind(site)
         .bind(day)
         .bind(&fresh)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?;
         // `None` only when another request made the salt in this instant: read it again.
         if let Some(s) = got {
@@ -210,7 +215,8 @@ pub async fn platform_subject(pool: &PgPool, site: &str, subject: &str) -> Resul
     stored_subject(pool, &p, site, subject, identified).await
 }
 
-fn lock_key(site: &str, subject: &str) -> i64 {
+/// The advisory lock key an erase takes exclusively and every write for the subject shares.
+pub fn lock_key(site: &str, subject: &str) -> i64 {
     crate::hash::fnv1a64(&[b"prb-erase", site.as_bytes(), subject.as_bytes()]) as i64
 }
 
@@ -228,9 +234,14 @@ pub async fn erased(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &st
 /// [`erased`] as a refusal.
 pub async fn admit(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &str) -> Result<(), ApiError> {
     if erased(tx, site, subject).await? {
-        return Err(ApiError::Gone("this subject was erased; start a new one".into()));
+        return Err(gone());
     }
     Ok(())
+}
+
+/// The refusal for an erased subject.
+pub fn gone() -> ApiError {
+    ApiError::Gone("this subject was erased; start a new one".into())
 }
 
 /// Fold accepted events into the visitor's summary row.

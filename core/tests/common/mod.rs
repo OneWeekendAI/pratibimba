@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 pub struct FreshDb {
     pub pool: PgPool,
-    name: String,
+    pub name: String,
 }
 
 impl FreshDb {
