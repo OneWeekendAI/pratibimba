@@ -42,7 +42,8 @@ pub async fn table_exists(pool: &PgPool, name: &str) -> bool {
 
 /// The standard fixture: site `demo`, slot `hero` (#hero, metric click) with an approved
 /// baseline and an approved `gift` variant. Fixtures run in `full` privacy mode (the client's
-/// subject is stored as sent, as in Phases 0-3) unless they name a mode.
+/// subject is stored as sent, as in Phases 0-3) unless they name a mode, and with cold start
+/// off (LinTS decides from the first visitor, as before Batch A4) unless a slot names one.
 pub fn demo_file() -> pratibimba::site_file::SiteFile {
     file_from(serde_json::json!({
         "site": "demo", "origin": "http://localhost:5173",
@@ -55,6 +56,11 @@ pub fn demo_file() -> pratibimba::site_file::SiteFile {
 pub fn file_from(mut v: serde_json::Value) -> pratibimba::site_file::SiteFile {
     if let Some(o) = v.as_object_mut() {
         o.entry("privacy_mode").or_insert_with(|| serde_json::json!("full"));
+        for slot in o.get_mut("slots").and_then(|s| s.as_array_mut()).into_iter().flatten() {
+            if let Some(s) = slot.as_object_mut() {
+                s.entry("cold_start_exposures").or_insert_with(|| serde_json::json!(0));
+            }
+        }
     }
     serde_json::from_value(v).unwrap()
 }

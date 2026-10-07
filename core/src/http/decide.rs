@@ -11,6 +11,14 @@
 //!   counterfactual can say what the policy would have shown.
 //! - **Planned traffic share.** A variant approved with share `s` is eligible only for the
 //!   visitors whose bucket falls under `s`.
+//!
+//! **Cold start** (backend.md's open question on a brand-new slot, shipped as the default).
+//! Thompson sampling with a weak prior starves an arm that loses its first few draws. Until a
+//! slot has had `cold_start_exposures` exposures (default 100, holdout excluded, 0 = off), the
+//! visitor gets the eligible arm served least so far in cold start, ties broken by the seed;
+//! then LinTS decides. The policy still scores the pool, so the scores, the replay and the
+//! counterfactual stay LinTS's, and the posterior learns from every one of those outcomes.
+//! The explanation's `cold_start` is `{exposures, until}` when cold start chose, else null.
 
 use super::{ApiError, AppState, valid_subject};
 use crate::bandit::{self, LinTs, Vector};
@@ -136,8 +144,8 @@ pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<B
 
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
 type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
-/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences)`.
-type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>);
+/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start)`.
+type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>);
 
 pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideResponse, ApiError> {
     if !valid_subject(&req.subject) {
@@ -170,9 +178,9 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     // A named zone is the visitor's clock too: collected only with `tz_offset`.
     let zone = zone.filter(|_| req.ctx.tz.is_some());
     // `at` is the site's clock: the database's now, or a sandbox's simulated time.
-    let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>, i16, i16)> = sqlx::query_as(
+    let slot: Option<(i64, i32, f32, bool, chrono::DateTime<chrono::Utc>, i16, i16, i32)> = sqlx::query_as(
         "SELECT s.id, s.decision_ttl_secs, t.holdout_fraction, t.paused_at IS NOT NULL, COALESCE(t.sim_now, now()),
-                t.night_start_hour, t.night_end_hour
+                t.night_start_hour, t.night_end_hour, s.cold_start_exposures
            FROM slots s JOIN sites t ON t.id = s.site_id
           WHERE s.site_id = $1 AND s.key = $2",
     )
@@ -180,7 +188,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(&req.slot)
     .fetch_optional(pool)
     .await?;
-    let Some((slot_id, ttl, holdout_fraction, paused, at, night_start, night_end)) = slot else {
+    let Some((slot_id, ttl, holdout_fraction, paused, at, night_start, night_end, cold_until)) = slot else {
         return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", req.slot, req.site)));
     };
     // The visitor's local clock: a named zone (resolved at the site's clock) wins over an offset.
@@ -218,7 +226,7 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
     let recent: Option<StickyRow> = sqlx::query_as(
-        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences FROM decisions
+        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start FROM decisions
           WHERE slot_id = $1 AND subject = $2 AND created_at > $4 - make_interval(secs => $3) AND created_at <= $4
             AND NOT (source = 'client' AND COALESCE(divergence, 0) > $5)
           ORDER BY created_at DESC LIMIT 1",
@@ -230,12 +238,12 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(crate::adapt::DIVERGENCE)
     .fetch_optional(pool)
     .await?;
-    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds)) = recent {
+    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds, cold)) = recent {
         // A visitor who has stated something new since gets a fresh decision.
         let same_statement = stated::from_features(&features) == said_now;
         if let (true, Some((key, payload))) = (same_statement, key_of(variant_id)) {
             let auds = auds.unwrap_or_else(|| json!([]));
-            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds));
+            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold));
         }
     }
 
@@ -273,10 +281,14 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         let policy = if site_keys.is_empty() { stated::TIME_POLICY } else { stated::POLICY };
         (p, s, policy, stated::with_stated(named(&x), &ext_keys, &ext))
     };
-    let chosen = match (in_holdout, baseline) {
-        (true, Some(b)) => b,
+    let held = in_holdout && baseline.is_some();
+    let cold = if held { None } else { cold_start(pool, slot_id, cold_until, &ids, seed).await? };
+    let chosen = match (held, baseline, &cold) {
+        (true, Some(b), _) => b,
+        (_, _, Some((arm, _))) => *arm,
         _ => picked,
     };
+    let cold = cold.map(|(_, c)| c);
     let scores_json = Value::Object(scores.iter().map(|(id, s)| (id.to_string(), json!(s))).collect());
     let id = Uuid::new_v4();
     let (key, payload) = key_of(chosen).expect("chosen arm is in the pool");
@@ -293,8 +305,8 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     privacy::admit(&mut tx, &req.site, raw).await?;
     sqlx::query(
         "WITH ins AS (
-             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16) RETURNING 1)
+             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences, cold_start)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17) RETURNING 1)
          INSERT INTO webhook_deliveries (subscription_id, event, idempotency_key, payload)
          SELECT id, 'decision', $14, $15 FROM webhook_subscriptions WHERE site_id = $2 AND 'decision' = ANY(events) AND EXISTS (SELECT 1 FROM ins)",
     )
@@ -314,10 +326,42 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(hook_key)
     .bind(hook_body)
     .bind(&audiences)
+    .bind(&cold)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences))
+    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold))
+}
+
+/// Cold start's pick, `(arm, {exposures, until})`, or `None` once the slot has had `until`
+/// learned-from exposures (or `until` is 0). The pick is the arm of `ids` that cold start has
+/// served least, ties broken by the decision's seed, so the arms take equal turns.
+async fn cold_start(pool: &sqlx::PgPool, slot_id: i64, until: i32, ids: &[i64], seed: u64) -> Result<Option<(i64, Value)>, ApiError> {
+    if until <= 0 {
+        return Ok(None);
+    }
+    let exposures: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT 1 FROM decisions WHERE slot_id = $1 AND exposed_at IS NOT NULL AND NOT in_holdout LIMIT $2) e",
+    )
+    .bind(slot_id)
+    .bind(i64::from(until))
+    .fetch_one(pool)
+    .await?;
+    if exposures >= i64::from(until) {
+        return Ok(None);
+    }
+    let served: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT variant_id, count(*) FROM decisions WHERE slot_id = $1 AND cold_start IS NOT NULL AND variant_id = ANY($2) GROUP BY variant_id",
+    )
+    .bind(slot_id)
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    let turns = |id: i64| served.iter().find(|s| s.0 == id).map_or(0, |s| s.1);
+    let fewest = ids.iter().map(|id| turns(*id)).min().unwrap_or(0);
+    let due: Vec<i64> = ids.iter().copied().filter(|id| turns(*id) == fewest).collect();
+    let arm = due[(seed % due.len() as u64) as usize];
+    Ok(Some((arm, json!({ "exposures": exposures, "until": until }))))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -334,6 +378,7 @@ fn response(
     in_holdout: bool,
     arms: &[ArmRow],
     audiences: Value,
+    cold_start: Option<Value>,
 ) -> DecideResponse {
     // Explanations name variants by key; storage keys them by id so a rename cannot lie.
     let scores: Map<String, Value> = arms
@@ -356,6 +401,8 @@ fn response(
             // Every audience that gates a variant of this slot: whether this visitor matched,
             // and the variants it kept out when they did not.
             "audiences": audiences,
+            // `{exposures, until}` when cold start chose this arm (see the module doc).
+            "cold_start": cold_start,
         }),
     }
 }

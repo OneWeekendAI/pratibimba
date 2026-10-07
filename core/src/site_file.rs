@@ -47,6 +47,10 @@ pub struct SlotSpec {
     pub attribution_window_secs: i32,
     #[serde(default = "default_ttl")]
     pub decision_ttl_secs: i32,
+    /// Exposures during which every approved arm takes an equal turn before LinTS decides
+    /// (see [`crate::http::decide`]). 0 switches cold start off.
+    #[serde(default = "default_cold_start")]
+    pub cold_start_exposures: i32,
     /// `swap` (default) or `picker` (see [`crate::stated`]).
     #[serde(default)]
     pub kind: Option<String>,
@@ -83,6 +87,10 @@ pub fn default_window() -> i32 {
 }
 pub fn default_ttl() -> i32 {
     60
+}
+pub const MAX_COLD_START: i32 = 100_000;
+pub fn default_cold_start() -> i32 {
+    100
 }
 
 /// Lowercase slug: letters, digits, `-` and `_`, 1-64 chars.
@@ -121,6 +129,9 @@ impl SiteFile {
             }
             if slot.attribution_window_secs <= 0 || slot.decision_ttl_secs < 0 {
                 bail!("slot {k:?}: attribution_window_secs must be > 0 and decision_ttl_secs >= 0");
+            }
+            if !(0..=MAX_COLD_START).contains(&slot.cold_start_exposures) {
+                bail!("slot {k:?}: cold_start_exposures must be between 0 and {MAX_COLD_START}");
             }
             crate::stated::validate_slot(slot)?;
             let baselines = slot.variants.iter().filter(|v| v.baseline).count();
@@ -170,11 +181,12 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .await?;
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
-            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
                  attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
-                 kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker
+                 kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker,
+                 cold_start_exposures = EXCLUDED.cold_start_exposures
              RETURNING id",
         )
         .bind(&file.site)
@@ -186,6 +198,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(slot.kind.as_deref().unwrap_or("swap"))
         .bind(slot.in_session)
         .bind(slot.picker.as_ref().map(serde_json::to_value).transpose()?)
+        .bind(slot.cold_start_exposures)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;

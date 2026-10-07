@@ -43,6 +43,8 @@ pub struct Facts {
     pub metric: String,
     pub window_mins: i64,
     pub outcome: Outcome,
+    /// `(exposures, until)` when cold start chose the arm.
+    pub cold_start: Option<(i64, i64)>,
 }
 
 fn short(subject: &str) -> String {
@@ -88,6 +90,11 @@ pub fn sentence(f: &Facts) -> String {
             f.version
         );
     } else {
+        if let Some((k, n)) = f.cold_start {
+            out += &format!(
+                " The slot was in its cold start ({k} of {n} exposures), so it showed the variant shown least so far; the model still learns from the outcome."
+            );
+        }
         match own {
             Some(s) if !others.is_empty() => {
                 out += &format!(" The {} v{} policy scored it {s:.2} against {}.", policy_name(&f.policy), f.version, others.join(", "))
@@ -166,6 +173,8 @@ pub struct Detail {
     pub features: Value,
     /// The audiences this decision evaluated: `[{id, name, matched, variants}]`.
     pub audiences: Value,
+    /// `{exposures, until}` when cold start chose the arm (see [`crate::http::decide`]).
+    pub cold_start: Option<Value>,
     pub scores: Vec<Score>,
     /// Re-running the policy on the stored version, seed and pool gives the stored scores.
     pub replay_matches: Option<bool>,
@@ -208,13 +217,14 @@ struct Row {
     settled_at: Option<DateTime<Utc>>,
     audiences: Option<Value>,
     corrected_at: Option<DateTime<Utc>>,
+    cold_start: Option<Value>,
 }
 
 pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Option<Detail>> {
     let row: Option<Row> = sqlx::query_as(
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
-                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at
+                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start
            FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1",
     )
     .bind(id)
@@ -243,6 +253,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         settled_at: settled,
         audiences,
         corrected_at,
+        cold_start,
     }) = row
     else {
         return Ok(None);
@@ -368,6 +379,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         metric: metric.clone(),
         window_mins: i64::from(window) / 60,
         outcome: outcome_kind,
+        cold_start: cold_start.as_ref().and_then(|c| Some((c["exposures"].as_i64()?, c["until"].as_i64()?))),
     };
     Ok(Some(Detail {
         id,
@@ -391,6 +403,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         seed: (seed as u64).to_string(),
         features,
         audiences: audiences.unwrap_or_else(|| serde_json::json!([])),
+        cold_start,
         scores,
         replay_matches,
         counterfactual,
@@ -421,6 +434,7 @@ mod tests {
             metric: "click".into(),
             window_mins: 30,
             outcome,
+            cold_start: None,
         }
     }
 
