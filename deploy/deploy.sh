@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Build locally (linux/amd64), push to Artifact Registry, and deploy the service and the job
 # by digest, so what runs is exactly what was pushed. Usage: deploy/deploy.sh
+# To redeploy an image already pushed (no build): IMAGE=<repo>@sha256:... deploy/deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . deploy/config.sh
-TAG=$(git rev-parse --short HEAD)
-docker buildx build --platform linux/amd64 -t "$REPO:$TAG" --push .
-DIGEST=$(gcloud artifacts docker images describe "$REPO:$TAG" --format='value(image_summary.digest)')
-IMAGE="$REPO@$DIGEST"
+if [ -z "${IMAGE:-}" ]; then
+  TAG=$(git rev-parse --short HEAD)
+  docker buildx build --platform linux/amd64 -t "$REPO:$TAG" --push .
+  DIGEST=$(gcloud artifacts docker images describe "$REPO:$TAG" --format='value(image_summary.digest)')
+  IMAGE="$REPO@$DIGEST"
+fi
+DIGEST=${IMAGE##*@}
 echo "deploying $IMAGE"
 
 # The API (also /mcp, /sdk.js, /manifest, /app). Scales to zero.
