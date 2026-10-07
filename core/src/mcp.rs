@@ -478,12 +478,10 @@ fn check_slot_settings(selector: &str, metric: &str, window: i32, ttl: i32) -> R
     Ok(())
 }
 
-/// A slot is a draft while its baseline awaits approval and nothing of it is live.
+/// A slot is a draft while its baseline awaits approval. Nothing else of it can be approved
+/// before that (the approve route refuses), so a draft slot serves nobody.
 async fn is_draft_slot(pool: &PgPool, slot_id: i64) -> Result<bool, ApiError> {
-    Ok(sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM variants WHERE slot_id = $1 AND is_baseline AND status = 'draft')
-            AND NOT EXISTS (SELECT 1 FROM variants WHERE slot_id = $1 AND status = 'approved')",
-    )
+    Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM variants WHERE slot_id = $1 AND is_baseline AND status = 'draft')")
     .bind(slot_id)
     .fetch_one(pool)
     .await?)

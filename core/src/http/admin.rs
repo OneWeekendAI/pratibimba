@@ -548,6 +548,16 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
     if status != "draft" {
         return Err(ApiError::Conflict(format!("variant {id} is {status}; only a draft can be approved")));
     }
+    // A slot an agent created stays dark until its baseline is approved; its variants wait.
+    if !is_baseline {
+        let dark: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM variants WHERE slot_id = $1 AND is_baseline AND status = 'draft')")
+            .bind(slot_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if dark {
+            return Err(ApiError::Conflict("this slot is still a draft: approve its baseline first, which activates the slot".into()));
+        }
+    }
     // A draft baseline belongs to a slot an agent created (`create_slot`). It is the page's own
     // content, so there is no copy to check and no share to cap: approving it activates the slot.
     let report = if is_baseline {

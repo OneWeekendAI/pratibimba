@@ -210,7 +210,30 @@ async fn update_slot_refuses_a_field_it_does_not_own(pool: PgPool) {
 async fn update_slot_refuses_a_bad_window(pool: PgPool) {
     let (app, t) = setup(&pool).await;
     promo(&app, &t).await;
-    err_text(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "attribution_window_secs": 0 }))).await);
+    let e = err_text(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "attribution_window_secs": 0 }))).await);
+    assert!(e.contains("attribution_window_secs"), "{e}");
+}
+
+/// A variant proposed into a draft slot cannot go live before the slot itself does.
+#[sqlx::test(migrations = false)]
+async fn a_variant_of_a_draft_slot_waits_for_its_baseline(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    promo(&app, &t).await;
+    let id = data(&call(&app, &t, "propose_variant", why(json!({ "slot": "promo", "key": "spring", "html": "<p>Spring sale</p>" }))).await)["id"].as_i64().unwrap();
+    let r = approve(&app, id).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text);
+    assert_eq!(status_of(&pool, "spring").await, "draft");
+}
+
+/// Once the slot is active, its variants are approved as usual.
+#[sqlx::test(migrations = false)]
+async fn a_variant_of_an_activated_slot_can_be_approved(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    promo(&app, &t).await;
+    approve(&app, baseline_of(&pool, "promo").await.0).await;
+    let id = data(&call(&app, &t, "propose_variant", why(json!({ "slot": "promo", "key": "spring", "html": "<p>Spring sale</p>" }))).await)["id"].as_i64().unwrap();
+    let r = approve(&app, id).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
 }
 
 // ---- retire_variant ---------------------------------------------------------------------------
