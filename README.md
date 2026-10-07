@@ -302,6 +302,7 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
 | `retire_variant` | **Proposes** retiring a live variant. It keeps serving until a person confirms (`POST /api/retire-requests/:id/confirm {actor}`) or declines (`.../decline {actor, comment}`); open proposals are in the approvals API, and the answer on `list_variants`. |
 | `list_plugins` | The compiled-in plugin catalogue as the site has it: kind, `deanonymiser`, install, the agent's latest request and its answer, and the site's warnings. |
 | `install_plugin` | **Requests** a plugin (`{plugin, config?}`). Nothing is installed until a person confirms (`POST /api/plugin-requests/:id/confirm {actor}`) or declines (`.../decline {actor, comment}`); open requests are in the approvals API (`plugin_requests`). |
+| `list_experiments` | The site's experiments with their arms, weights, window, status and per-arm results. Read-only: creating and stopping one is the owner's, in the dashboard API. |
 | `list_audiences`, `create_audience` | The site's segments and what each audience gates; a new segment lands as a **draft** that a person promotes. |
 | `simulate` | Runs a synthetic cohort (optionally for N simulated days) in the site's **sandbox**, creating it on first use. |
 | `fast_forward_visitor` | Moves the sandbox's clock forward (its worker and auto-rollback run) and decides every slot for one subject at the new time. |
@@ -622,6 +623,34 @@ banner on every dashboard page. Uninstalling clears it.
 | `POST /api/plugins/:name/install` | `{site, actor, config?}`. 201 with the install; an event sink also returns its signing `secret`, once. Unknown keys in `config` are refused; installing twice is 409. |
 | `POST /api/plugins/:name/uninstall` | `{site, actor}`. Removes the install and anything it owned. |
 | `POST /api/plugin-requests/:id/confirm` | `{actor}`. Installs what an agent requested over MCP, with its config. `.../decline {actor, comment}` refuses it. |
+
+## Experiments
+
+The bandit optimises live. When you want a formal answer instead, run an experiment: a
+fixed-allocation A/B test laid over one slot, with two or more of its approved variants as arms,
+weights, a start, a stop and the slot's own metric as the primary metric. One experiment per slot
+at a time.
+
+While it runs, each visitor gets the arm a hash of (experiment, subject) lands on, in proportion
+to the weights, so a visitor keeps their arm across visits. The decision says so
+(`explanation.allocation: "experiment"` and `explanation.experiment`). The other gates come
+first, as always: a paused site serves its baseline, the holdout gets the baseline, and an arm
+an audience or a planned traffic share closes to a visitor is skipped (with every arm closed,
+the bandit decides). Stopping it, or reaching `stops_at`, hands the slot back to the bandit on
+the next decision.
+
+The bandit learns from experiment traffic: LinTS fits each arm's outcome against the context, and an assignment by a hash of the visitor is independent of the outcome, so the fit stays unbiased and the test's visitors are not wasted.
+
+Results count the experiment's own assignments over closed attribution windows: per arm, the
+conversion rate and its lift over the control (the baseline if it is an arm, else the first
+arm), each with the same anytime-valid confidence sequences as the rest of the dashboard, so you
+may look as often as you like.
+
+| Method and path (admin token) | What it does |
+|---|---|
+| `GET /api/sites/:site/experiments` | Every experiment, newest first: arms and weights, `control`, `starts_at`, `stops_at`, `status` (`scheduled`, `running`, `stopped`) and `results.arms[]` with `counts`, `rate` and `lift`. |
+| `POST /api/experiments` | `{site, slot, name, actor, arms: [{variant, weight}], stops_at, starts_at?, metric?}`. 201. Refuses fewer than two arms, a variant that is not approved on the slot, a repeated arm, a weight that is not positive, a stop not after the start or already past, a metric other than the slot's, and (409) a window that overlaps another experiment on the slot. |
+| `POST /api/experiments/:id/stop` | `{actor}`. Ends it now; 409 if it has already stopped. |
 
 ## Development
 

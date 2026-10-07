@@ -22,7 +22,7 @@
 
 use super::{ApiError, AppState, valid_subject};
 use crate::bandit::{self, LinTs, Vector};
-use crate::{hash, privacy, stated};
+use crate::{experiments, hash, privacy, stated};
 use axum::{Json, extract::State};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -148,8 +148,9 @@ pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<B
 
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
 type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
-/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start)`.
-type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>);
+/// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start,
+/// experiment_id, allocation)`.
+type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>, Option<i64>, String);
 
 pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideResponse, ApiError> {
     if !valid_subject(&req.subject) {
@@ -228,10 +229,14 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let said_now = stated::from_features(&stated::with_stated(json!({}), &site_keys, &said));
     let declared = crate::features::values(&crate::features::declared(pool, &req.site).await?, &ctx.features, identified)?;
     let key_of = |id: i64| arms.iter().find(|a| a.0 == id).map(|a| (a.1.clone(), a.2.clone()));
+    // A running experiment overlays the bandit (see `crate::experiments`); the kill switch wins.
+    let experiment = if paused { None } else { experiments::running(pool, slot_id, at).await? };
+    let experiment_id = experiment.as_ref().map(|e| e.id);
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
     let recent: Option<StickyRow> = sqlx::query_as(
-        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start FROM decisions
+        "SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start, experiment_id, allocation
+           FROM decisions
           WHERE slot_id = $1 AND subject = $2 AND created_at > $4 - make_interval(secs => $3) AND created_at <= $4
             AND NOT (source = 'client' AND COALESCE(divergence, 0) > $5)
           ORDER BY created_at DESC LIMIT 1",
@@ -243,12 +248,14 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(crate::adapt::DIVERGENCE)
     .fetch_optional(pool)
     .await?;
-    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds, cold)) = recent {
-        // A visitor who has stated something new since gets a fresh decision.
+    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds, cold, exp_id, allocation)) = recent {
+        // A visitor who has stated something new since gets a fresh decision, and so does one
+        // decided before an experiment started or stopped.
         let same_statement = stated::from_features(&features) == said_now;
-        if let (true, Some((key, payload))) = (same_statement, key_of(variant_id)) {
+        if let (true, true, Some((key, payload))) = (same_statement, exp_id == experiment_id, key_of(variant_id)) {
             let auds = auds.unwrap_or_else(|| json!([]));
-            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold));
+            let alloc = Allocation { kind: &allocation, experiment: experiment.as_ref() };
+            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc));
         }
     }
 
@@ -295,12 +302,22 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         (p, s, policy, stated::with_stated(named(&x), &ext_keys, &ext))
     };
     let held = in_holdout && baseline.is_some();
-    let cold = if held { None } else { cold_start(pool, slot_id, cold_until, &ids, seed).await? };
-    let chosen = match (held, baseline, &cold) {
-        (true, Some(b), _) => b,
-        (_, _, Some((arm, _))) => *arm,
+    // The experiment picks among its arms still open to this visitor, reweighted.
+    let assigned = match (&experiment, held) {
+        (Some(e), false) => {
+            let open: Vec<(i64, f64)> = e.arms.iter().copied().filter(|a| ids.contains(&a.0)).collect();
+            (!open.is_empty()).then(|| experiments::assign(e.id, &req.subject, &open))
+        }
+        _ => None,
+    };
+    let cold = if held || assigned.is_some() { None } else { cold_start(pool, slot_id, cold_until, &ids, seed).await? };
+    let chosen = match (held, baseline, assigned, &cold) {
+        (true, Some(b), _, _) => b,
+        (_, _, Some(arm), _) => arm,
+        (_, _, _, Some((arm, _))) => *arm,
         _ => picked,
     };
+    let allocation = if assigned.is_some() { "experiment" } else { "bandit" };
     let cold = cold.map(|(_, c)| c);
     let scores_json = Value::Object(scores.iter().map(|(id, s)| (id.to_string(), json!(s))).collect());
     let id = Uuid::new_v4();
@@ -318,8 +335,9 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     privacy::admit(&mut tx, &req.site, raw).await?;
     sqlx::query(
         "WITH ins AS (
-             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences, cold_start)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17) RETURNING 1)
+             INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences, cold_start,
+                                    experiment_id, allocation)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17, $18, $19) RETURNING 1)
          INSERT INTO webhook_deliveries (subscription_id, event, idempotency_key, payload)
          SELECT id, 'decision', $14, $15 FROM webhook_subscriptions WHERE site_id = $2 AND 'decision' = ANY(events) AND EXISTS (SELECT 1 FROM ins)",
     )
@@ -340,10 +358,19 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     .bind(hook_body)
     .bind(&audiences)
     .bind(&cold)
+    .bind(experiment_id)
+    .bind(allocation)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold))
+    let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
+    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc))
+}
+
+/// Who chose the treated arm, for the explanation.
+struct Allocation<'a> {
+    kind: &'a str,
+    experiment: Option<&'a experiments::Running>,
 }
 
 /// Cold start's pick, `(arm, {exposures, until})`, or `None` once the slot has had `until`
@@ -392,6 +419,7 @@ fn response(
     arms: &[ArmRow],
     audiences: Value,
     cold_start: Option<Value>,
+    alloc: Allocation<'_>,
 ) -> DecideResponse {
     // Explanations name variants by key; storage keys them by id so a rename cannot lie.
     let scores: Map<String, Value> = arms
@@ -416,6 +444,10 @@ fn response(
             "audiences": audiences,
             // `{exposures, until}` when cold start chose this arm (see the module doc).
             "cold_start": cold_start,
+            // `holdout`, `experiment` (the running experiment's hash chose) or `bandit`.
+            "allocation": if in_holdout { "holdout" } else { alloc.kind },
+            // The experiment running on the slot when this was decided, if any.
+            "experiment": alloc.experiment.map(|e| json!({ "id": e.id, "name": e.name })),
         }),
     }
 }

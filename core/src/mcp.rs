@@ -18,6 +18,8 @@
 //! - **Plugins, requested:** `list_plugins` reads the compiled-in catalogue as this site has it;
 //!   `install_plugin` records a request that a person confirms
 //!   (`POST /api/plugin-requests/{id}/confirm`) before anything is installed.
+//! - **Experiments, read-only:** `list_experiments` reads the site's experiments and their results
+//!   per arm. Creating and stopping one is the owner's, in the dashboard API.
 //! - **Audiences:** `list_audiences` reads the site's segments and what each gates;
 //!   `create_audience` writes a DRAFT segment. Promotion (the permission to gate a decision) is
 //!   the owner's, in the dashboard, exactly like approval.
@@ -162,7 +164,7 @@ recorded and shown to the reviewer. Reviewer comments come back on list_variants
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 17] = [
+const TOOLS: [&str; 18] = [
     "list_sites",
     "get_site",
     "list_slots",
@@ -180,6 +182,7 @@ const TOOLS: [&str; 17] = [
     "retire_variant",
     "list_plugins",
     "install_plugin",
+    "list_experiments",
 ];
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
@@ -235,6 +238,7 @@ fn catalogue() -> Vec<Value> {
              json!({ "slot": slot, "variant": { "type": "string", "description": "The variant key." } }),
              &["slot", "variant"]),
         tool("list_plugins", "The compiled-in plugin catalogue as this site has it: each plugin's kind, whether it is a de-anonymiser, its install (or null) and your latest request with its answer; plus the site's warnings.", json!({}), &[]),
+        tool("list_experiments", "The site's A/B experiments (fixed-allocation overlays on one slot): arms and weights, start and stop, status, and each arm's conversion rate and lift over the control with confidence sequences. Read-only: a person creates and stops experiments in the dashboard API.", json!({}), &[]),
         tool("install_plugin", "REQUEST installing a plugin on this site (your justification is the reason the reviewer reads). Nothing is installed until a person confirms in the dashboard API; you cannot install it yourself. The answer appears on list_plugins.",
              json!({ "plugin": { "type": "string", "description": "The plugin name from list_plugins, e.g. \"attribution.linear\"." },
                      "config": { "type": "object", "description": "Optional: the plugin's config, e.g. {\"url\": \"https://...\"} for an event sink." } }),
@@ -815,6 +819,10 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
         "install_plugin" => {
             let a: PluginArgs = parse(args)?;
             crate::plugins::request(pool, site, &a.plugin, a.config.as_ref(), call_row, who.agent, who.justification).await
+        }
+        "list_experiments" => {
+            parse::<NoArgs>(args)?;
+            crate::experiments::listing(pool, site).await
         }
         _ => unreachable!("tools/call checks the catalogue first"),
     }

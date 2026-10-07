@@ -56,6 +56,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(crate::insights::api::routes())
         .merge(super::hooks::router())
         .merge(super::plugins::routes())
+        .merge(super::experiments::routes())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }

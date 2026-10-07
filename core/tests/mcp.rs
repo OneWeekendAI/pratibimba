@@ -149,6 +149,7 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
             "install_plugin",
             "list_audiences",
             "list_decisions",
+            "list_experiments",
             "list_plugins",
             "list_sites",
             "list_slots",

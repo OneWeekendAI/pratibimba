@@ -47,6 +47,8 @@ pub struct Facts {
     pub cold_start: Option<(i64, i64)>,
     /// The share of a conversion a multi-touch attributor gave this decision, when less than whole.
     pub share: Option<f64>,
+    /// The experiment whose hash chose the arm, by name.
+    pub experiment: Option<String>,
 }
 
 fn short(subject: &str) -> String {
@@ -92,6 +94,11 @@ pub fn sentence(f: &Facts) -> String {
             f.version
         );
     } else {
+        if let Some(name) = &f.experiment {
+            out += &format!(
+                " The slot was running experiment `{name}`, which assigns each visitor an arm by a hash of the experiment and the visitor, so the policy's scores below did not choose it; the model still learns from the outcome."
+            );
+        }
         if let Some((k, n)) = f.cold_start {
             out += &format!(
                 " The slot was in its cold start ({k} of {n} exposures), so it showed the variant shown least so far; the model still learns from the outcome."
@@ -232,14 +239,16 @@ struct Row {
     corrected_at: Option<DateTime<Utc>>,
     cold_start: Option<Value>,
     credit: Option<f64>,
+    experiment: Option<String>,
 }
 
 pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Option<Detail>> {
     let row: Option<Row> = sqlx::query_as(
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
-                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start, d.credit
-           FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1",
+                d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start, d.credit,
+                CASE WHEN d.allocation = 'experiment' THEN e.name END AS experiment
+           FROM decisions d JOIN slots s ON s.id = d.slot_id LEFT JOIN experiments e ON e.id = d.experiment_id WHERE d.id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -269,6 +278,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         corrected_at,
         cold_start,
         credit,
+        experiment,
     }) = row
     else {
         return Ok(None);
@@ -397,6 +407,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         outcome: outcome_kind,
         cold_start: cold_start.as_ref().and_then(|c| Some((c["exposures"].as_i64()?, c["until"].as_i64()?))),
         share,
+        experiment,
     };
     Ok(Some(Detail {
         id,
@@ -454,6 +465,7 @@ mod tests {
             outcome,
             cold_start: None,
             share: None,
+            experiment: None,
         }
     }
 
