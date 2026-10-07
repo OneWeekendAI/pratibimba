@@ -1,0 +1,42 @@
+# A self-hosted install: Postgres, Core (serve), the learning worker, and a nightly backup.
+#   PRB_ADMIN_TOKEN=... docker compose -f examples/compose.yml up
+# The backup service writes a timestamped SQL dump to ./backups once a day; restore one into an
+# empty database with `pratibimba restore <file>`.
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: pratibimba
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  serve:
+    build: ..
+    environment:
+      PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
+      PRB_ADMIN_TOKEN: ${PRB_ADMIN_TOKEN:?set PRB_ADMIN_TOKEN}
+    ports:
+      - "8080:8080"
+    depends_on: [db]
+
+  worker:
+    build: ..
+    command: worker
+    environment:
+      PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
+    depends_on: [db]
+
+  # The cron: one dump a day. The image's pg_dump is Debian's 17; keep the server at 17 or older.
+  backup:
+    build: ..
+    entrypoint: ["/bin/sh", "-c", "while true; do pratibimba backup /backups; sleep 86400; done"]
+    # A bind mount is owned by the host user; root in the container can write to it.
+    user: "0:0"
+    environment:
+      PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
+    volumes:
+      - ./backups:/backups
+    depends_on: [db]
+
+volumes:
+  pgdata:

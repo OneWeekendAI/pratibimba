@@ -3,6 +3,7 @@
 #   docker run -e PRB_DB=postgres://... -e PRB_ADMIN_TOKEN=... -p 8080:8080 pratibimba   # serve + /app
 #   docker run -e PRB_DB=postgres://... pratibimba worker                   # learn
 #   docker run -e PRB_DB=postgres://... -v $PWD/site.json:/site.json pratibimba apply /site.json
+#   docker run -e PRB_DB=postgres://... -v $PWD/backups:/backups pratibimba backup /backups   # SQL dump
 
 # The dashboard is a static export; Core serves it at /app.
 FROM node:24-trixie-slim AS dashboard
@@ -30,7 +31,8 @@ RUN touch core/src/main.rs core/src/lib.rs && cargo build --release -p pratibimb
 
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+# postgresql-client: pg_dump and psql for `pratibimba backup` / `restore`.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --no-create-home pratibimba
 COPY --from=build /src/target/release/pratibimba /usr/local/bin/pratibimba

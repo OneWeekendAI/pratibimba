@@ -10,12 +10,20 @@
 //! - `PRB_WORKER_TICK_MS`: how often `worker` closes attribution windows, default 1000.
 //! - `PRB_ADMIN_TOKEN`: turns on the dashboard API (`/api`); without it `/api` answers 503.
 //! - `PRB_DASHBOARD_DIR`: the dashboard's static export, served at `/app`.
+//! - `PRB_PG_BIN`: the directory holding `pg_dump` and `psql` for `backup` / `restore`;
+//!   default: `PATH`.
 
 use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
 use std::time::Duration;
 
-const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]>
+const USAGE: &str = "usage: pratibimba <serve | worker | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]
+                  | erase <site> <subject> --by <actor> [--reason R] | erasures <site>
+                  | backup [dir-or-file] | restore <file>>
+
+erase <site> <subject>: right-to-erase one visitor; the subject is tombstoned and never comes back.
+backup [dir-or-file]: a timestamped SQL dump (pg_dump) of the database; default: the current directory.
+restore <file>: load a backup into an EMPTY database (PRB_DB), in one transaction.
 
 simulate <site>: run synthetic visitors against the site's sandbox (<site>~sim), never the site itself.
   --days N          simulated days to run, one cohort per day (default 30)
@@ -39,7 +47,24 @@ async fn main() -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
-    let pool = db::connect(&db::database_url()?).await?;
+    let url = db::database_url()?;
+    // backup and restore drive pg_dump / psql; restore needs a database with no schema yet.
+    match cmd {
+        Some("backup") => {
+            let out = std::path::PathBuf::from(args.get(1).map(String::as_str).unwrap_or("."));
+            let file = pratibimba::backup::backup(&url, &out, pratibimba::backup::pg_bin_from_env().as_deref(), chrono::Utc::now()).await?;
+            println!("{}", file.display());
+            return Ok(());
+        }
+        Some("restore") => {
+            let file = args.get(1).context(USAGE)?;
+            pratibimba::backup::restore(&url, std::path::Path::new(file), pratibimba::backup::pg_bin_from_env().as_deref()).await?;
+            println!("restored {file}");
+            return Ok(());
+        }
+        _ => {}
+    }
+    let pool = db::connect(&url).await?;
     match cmd {
         Some("serve") => {
             db::migrate(&pool).await?;
@@ -94,6 +119,21 @@ async fn main() -> Result<()> {
         Some("simulate") => {
             db::migrate(&pool).await?;
             simulate(&pool, &args[1..]).await?;
+        }
+        Some("erase") => {
+            let (Some(site), Some(subject)) = (args.get(1), args.get(2)) else { bail!(USAGE) };
+            let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+            let Some(actor) = flag("--by") else { bail!("erase needs --by <actor>: who asked, for the audit row") };
+            db::migrate(&pool).await?;
+            let row = pratibimba::privacy::erase(&pool, site, subject, &actor, flag("--reason").as_deref()).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            println!("{}", serde_json::to_string_pretty(&row)?);
+        }
+        Some("erasures") => {
+            let site = args.get(1).context(USAGE)?;
+            db::migrate(&pool).await?;
+            for row in pratibimba::privacy::erasures(&pool, site).await.map_err(|e| anyhow::anyhow!("{e:?}"))? {
+                println!("{row}");
+            }
         }
         Some(other) => bail!("unknown command {other:?}\n{USAGE}"),
         None => unreachable!(),
