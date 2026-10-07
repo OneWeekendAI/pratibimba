@@ -68,6 +68,8 @@ async fn main() -> Result<()> {
     match cmd {
         Some("serve") => {
             db::migrate(&pool).await?;
+            // An erase made through the API needs the purge delay; refuse a bad one at start-up.
+            pratibimba::privacy::purge_delay().map_err(anyhow::Error::msg)?;
             let origins: Vec<String> = std::env::var("PRB_SITE_ORIGIN")
                 .unwrap_or_default()
                 .split(',')
@@ -124,6 +126,7 @@ async fn main() -> Result<()> {
             let (Some(site), Some(subject)) = (args.get(1), args.get(2)) else { bail!(USAGE) };
             let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
             let Some(actor) = flag("--by") else { bail!("erase needs --by <actor>: who asked, for the audit row") };
+            pratibimba::privacy::purge_delay().map_err(anyhow::Error::msg)?;
             db::migrate(&pool).await?;
             let row = pratibimba::privacy::erase(&pool, site, subject, &actor, flag("--reason").as_deref()).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             println!("{}", serde_json::to_string_pretty(&row)?);

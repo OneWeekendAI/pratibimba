@@ -13,13 +13,18 @@
 //!   still refused at the boundary (`deny_unknown_fields`), whatever the list says.
 //! - **Visitors.** One row per stored subject: first and last seen, an event count and the last
 //!   20 event names, written in the ingest commit.
-//! - **Erase.** One call tombstones the subject (only its hash is kept), deletes its events,
-//!   visitor row and retention weeks, scrubs it from webhook payloads, and severs its decisions:
+//! - **Erase.** One call tombstones the subject (only its hash is kept), schedules its events
+//!   for removal, deletes its visitor row and retention weeks, scrubs it from webhook payloads, and severs its decisions:
 //!   they keep their variant, features and outcome (so results, rollups and replays still add
 //!   up) under one random token that nothing links back to the subject. An open decision is
 //!   settled with no outcome, so it teaches the model nothing: the visitor's later events are
 //!   refused, so a miss would be a guess. What the models already learned stays: a bandit's
 //!   state is an aggregate, and no single visitor can be read out of it.
+//! - **Scheduled removal.** The events are not deleted in the erase: every stored form of the
+//!   subject goes into `erased_subjects`, which hides its events from `live_events`, the view
+//!   every read path uses, in the same commit. The worker deletes them once `purge_after`
+//!   (the erase time plus [`purge_delay`], a day by default) has passed, then forgets the forms.
+//!   The erasure row stays as the tombstone; `erasures` shows the removal pending or done.
 //! - **Tombstones.** Every write path (decide, events, platform conversions) takes a shared
 //!   advisory lock on (site, subject) and checks the tombstone inside its transaction; erase
 //!   takes the same lock exclusively. An in-flight write therefore either lands before the
@@ -259,8 +264,34 @@ async fn stored_forms(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &
     Ok(std::iter::once(subject.to_string()).chain(salts.iter().map(|s| pseudonym(s, site, subject))).collect())
 }
 
-/// Right-to-erase. Returns the audit row.
+/// How long an erased subject's events wait, hidden, before the worker deletes them.
+pub const DEFAULT_PURGE_DELAY_SECS: i64 = 86_400;
+/// The longest delay accepted: a month, GDPR's outer bound for acting on a request (Art. 12(3)).
+pub const MAX_PURGE_DELAY_SECS: i64 = 30 * 86_400;
+pub const PURGE_DELAY_ENV: &str = "PRB_ERASE_PURGE_AFTER_SECS";
+
+/// The purge delay from its setting (seconds): a day when unset, at most thirty days.
+pub fn purge_delay_from(v: Option<&str>) -> Result<chrono::Duration, String> {
+    let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) else { return Ok(chrono::Duration::seconds(DEFAULT_PURGE_DELAY_SECS)) };
+    match v.parse::<i64>() {
+        Ok(s) if (0..=MAX_PURGE_DELAY_SECS).contains(&s) => Ok(chrono::Duration::seconds(s)),
+        _ => Err(format!("{PURGE_DELAY_ENV} must be whole seconds between 0 and {MAX_PURGE_DELAY_SECS}, not {v:?}")),
+    }
+}
+
+/// [`purge_delay_from`] the environment.
+pub fn purge_delay() -> Result<chrono::Duration, String> {
+    purge_delay_from(std::env::var(PURGE_DELAY_ENV).ok().as_deref())
+}
+
+/// Right-to-erase with the configured [`purge_delay`]. Returns the audit row.
 pub async fn erase(pool: &PgPool, site: &str, subject: &str, actor: &str, reason: Option<&str>) -> Result<Value, ApiError> {
+    let delay = purge_delay().map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+    erase_after(pool, site, subject, actor, reason, delay).await
+}
+
+/// Right-to-erase whose events are removed `delay` after it. Returns the audit row.
+pub async fn erase_after(pool: &PgPool, site: &str, subject: &str, actor: &str, reason: Option<&str>, delay: chrono::Duration) -> Result<Value, ApiError> {
     if !valid_subject(subject) {
         return Err(ApiError::BadRequest("subject must be 1-256 printable ASCII characters".into()));
     }
@@ -281,7 +312,7 @@ pub async fn erase(pool: &PgPool, site: &str, subject: &str, actor: &str, reason
     // The rollups read a decision's offset from its events: keep it before they go.
     sqlx::query(
         "UPDATE decisions d SET tz_offset_min = COALESCE(d.tz_offset_min,
-                (SELECT e.tz_offset_min FROM events e WHERE e.decision_id = d.id AND e.site_id = d.site_id AND e.tz_offset_min IS NOT NULL
+                (SELECT e.tz_offset_min FROM live_events e WHERE e.decision_id = d.id AND e.site_id = d.site_id AND e.tz_offset_min IS NOT NULL
                   ORDER BY (e.name <> 'exposure'), e.received_at LIMIT 1))
           WHERE d.site_id = $1 AND d.subject = ANY($2)",
     )
@@ -303,7 +334,12 @@ pub async fn erase(pool: &PgPool, site: &str, subject: &str, actor: &str, reason
         .execute(&mut *tx)
         .await?
         .rows_affected();
-    let events = sqlx::query("DELETE FROM events WHERE site_id = $1 AND subject = ANY($2)").bind(site).bind(&forms).execute(&mut *tx).await?.rows_affected();
+    // Scheduled, not deleted: counted here, hidden below, removed by the worker (`purge_due`).
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM live_events WHERE site_id = $1 AND subject = ANY($2)")
+        .bind(site)
+        .bind(&forms)
+        .fetch_one(&mut *tx)
+        .await?;
     let visitors = sqlx::query("DELETE FROM visitors WHERE site_id = $1 AND subject = ANY($2)").bind(site).bind(&forms).execute(&mut *tx).await?.rows_affected();
     let weeks = sqlx::query("DELETE FROM insight_visitor_weeks WHERE site_id = $1 AND subject = ANY($2)")
         .bind(site)
@@ -323,8 +359,9 @@ pub async fn erase(pool: &PgPool, site: &str, subject: &str, actor: &str, reason
     .rows_affected();
     let counts = json!({ "events": events, "decisions": decisions, "settled": settled, "visitors": visitors,
                          "visitor_weeks": weeks, "webhook_deliveries": deliveries });
-    let (id, created_at): (i64, DateTime<Utc>) = sqlx::query_as(
-        "INSERT INTO erasures (site_id, subject_hash, actor, reason, counts, created_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at",
+    let (id, created_at, due): (i64, DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO erasures (site_id, subject_hash, actor, reason, counts, created_at, purge_after) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, created_at, purge_after",
     )
     .bind(site)
     .bind(subject_hash(site, subject))
@@ -332,23 +369,71 @@ pub async fn erase(pool: &PgPool, site: &str, subject: &str, actor: &str, reason
     .bind(reason)
     .bind(&counts)
     .bind(at)
+    .bind(at + delay)
     .fetch_one(&mut *tx)
     .await?;
+    sqlx::query("INSERT INTO erased_subjects (erasure_id, site_id, subject) SELECT $1, $2, f FROM UNNEST($3::text[]) f ON CONFLICT DO NOTHING")
+        .bind(id)
+        .bind(site)
+        .bind(&forms)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(json!({ "id": id, "site": site, "subject_hash": subject_hash(site, subject), "actor": actor, "reason": reason,
-               "counts": counts, "created_at": created_at }))
+               "counts": counts, "created_at": created_at, "events_removal": removal(&counts, due, None) }))
+}
+
+/// Whether an erasure's events are still waiting for the worker, and when they are (or were) due.
+fn removal(counts: &Value, due: DateTime<Utc>, done: Option<DateTime<Utc>>) -> Value {
+    json!({ "status": if done.is_some() { "done" } else { "pending" }, "due": due, "done_at": done, "events": counts["events"] })
+}
+
+/// The worker's half of an erase: delete the events of every erasure due by `now` (on the sites
+/// `scope` selects; see the worker), then forget the forms that hid them. Returns the erasures purged.
+pub async fn purge_due(pool: &PgPool, now: DateTime<Utc>, scope_sql: &str, scope: Option<&str>) -> anyhow::Result<u64> {
+    let due: Vec<i64> = sqlx::query_scalar(&format!(
+        "SELECT r.id FROM erasures r JOIN sites t ON t.id = r.site_id
+          WHERE r.purged_at IS NULL AND r.purge_after <= $1 AND {scope_sql} ORDER BY r.purge_after LIMIT 100"
+    ))
+    .bind(now)
+    .bind(scope)
+    .fetch_all(pool)
+    .await?;
+    for id in &due {
+        let mut tx = pool.begin().await?;
+        let n = sqlx::query(
+            "DELETE FROM events e USING erased_subjects x WHERE x.erasure_id = $1 AND e.site_id = x.site_id AND e.subject = x.subject",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        sqlx::query("DELETE FROM erased_subjects WHERE erasure_id = $1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE erasures SET purged_at = $2, counts = counts || jsonb_build_object('events_purged', $3::int8) WHERE id = $1")
+            .bind(id)
+            .bind(now)
+            .bind(n as i64)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+    }
+    Ok(due.len() as u64)
 }
 
 /// The audit log, newest first.
 pub async fn erasures(pool: &PgPool, site: &str) -> Result<Vec<Value>, ApiError> {
-    let rows: Vec<(i64, String, String, Option<String>, Value, DateTime<Utc>)> =
-        sqlx::query_as("SELECT id, subject_hash, actor, reason, counts, created_at FROM erasures WHERE site_id = $1 ORDER BY id DESC LIMIT 500")
+    type Row = (i64, String, String, Option<String>, Value, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>);
+    let rows: Vec<Row> =
+        sqlx::query_as("SELECT id, subject_hash, actor, reason, counts, created_at, purge_after, purged_at FROM erasures WHERE site_id = $1 ORDER BY id DESC LIMIT 500")
             .bind(site)
             .fetch_all(pool)
             .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, h, actor, reason, counts, at)| json!({ "id": id, "subject_hash": h, "actor": actor, "reason": reason, "counts": counts, "created_at": at }))
+        .map(|(id, h, actor, reason, counts, at, due, done)| {
+            let events_removal = removal(&counts, due, done);
+            json!({ "id": id, "subject_hash": h, "actor": actor, "reason": reason, "counts": counts, "created_at": at, "events_removal": events_removal })
+        })
         .collect())
 }
 
@@ -370,7 +455,7 @@ pub async fn access(pool: &PgPool, site: &str, subject: &str) -> Result<Value, A
             .fetch_all(&mut *tx)
             .await?;
     let events: Vec<(uuid::Uuid, String, String, Option<uuid::Uuid>, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT id, subject, name, decision_id, received_at FROM events WHERE site_id = $1 AND subject = ANY($2) ORDER BY received_at LIMIT 1000",
+        "SELECT id, subject, name, decision_id, received_at FROM live_events WHERE site_id = $1 AND subject = ANY($2) ORDER BY received_at LIMIT 1000",
     )
     .bind(site)
     .bind(&forms)

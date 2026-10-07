@@ -472,7 +472,7 @@ pub async fn resolve(pool: &sqlx::PgPool, site: &str, subject: &str, site_keys: 
         return Ok(out);
     }
     let picks: Vec<Vec<String>> = sqlx::query_scalar(
-        "SELECT DISTINCT ON (slot_id) picks FROM events
+        "SELECT DISTINCT ON (slot_id) picks FROM live_events
           WHERE site_id = $1 AND subject = $2 AND picks IS NOT NULL
           ORDER BY slot_id, received_at DESC",
     )

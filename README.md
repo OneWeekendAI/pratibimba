@@ -456,13 +456,15 @@ written. With no list, every field is collected. Undeclared names (`gender`) are
 always.
 
 **Right to erase.** `pratibimba erase <site> <subject> --by <who> [--reason ...]`, or
-`POST /api/sites/:id/erase {subject, actor, reason?}`, deletes the subject's events, visitor
-row and retention weeks and removes it from webhook payloads. Its decisions stay, with their
+`POST /api/sites/:id/erase {subject, actor, reason?}`, hides the subject's events from every
+read at once and schedules their deletion, which the worker carries out a day later
+(`PRB_ERASE_PURGE_AFTER_SECS`, at most 30 days; `0` means its next pass). It deletes the visitor
+row and retention weeks and removes the subject from webhook payloads on the spot. Its decisions stay, with their
 variant, features and outcome, under a random token, so results and rollups still add up. Any
 open decision settles without teaching the model. Only a hash of the subject is kept, as a
 tombstone: later requests with that subject get `410 Gone`, and its platform conversions are
 ignored. Each erase writes an audit row (`GET /api/sites/:id/erasures`,
-`pratibimba erasures <site>`). What a model has already learned stays, because a model's state
+`pratibimba erasures <site>`) whose `events_removal` says whether the deletion is pending or done. What a model has already learned stays, because a model's state
 is an aggregate. `GET /api/sites/:id/subjects/:subject` lists everything held for a subject.
 
 **Visitors.** Core keeps one `visitors` row per stored subject: when it was first and last seen,

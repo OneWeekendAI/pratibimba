@@ -93,7 +93,7 @@ pub async fn reach(http: &reqwest::Client, origin: &str, site: &str) -> Step {
 
 pub async fn slot(pool: &PgPool, site: &str) -> Result<Step> {
     let first: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT min(received_at) FROM events WHERE site_id = $1 AND name = 'exposure'").bind(site).fetch_one(pool).await?;
+        sqlx::query_scalar("SELECT min(received_at) FROM live_events WHERE site_id = $1 AND name = 'exposure'").bind(site).fetch_one(pool).await?;
     Ok(match first {
         Some(at) => Step { id: "slot", state: State::Done, detail: format!("First exposure arrived at {}", at.format("%Y-%m-%d %H:%M UTC")) },
         None => Step { id: "slot", state: State::Pending, detail: "Waiting for the first exposure from a marked slot.".into() },

@@ -454,12 +454,217 @@ async fn erase(pool: &PgPool, subject: &str) -> Value {
     privacy::erase(pool, "demo", subject, "owner@example.com", Some("request by email")).await.unwrap()
 }
 
+// Erase schedules the events' removal (backend.md, "Right-to-erase"): they are hidden from every
+// read path at once (`live_events`) and the worker deletes them once the delay has passed.
+
 #[sqlx::test(migrations = false)]
-async fn erase_deletes_the_subjects_events(pool: PgPool) {
+async fn erase_hides_the_subjects_events_at_once(pool: PgPool) {
     setup(&pool, "full").await;
     two_visitors(&pool).await;
     erase(&pool, "alice").await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM live_events WHERE subject = 'alice'").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn erase_leaves_other_subjects_events_visible(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM live_events WHERE subject = 'bob'").await, 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn erase_schedules_the_events_removal_instead_of_deleting(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE subject = 'alice'").await, 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn erase_is_due_after_the_default_day(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    let secs: f64 = sqlx::query_scalar("SELECT extract(epoch FROM purge_after - created_at)::float8 FROM erasures").fetch_one(&pool).await.unwrap();
+    assert_eq!(secs, 86_400.0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn erase_honours_a_configured_delay(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    privacy::erase_after(&pool, "demo", "alice", "owner", None, Duration::hours(2)).await.unwrap();
+    let secs: f64 = sqlx::query_scalar("SELECT extract(epoch FROM purge_after - created_at)::float8 FROM erasures").fetch_one(&pool).await.unwrap();
+    assert_eq!(secs, 7_200.0);
+}
+
+#[test]
+fn the_purge_delay_defaults_to_a_day() {
+    assert_eq!(privacy::purge_delay_from(None), Ok(Duration::hours(24)));
+}
+
+#[test]
+fn a_purge_delay_in_seconds_is_accepted() {
+    assert_eq!(privacy::purge_delay_from(Some("3600")), Ok(Duration::hours(1)));
+}
+
+#[test]
+fn a_purge_delay_of_thirty_days_is_accepted() {
+    assert_eq!(privacy::purge_delay_from(Some("2592000")), Ok(Duration::days(30)));
+}
+
+#[test]
+fn a_purge_delay_over_thirty_days_is_refused() {
+    assert!(privacy::purge_delay_from(Some("2592001")).is_err());
+}
+
+#[test]
+fn a_purge_delay_that_is_not_a_number_is_refused() {
+    assert!(privacy::purge_delay_from(Some("a day")).is_err());
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_worker_keeps_erased_events_until_due(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    worker::run_once(&pool, Utc::now() + Duration::hours(23)).await.unwrap();
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE subject = 'alice'").await, 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_worker_purges_erased_events_once_due(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    worker::run_once(&pool, Utc::now() + Duration::hours(25)).await.unwrap();
     assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE subject = 'alice'").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_purge_leaves_other_subjects_events(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    worker::run_once(&pool, Utc::now() + Duration::hours(25)).await.unwrap();
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE subject = 'bob'").await, 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_purge_forgets_the_subject_it_was_hiding(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM erased_subjects WHERE subject = 'alice'").await, 1);
+    worker::run_once(&pool, Utc::now() + Duration::hours(25)).await.unwrap();
+    assert_eq!(count(&pool, "SELECT count(*) FROM erased_subjects").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_tombstone_outlives_the_purge(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    worker::run_once(&pool, Utc::now() + Duration::hours(25)).await.unwrap();
+    let r = post(&app(&pool), "/decide", json!({ "site": "demo", "slot": "hero", "subject": "alice", "ctx": {} })).await;
+    assert_eq!(r.status, StatusCode::GONE, "{}", r.text);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_new_subject_decides_after_a_purge(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    worker::run_once(&pool, Utc::now() + Duration::hours(25)).await.unwrap();
+    let r = post(&app(&pool), "/decide", json!({ "site": "demo", "slot": "hero", "subject": "carol", "ctx": {} })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+}
+
+async fn removal(pool: &PgPool) -> Value {
+    let list = api_get(&admin_app(pool), "/api/sites/demo/erasures").await.json();
+    list["erasures"][0]["events_removal"].clone()
+}
+
+#[sqlx::test(migrations = false)]
+async fn erasures_show_a_pending_removal(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    let r = removal(&pool).await;
+    assert_eq!((r["status"].as_str(), r["done_at"].is_null(), r["due"].is_string()), (Some("pending"), true, true), "{r}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn erasures_show_a_done_removal(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    worker::run_once(&pool, Utc::now() + Duration::hours(25)).await.unwrap();
+    let r = removal(&pool).await;
+    assert_eq!((r["status"].as_str(), r["done_at"].is_string(), r["events"].as_i64()), (Some("done"), true, Some(2)), "{r}");
+}
+
+// Every read of the events table goes through `live_events`; only ingest, the erase itself and
+// the purge touch the raw table.
+#[test]
+fn no_read_path_reads_the_raw_events_table() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut hits = vec![];
+    let mut stack = vec![src];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let text = std::fs::read_to_string(&p).unwrap();
+                // (line, word) for every whitespace-separated word, so `FROM\n events` is found too.
+                let words: Vec<(usize, String)> = text
+                    .lines()
+                    .enumerate()
+                    .flat_map(|(i, l)| l.split_whitespace().map(move |w| (i + 1, w.trim_start_matches('"').to_lowercase())))
+                    .collect();
+                for pair in words.windows(2) {
+                    let next = pair[1].1.trim_end_matches(|c: char| !(c.is_alphanumeric() || c == '_'));
+                    if matches!(pair[0].1.as_str(), "from" | "join") && next == "events" {
+                        hits.push(format!("{}:{}", p.file_name().unwrap().to_string_lossy(), pair[0].0));
+                    }
+                }
+            }
+        }
+    }
+    hits.sort();
+    // The one raw use left is the purge's DELETE in privacy.rs.
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].starts_with("privacy.rs:"), "{hits:?}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn explain_shows_no_erased_events(pool: PgPool) {
+    setup(&pool, "full").await;
+    let (alice, _) = two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    let d = pratibimba::explain::detail(&pool, alice.parse().unwrap(), Utc::now()).await.unwrap().unwrap();
+    assert!(d.timeline.is_empty(), "{:?}", d.timeline);
+}
+
+#[sqlx::test(migrations = false)]
+async fn explain_still_shows_a_kept_subjects_events(pool: PgPool) {
+    setup(&pool, "full").await;
+    let (_, bob) = two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    let d = pratibimba::explain::detail(&pool, bob.parse().unwrap(), Utc::now()).await.unwrap().unwrap();
+    assert_eq!(d.timeline.len(), 2, "{:?}", d.timeline);
+}
+
+#[sqlx::test(migrations = false)]
+async fn access_lists_no_erased_events(pool: PgPool) {
+    setup(&pool, "full").await;
+    two_visitors(&pool).await;
+    erase(&pool, "alice").await;
+    let j = privacy::access(&pool, "demo", "alice").await.unwrap();
+    assert_eq!(j["events"], json!([]));
 }
 
 #[sqlx::test(migrations = false)]
@@ -706,7 +911,7 @@ async fn erase_reaches_todays_pseudonym(pool: PgPool) {
     setup(&pool, "cookieless").await;
     two_visitors(&pool).await;
     erase(&pool, "alice").await;
-    assert_eq!(count(&pool, "SELECT count(*) FROM events").await, 2, "only bob's two events remain");
+    assert_eq!(count(&pool, "SELECT count(*) FROM live_events").await, 2, "only bob's two events remain");
     assert_eq!(count(&pool, "SELECT count(*) FROM decisions WHERE subject LIKE 'erased:%'").await, 1);
 }
 
@@ -778,7 +983,7 @@ async fn erase_waits_for_an_inflight_write() {
     sqlx::query("INSERT INTO events (id, site_id, subject, name) VALUES (gen_random_uuid(), 'demo', 'alice', 'view')").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     job.await.unwrap();
-    assert_eq!(count(&pool, "SELECT count(*) FROM events").await, 0, "the in-flight write survived the erase");
+    assert_eq!(count(&pool, "SELECT count(*) FROM live_events").await, 0, "the in-flight write survived the erase");
     db.drop().await;
 }
 

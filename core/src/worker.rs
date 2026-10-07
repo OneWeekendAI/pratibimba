@@ -109,6 +109,8 @@ async fn run_scoped(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option
             break;
         }
     }
+    // Right-to-erase: delete the events of erasures whose delay has passed.
+    crate::privacy::purge_due(pool, now, &scoped("{scope}", 2), scope).await?;
     Ok(stats)
 }
 
@@ -146,7 +148,7 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
     let rows: Vec<PendingRow> = sqlx::query_as(&scoped(
         "SELECT p.id, e.id, e.site_id, e.subject || '|' || e.name, e.decision_id, COALESCE(e.occurred_at, e.received_at),
                 e.source <> 'browser', e.name = ANY(t.authoritative_goals)
-           FROM pending_events p JOIN events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
+           FROM pending_events p JOIN live_events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
           WHERE {scope}
           ORDER BY p.id LIMIT $1
           FOR UPDATE OF p SKIP LOCKED",
@@ -210,7 +212,7 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
 /// The decision named by the subject's latest browser hint for this goal, up to `at`.
 async fn hinted(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &str, goal: &str, at: DateTime<Utc>) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar(
-        "SELECT decision_id FROM events
+        "SELECT decision_id FROM live_events
           WHERE site_id = $1 AND subject = $2 AND name = $3 AND source = 'browser' AND decision_id IS NOT NULL AND received_at <= $4
           ORDER BY received_at DESC LIMIT 1",
     )

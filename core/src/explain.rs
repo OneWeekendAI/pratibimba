@@ -344,9 +344,9 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
     let timeline: Vec<TimelineEvent> = sqlx::query_as::<_, (DateTime<Utc>, String)>(
         // Events in one batch share received_at; the exposure is what made the rest possible.
         "SELECT received_at, name FROM (
-           SELECT received_at, name FROM events WHERE decision_id = $1
+           SELECT received_at, name FROM live_events WHERE decision_id = $1
            UNION ALL
-           SELECT received_at, name FROM events
+           SELECT received_at, name FROM live_events
             WHERE site_id = $2 AND subject = $3 AND decision_id IS NULL AND received_at BETWEEN $4 AND $5
          ) t ORDER BY received_at, name <> 'exposure', name",
     )

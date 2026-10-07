@@ -162,7 +162,7 @@ pub async fn run(pool: &PgPool, now: DateTime<Utc>) -> Result<RollupStats> {
     // Activity for retention: any event, exposure or not.
     sqlx::query(
         "INSERT INTO insight_visitor_weeks (site_id, subject, week)
-         SELECT DISTINCT site_id, subject, date_trunc('week', received_at, 'UTC')::date FROM events WHERE received_at >= $1
+         SELECT DISTINCT site_id, subject, date_trunc('week', received_at, 'UTC')::date FROM live_events WHERE received_at >= $1
             AND site_id IN (SELECT id FROM sites WHERE sandbox_of IS NULL)
          ON CONFLICT DO NOTHING",
     )
@@ -186,7 +186,7 @@ async fn rebuild_hour(pool: &PgPool, site: &str, hour: DateTime<Utc>, sc: &SiteC
                 COALESCE(tz.tz_offset_min, d.tz_offset_min), coalesce(d.credit, 1)::float8
            FROM decisions d
            LEFT JOIN LATERAL (
-                SELECT e.tz_offset_min FROM events e
+                SELECT e.tz_offset_min FROM live_events e
                  WHERE e.decision_id = d.id AND e.site_id = d.site_id
                  ORDER BY (e.tz_offset_min IS NULL), (e.name <> 'exposure'), e.received_at LIMIT 1) tz ON true
           WHERE d.site_id = $1 AND d.exposed_at >= $2 AND d.exposed_at < $2 + interval '1 hour'",
