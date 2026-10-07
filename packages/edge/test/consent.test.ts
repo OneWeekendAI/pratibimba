@@ -96,3 +96,50 @@ test('edge_beacon_events_without_consent_say_so', async () => {
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(posted[0].consent, false);
 });
+
+// --- the zone cookie outlives the session only with consent -----------------------------------
+
+/** The `_prb_tz` cookie strings beacon.js writes, attributes included. */
+async function tzWrites(consent: boolean | undefined, existing = ''): Promise<string[]> {
+  const writes: string[] = [];
+  const cfg = JSON.stringify({ site: 'shop', subject: 'v1', consent, decisions: [{ slot: 'hero', id: 'd-1' }] });
+  new JSDOM(`<!doctype html><html><body><!-- prb:slot="hero" --><h1>Gifts</h1><!-- /prb:slot --><script data-prb='${cfg}'>${BEACON_JS}</script></body></html>`, {
+    runScripts: 'dangerously',
+    url: 'https://shop.test/',
+    beforeParse(w: any) {
+      w.fetch = () => Promise.resolve();
+      w.crypto.randomUUID ??= () => 'id';
+      const desc = Object.getOwnPropertyDescriptor(w.Document.prototype, 'cookie')!;
+      if (existing) desc.set!.call(w.document, existing);
+      Object.defineProperty(w.document, 'cookie', {
+        configurable: true,
+        get: () => desc.get!.call(w.document),
+        set: (v: string) => {
+          writes.push(v);
+          desc.set!.call(w.document, v);
+        },
+      });
+    },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  return writes.filter((v) => v.startsWith('_prb_tz='));
+}
+
+test('edge_tz_cookie_is_persistent_with_consent', async () => {
+  const writes = await tzWrites(true);
+  assert.equal(writes.length, 1, JSON.stringify(writes));
+  assert.match(writes[0], /; Max-Age=31536000/);
+});
+
+test('edge_tz_cookie_is_a_session_cookie_without_consent', async () => {
+  const writes = await tzWrites(undefined);
+  assert.equal(writes.length, 1, JSON.stringify(writes));
+  assert.doesNotMatch(writes[0], /Max-Age|Expires/i);
+});
+
+test('edge_tz_cookie_without_consent_replaces_a_persistent_one', async () => {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const writes = await tzWrites(false, `_prb_tz=${encodeURIComponent(zone)}; Max-Age=31536000; Path=/`);
+  assert.equal(writes.length, 1, JSON.stringify(writes));
+  assert.doesNotMatch(writes[0], /Max-Age|Expires/i);
+});

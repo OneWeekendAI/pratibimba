@@ -32,7 +32,7 @@ function send(p: BeaconProps, name: string) {
 
 export function PrbBeacon(p: BeaconProps) {
   useEffect(() => {
-    rememberTimeZone();
+    rememberTimeZone(document, p.consent === true);
     // Strict Mode runs effects twice in development; one exposure per decision per page.
     if (!reported.has(p.decision)) {
       reported.add(p.decision);

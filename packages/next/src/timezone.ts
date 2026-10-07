@@ -16,6 +16,8 @@
 
 export const TZ_COOKIE = '_prb_tz';
 export const TZ_HEADER = 'x-prb-tz';
+/** A year, as the subject cookie: only with consent. */
+export const TZ_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 export const GEO_TZ_HEADERS = ['x-vercel-ip-timezone', 'cf-timezone', 'cloudfront-viewer-time-zone'];
 
 type HeaderBag = { get(name: string): string | null };
@@ -51,15 +53,20 @@ export function visitorTimeZone(headers: HeaderBag, cookie: string | undefined, 
   return undefined;
 }
 
-/** Browser side: keep the zone in the first-party session cookie the server reads next time. */
-export function rememberTimeZone(doc: Document = document): void {
+/**
+ * Browser side: keep the zone in the first-party cookie the server reads next time. With the
+ * visitor's consent it lasts a year, so the first page of the next visit has a zone too;
+ * without it, it is a session cookie (rewritten each page, so withdrawing consent shortens a
+ * year-long one). A zone name identifies nobody, and without the cookie a server off a geo
+ * edge would have no local clock at all, so it is kept for the session rather than dropped.
+ */
+export function rememberTimeZone(doc: Document = document, persist = false): void {
   try {
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (!validTimeZone(zone)) return;
-    const pair = `${TZ_COOKIE}=${encodeURIComponent(zone)}`;
-    if (doc.cookie.split('; ').includes(pair)) return;
     const secure = doc.location?.protocol === 'https:' ? '; Secure' : '';
-    doc.cookie = `${pair}; Path=/; SameSite=Lax${secure}`;
+    const life = persist ? `; Max-Age=${TZ_COOKIE_MAX_AGE}` : '';
+    doc.cookie = `${TZ_COOKIE}=${encodeURIComponent(zone)}; Path=/; SameSite=Lax${life}${secure}`;
   } catch {
     // No cookies (sandboxed frame, privacy mode): the server falls back to the geo header.
   }

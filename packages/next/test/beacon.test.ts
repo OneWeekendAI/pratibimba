@@ -80,3 +80,46 @@ test('beacon_events_without_consent_say_so', async () => {
   await mount('d-1');
   assert.equal(posts[0].body.consent, false);
 });
+
+// --- the zone cookie outlives the session only with consent -----------------------------------
+
+/** Every `document.cookie = ...` written while `fn` runs, attributes included. */
+async function cookieWrites(fn: () => Promise<unknown>): Promise<string[]> {
+  const proto = Object.getPrototypeOf(Object.getPrototypeOf(document));
+  const desc = Object.getOwnPropertyDescriptor(proto, 'cookie') ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(proto), 'cookie')!;
+  const writes: string[] = [];
+  Object.defineProperty(document, 'cookie', {
+    configurable: true,
+    get: () => desc.get!.call(document),
+    set: (v: string) => {
+      writes.push(v);
+      desc.set!.call(document, v);
+    },
+  });
+  try {
+    await fn();
+  } finally {
+    delete (document as any).cookie;
+  }
+  return writes.filter((w) => w.startsWith('_prb_tz='));
+}
+
+test('tz_cookie_is_persistent_with_consent', async () => {
+  const writes = await cookieWrites(() => mount('d-tz-yes', true));
+  assert.equal(writes.length, 1, JSON.stringify(writes));
+  assert.match(writes[0], /; Max-Age=31536000/);
+});
+
+test('tz_cookie_is_a_session_cookie_without_consent', async () => {
+  const writes = await cookieWrites(() => mount('d-tz-no'));
+  assert.equal(writes.length, 1, JSON.stringify(writes));
+  assert.doesNotMatch(writes[0], /Max-Age|Expires/i);
+});
+
+test('tz_cookie_without_consent_replaces_a_persistent_one', async () => {
+  // A visitor who withdraws consent keeps the zone only for this session.
+  await mount('d-tz-before', true);
+  const writes = await cookieWrites(() => mount('d-tz-after'));
+  assert.equal(writes.length, 1, JSON.stringify(writes));
+  assert.doesNotMatch(writes[0], /Max-Age|Expires/i);
+});

@@ -13,13 +13,14 @@ export const BEACON_JS = `(function () {
       tz_offset: -new Date().getTimezoneOffset(), consent: cfg.consent === true });
     try { fetch('/_prb/e', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }); } catch (e) {}
   }
-  // The edge has no clock of the visitor's: this first-party session cookie is its fallback
-  // when the platform sends no geolocation time zone.
+  // The edge has no clock of the visitor's: this first-party cookie names the browser's zone,
+  // which the edge prefers to its geolocation. A year with consent; otherwise a session cookie
+  // (rewritten each page, so withdrawing consent shortens a year-long one).
   try {
     var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    var pair = '_prb_tz=' + encodeURIComponent(zone);
-    if (zone && document.cookie.split('; ').indexOf(pair) < 0)
-      document.cookie = pair + '; Path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+    if (zone)
+      document.cookie = '_prb_tz=' + encodeURIComponent(zone) + '; Path=/; SameSite=Lax' +
+        (cfg.consent === true ? '; Max-Age=31536000' : '') + (location.protocol === 'https:' ? '; Secure' : '');
   } catch (e) {}
   function markers(slot) {
     var w = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_COMMENT);
