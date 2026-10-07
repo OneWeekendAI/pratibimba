@@ -12,6 +12,8 @@ export interface BeaconProps {
   decision: string;
   subject: string;
   eventsPath: string;
+  /** The consent the server decided with; events carry the same, so Core stores one subject. */
+  consent?: boolean;
 }
 
 const reported = new Set<string>();
@@ -23,6 +25,7 @@ function send(p: BeaconProps, name: string) {
     events: [{ id: crypto.randomUUID(), name, slot: p.slot, decision_id: p.decision }],
     // The browser's offset, so insights put this visit at its local hour.
     tz_offset: -new Date().getTimezoneOffset(),
+    consent: p.consent === true,
   });
   void fetch(p.eventsPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: true }).catch(() => {});
 }

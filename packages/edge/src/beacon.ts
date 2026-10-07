@@ -10,7 +10,7 @@ export const BEACON_JS = `(function () {
   function send(name, d) {
     var body = JSON.stringify({ site: cfg.site, subject: cfg.subject,
       events: [{ id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: name, slot: d.slot, decision_id: d.id }],
-      tz_offset: -new Date().getTimezoneOffset() });
+      tz_offset: -new Date().getTimezoneOffset(), consent: cfg.consent === true });
     try { fetch('/_prb/e', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }); } catch (e) {}
   }
   // The edge has no clock of the visitor's: this first-party session cookie is its fallback

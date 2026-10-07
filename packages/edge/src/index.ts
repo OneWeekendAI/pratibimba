@@ -9,9 +9,11 @@
 import { BEACON_JS } from './beacon.ts';
 import { beforeBodyEnd, rewriter, type Replacement } from './markers.ts';
 import { GEO_TZ_HEADERS, TZ_COOKIE, validTimeZone, visitorTimeZone } from './timezone.ts';
+import { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
 
 export { rewriter, beforeBodyEnd, BEACON_JS };
-export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone };
+export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone, CONSENT_COOKIE, visitorConsent };
+export type { ConsentOption };
 export const VERSION = '0.1.0';
 export const SUBJECT_COOKIE = '_prb_subject';
 export const SESSION_COOKIE = '_prb_s';
@@ -33,6 +35,12 @@ export interface EdgeOptions {
    * copy is ignored. Cloudflare's `request.cf.timezone` is always read: a client cannot set it.
    */
   timeZoneHeaders?: readonly string[];
+  /**
+   * The visitor's consent, sent to Core as `ctx.consent`. A boolean, or a function of the
+   * request's cookies; `undefined` from it falls through to the cookies consent.ts reads
+   * (`_prb_consent`, TCF's `euconsent-v2`, OneTrust's `OptanonConsent`). Default: those cookies.
+   */
+  consent?: ConsentOption;
 }
 
 interface Ctx {
@@ -41,6 +49,8 @@ interface Ctx {
   from_ad: boolean;
   /** The visitor's IANA zone; Core derives the local hour, night, weekend and business hours. */
   tz?: string;
+  /** Whether the visitor consented to being remembered (see consent.ts). */
+  consent?: boolean;
 }
 
 const MOBILE = /Mobi|Android|iPhone|iPad|iPod/i;
@@ -120,7 +130,8 @@ export function createEdge(opts: EdgeOptions) {
     // The local clock is read on every request, never fixed in the session cookie.
     const cf = (request as Request & { cf?: { timezone?: unknown } }).cf?.timezone;
     const tz = typeof cf === 'string' && validTimeZone(cf) ? cf : visitorTimeZone(request.headers, jar.get(TZ_COOKIE), opts.timeZoneHeaders ?? GEO_TZ_HEADERS);
-    const decideCtx: Ctx = tz ? { ...ctx, tz } : ctx;
+    const consent = visitorConsent(jar, opts.consent);
+    const decideCtx: Ctx = { ...ctx, ...(tz ? { tz } : {}), consent };
 
     const decided: { slot: string; id: string }[] = [];
     async function decide(slot: string): Promise<Replacement> {
@@ -137,7 +148,7 @@ export function createEdge(opts: EdgeOptions) {
     }
 
     // The beacon tag goes in last, once every slot above it has been decided.
-    const beacon = () => `<script src="/_prb/beacon.js" data-prb='${attr({ site: opts.site, subject, decisions: decided })}'></script>`;
+    const beacon = () => `<script src="/_prb/beacon.js" data-prb='${attr({ site: opts.site, subject, consent, decisions: decided })}'></script>`;
     const body = res.body
       .pipeThrough(new TextDecoderStream())
       .pipeThrough(rewriter(decide))

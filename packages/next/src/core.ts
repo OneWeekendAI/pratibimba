@@ -6,6 +6,8 @@ export interface Ctx {
   from_ad: boolean;
   /** The visitor's IANA time zone, when the proxy could name it (see timezone.ts). */
   tz?: string;
+  /** Whether the visitor consented to being remembered (see consent.ts). */
+  consent?: boolean;
 }
 
 export interface Decision {
@@ -68,12 +70,13 @@ export async function postEvents(
   opts: { core: string; site: string; fetch?: Fetch },
   subject: string,
   events: EventIn[],
+  consent?: boolean,
 ): Promise<void> {
   const f = opts.fetch ?? fetch;
   const res = await f(`${opts.core.replace(/\/$/, '')}/e`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ site: opts.site, subject, events }),
+    body: JSON.stringify({ site: opts.site, subject, events, consent: consent === true }),
     cache: 'no-store',
   });
   if (!res.ok) throw new Error(`Pratibimba events failed: ${res.status}`);

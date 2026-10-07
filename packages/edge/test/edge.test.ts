@@ -35,7 +35,7 @@ test('edge_replaces_the_slot_before_the_browser_sees_it', async () => {
 test('edge_sends_subject_and_context_to_core', async () => {
   const calls: any[] = [];
   await (await edge(html(), core(gift, calls)).handleRequest(get('/?gclid=1', { cookie: '_prb_subject=abc', 'user-agent': 'iPhone' }))).text();
-  assert.deepEqual(calls[0].body, { site: 'shop', slot: 'hero', subject: 'abc', ctx: { returning: false, mobile: true, from_ad: true } });
+  assert.deepEqual(calls[0].body, { site: 'shop', slot: 'hero', subject: 'abc', ctx: { returning: false, mobile: true, from_ad: true, consent: false } });
 });
 
 test('edge_keeps_the_baseline_when_core_fails', async () => {
@@ -83,7 +83,7 @@ test('beacon_tag_carries_the_decisions', async () => {
   const text = await (await edge().handleRequest(get('/', { cookie: '_prb_subject=abc' }))).text();
   const m = /<script src="\/_prb\/beacon\.js" data-prb='([^']+)'><\/script><\/body>/.exec(text);
   assert.ok(m, text);
-  assert.deepEqual(JSON.parse(m[1]), { site: 'shop', subject: 'abc', decisions: [{ slot: 'hero', id: 'd-1' }] });
+  assert.deepEqual(JSON.parse(m[1]), { site: 'shop', subject: 'abc', consent: false, decisions: [{ slot: 'hero', id: 'd-1' }] });
 });
 
 test('edge_serves_the_beacon_script', async () => {

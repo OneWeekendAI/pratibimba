@@ -21,7 +21,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
 });
 
-async function mount(decision = 'd-1') {
+async function mount(decision = 'd-1', consent?: boolean) {
   const host = document.createElement('div');
   host.setAttribute('data-prb-decision', decision);
   host.innerHTML = '<a id="cta">Shop</a>';
@@ -29,7 +29,7 @@ async function mount(decision = 'd-1') {
   host.appendChild(mountPoint);
   document.body.appendChild(host);
   const root = createRoot(mountPoint);
-  await act(async () => root.render(createElement(PrbBeacon, { site: 'shop', slot: 'hero', decision, subject: 'v1', eventsPath: '/_prb/e' })));
+  await act(async () => root.render(createElement(PrbBeacon, { site: 'shop', slot: 'hero', decision, subject: 'v1', eventsPath: '/_prb/e', consent })));
   return { host, root };
 }
 
@@ -69,4 +69,14 @@ test('beacon_events_carry_the_browsers_offset', async () => {
   // So insights rollups put a server-rendered visit at its local hour.
   await mount('d-off');
   assert.equal(posts[0].body.tz_offset, -new Date().getTimezoneOffset());
+});
+
+test('beacon_events_carry_the_consent_the_server_decided_with', async () => {
+  await mount('d-1', true);
+  assert.equal(posts[0].body.consent, true);
+});
+
+test('beacon_events_without_consent_say_so', async () => {
+  await mount('d-1');
+  assert.equal(posts[0].body.consent, false);
 });

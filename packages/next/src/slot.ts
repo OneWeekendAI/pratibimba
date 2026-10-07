@@ -9,6 +9,7 @@ import { PrbBeacon } from './beacon.ts';
 import { decideBatch, isDecision, type Ctx, type Decision, type Fetch } from './core.ts';
 import { CTX_HEADER, SUBJECT_HEADER, decodeCtx } from './context.ts';
 import { TZ_HEADER, validTimeZone } from './timezone.ts';
+import { CONSENT_HEADER } from './consent.ts';
 
 export interface Visitor {
   subject: string;
@@ -88,6 +89,8 @@ export function createSlot(config: SlotConfig) {
     const ctx = decodeCtx(h.get(CTX_HEADER));
     const tz = h.get(TZ_HEADER);
     if (ctx && validTimeZone(tz)) ctx.tz = tz;
+    const consent = h.get(CONSENT_HEADER);
+    if (ctx && (consent === '1' || consent === '0')) ctx.consent = consent === '1';
     return subject && ctx ? { subject, ctx } : null;
   }
 
@@ -123,6 +126,7 @@ export function createSlot(config: SlotConfig) {
         slot: id,
         decision: d.decision_id,
         subject: v!.subject,
+        consent: v!.ctx.consent === true,
         eventsPath: config.eventsPath ?? '/_prb/e',
       }),
     );

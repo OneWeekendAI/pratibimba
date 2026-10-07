@@ -16,6 +16,7 @@ import {
   validSubject,
 } from './context.ts';
 import { GEO_TZ_HEADERS, TZ_COOKIE, TZ_HEADER, visitorTimeZone } from './timezone.ts';
+import { CONSENT_HEADER, visitorConsent, type ConsentOption } from './consent.ts';
 
 export interface ProxyOptions {
   /**
@@ -29,6 +30,12 @@ export interface ProxyOptions {
    * behind one of them, so a client-sent copy is ignored and only the browser's cookie counts.
    */
   timeZoneHeaders?: readonly string[];
+  /**
+   * The visitor's consent, sent to Core as `ctx.consent`. A boolean, or a function of the
+   * request's cookies; `undefined` from it falls through to the cookies consent.ts reads
+   * (`_prb_consent`, TCF's `euconsent-v2`, OneTrust's `OptanonConsent`). Default: those cookies.
+   */
+  consent?: ConsentOption;
 }
 
 const YEAR = 60 * 60 * 24 * 365;
@@ -47,6 +54,9 @@ export function createProxy(opts: ProxyOptions = {}) {
     const tz = visitorTimeZone(request.headers, request.cookies.get(TZ_COOKIE)?.value, opts.timeZoneHeaders ?? GEO_TZ_HEADERS);
     if (tz) headers.set(TZ_HEADER, tz);
     else headers.delete(TZ_HEADER);
+    // Read on every request too: a choice made on one page counts from the next.
+    const jar = { get: (n: string) => request.cookies.get(n)?.value };
+    headers.set(CONSENT_HEADER, visitorConsent(jar, opts.consent) ? '1' : '0');
     const res = NextResponse.next({ request: { headers } });
 
     const secure = request.nextUrl.protocol === 'https:';

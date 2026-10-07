@@ -18,6 +18,7 @@ export type { Ctx, Decision, SlotConfig, ProxyOptions };
 export { createProxy, createRoute, createSlot };
 export { encodeCtx, decodeCtx, contextFor, SUBJECT_COOKIE, SESSION_COOKIE, SDK_HEADER, VERSION } from './context.ts';
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone } from './timezone.ts';
+export { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
 
 export interface PratibimbaConfig extends SlotConfig, ProxyOptions {}
 
@@ -31,7 +32,7 @@ export function createPratibimba(config: PratibimbaConfig) {
     async track(name: string, opts: { slot?: string; decisionId?: string } = {}) {
       const v = await visitor();
       if (!v) return;
-      await postEvents(config, v.subject, [{ id: crypto.randomUUID(), name, slot: opts.slot, decision_id: opts.decisionId }]);
+      await postEvents(config, v.subject, [{ id: crypto.randomUUID(), name, slot: opts.slot, decision_id: opts.decisionId }], v.ctx.consent);
     },
     proxy: createProxy(config),
     route: createRoute({ core: config.core, fetch: config.fetch as Fetch | undefined }),
