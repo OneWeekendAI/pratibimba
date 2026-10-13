@@ -413,20 +413,27 @@ export function createWorker(deps = {}) {
     return json(kept);
   }
 
-  /** POST /e onto the queue, or to Core when the queue cannot or should not take it. */
-  async function queueEvents(request, env) {
+  /** POST /e onto the queue, or to Core when the queue should not take it. The answer does not
+   * wait for the queue: a send costs a round trip to the queue's home (60-130 ms measured), so it
+   * runs after the response, and if the queue refuses it the event goes to Core directly, still
+   * after the response. Nothing is dropped that the direct path would have kept. */
+  async function queueEvents(request, env, ctx) {
     const raw = await request.clone().arrayBuffer();
     let body = null;
     try {
       body = JSON.parse(new TextDecoder().decode(raw));
     } catch {}
     if (raw.byteLength > MAX_QUEUED_BYTES || !queueable(body)) return direct(request, env, raw, 'not-queueable');
-    try {
-      await env.EVENTS_QUEUE.send({ kind: 'events', received_at: new Date(now()).toISOString(), request: body });
-    } catch (e) {
+    const message = { kind: 'events', received_at: new Date(now()).toISOString(), request: body };
+    ctx.waitUntil(env.EVENTS_QUEUE.send(message).catch(async (e) => {
       console.log(JSON.stringify({ msg: 'event enqueue failed, sending direct', site: body.site, error: String(e) }));
-      return direct(request, env, raw, 'enqueue-failed');
-    }
+      try {
+        const res = await proxy(new Request(request.url, { method: 'POST', headers: request.headers }), env, { body: raw });
+        await res.arrayBuffer();
+      } catch (err) {
+        console.log(JSON.stringify({ msg: 'event lost: queue and Core both refused', site: body.site, error: String(err) }));
+      }
+    }));
     const headers = { 'x-prb-queued': 'yes', 'cache-control': 'no-store' };
     const origin = request.headers.get('origin');
     const allowed = (env.SITE_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
@@ -482,7 +489,7 @@ export function createWorker(deps = {}) {
     async fetch(request, env, ctx) {
       const path = new URL(request.url).pathname;
       if (request.method === 'POST' && path === PUSH_PATH) return push(request, env);
-      if (request.method === 'POST' && path === '/e' && queueOn(env)) return queueEvents(request, env);
+      if (request.method === 'POST' && path === '/e' && queueOn(env)) return queueEvents(request, env, ctx);
       const decide = request.method === 'POST' && DECIDE_PATHS.has(path);
       if (decide && env.EDGE_DECIDE === 'on' && env.EDGE_TOKEN && env.BEACON) return edgeDecide(request, env, ctx, path);
       return proxyWithAge(request, env, decide);

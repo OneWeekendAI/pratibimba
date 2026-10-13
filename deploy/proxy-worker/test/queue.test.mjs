@@ -53,9 +53,24 @@ test('what the queue cannot vouch for goes straight to Core', async () => {
 
 test('a queue that refuses the message: the event goes to Core instead of being lost', async () => {
   const h = harness({ queueWrites: 'on', queueFails: true });
-  const r = await h.call(events(), '/e');
+  const body = events();
+  const r = await h.call(body, '/e');
   assert.equal(r.status, 202);
-  assert.equal(h.core.filter((c) => c.path === '/e').length, 1);
+  const sent = h.core.filter((c) => c.path === '/e');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].body, body);
+});
+
+test('the answer does not wait for the queue', async () => {
+  const h = harness({ queueWrites: 'on' });
+  let release;
+  h.env.EVENTS_QUEUE.send = () => new Promise((r) => { release = r; });
+  const answered = h.worker.fetch(new Request('https://api.example/e', { method: 'POST', body: JSON.stringify(events()) }), h.env, h.ctx);
+  const res = await Promise.race([answered, new Promise((r) => setTimeout(() => r('waiting'), 500))]);
+  assert.notEqual(res, 'waiting', 'the answer waited for the queue');
+  assert.equal(res.status, 202);
+  release();
+  await h.settle();
 });
 
 test('CORS on a queued answer: only for an origin the site allows', async () => {
