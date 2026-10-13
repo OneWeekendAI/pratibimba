@@ -69,6 +69,8 @@ test('the answer does not wait for the queue', async () => {
   const res = await Promise.race([answered, new Promise((r) => setTimeout(() => r('waiting'), 500))]);
   assert.notEqual(res, 'waiting', 'the answer waited for the queue');
   assert.equal(res.status, 202);
+  // The send starts after the answer, once the tombstone check (EC4) has answered.
+  while (!release) await new Promise((r) => setTimeout(r, 5));
   release();
   await h.settle();
 });

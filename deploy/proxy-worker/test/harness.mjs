@@ -31,13 +31,15 @@ function memoryStorage() {
 }
 
 /** A fake Cloudflare around the worker: Core, KV, the beacon, the PoP cache, a clock. */
-export function harness({ kv = null, beaconSnap = null, edgeDecide = 'on', coreSubject = null, ingest = 'stored', beaconHangs = false, queueWrites = 'off', queueFails = false, coreBatch = null } = {}) {
+export function harness({ kv = null, beaconSnap = null, edgeDecide = 'on', coreSubject = null, ingest = 'stored', beaconHangs = false, queueWrites = 'off', queueFails = false, coreBatch = null, gone = [], goneHangs = false } = {}) {
   const clock = { t: NOON };
   const core = [];
   const queued = [];
   const stores = new Map();
   const b = beacon(memoryStorage());
   const calls = { version: 0, snapshot: 0 };
+  const kvReads = [];
+  const goneKeys = new Set(gone);
   globalThis.fetch = async (url, init) => {
     const u = new URL(String(url));
     const body = init.body ? JSON.parse(new TextDecoder().decode(init.body instanceof ArrayBuffer ? init.body : await new Response(init.body).arrayBuffer())) : null;
@@ -66,7 +68,14 @@ export function harness({ kv = null, beaconSnap = null, edgeDecide = 'on', coreS
   };
   const env = {
     ORIGIN, EDGE_DECIDE: edgeDecide, EDGE_TOKEN: TOKEN,
-    SNAPSHOTS: { get: async () => kv },
+    // KV: the site's snapshot under site/<id>; EC4's tombstones under gone/<site>/<hash>.
+    SNAPSHOTS: {
+      get: async (k, opts) => {
+        kvReads.push({ key: k, opts });
+        if (k.startsWith('gone/')) return goneHangs ? new Promise(() => {}) : (goneKeys.has(k) ? { site: k.split('/')[1], erased_at: new Date(NOON).toISOString() } : null);
+        return kv;
+      },
+    },
     BEACON: { idFromName: (n) => n, get: () => stub },
     QUEUE_WRITES: queueWrites,
     EVENTS_QUEUE: { send: async (m) => { if (queueFails) throw new Error('queue down'); queued.push(structuredClone(m)); } },
@@ -97,5 +106,5 @@ export function harness({ kv = null, beaconSnap = null, edgeDecide = 'on', coreS
   };
   const decides = () => core.filter((c) => c.path === '/decide' || c.path === '/decide/batch');
   const ingests = () => core.filter((c) => c.path === '/edge/decisions');
-  return { clock, core, queued, env, worker, call, decides, ingests, push: (s) => b.put(s), calls, cache, ctx, settle };
+  return { clock, core, queued, kvReads, goneKeys, env, worker, call, decides, ingests, push: (s) => b.put(s), calls, cache, ctx, settle };
 }

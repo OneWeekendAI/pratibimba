@@ -135,7 +135,9 @@ async fn main() -> Result<()> {
             let Some(actor) = flag("--by") else { bail!("erase needs --by <actor>: who asked, for the audit row") };
             pratibimba::privacy::purge_delay().map_err(anyhow::Error::msg)?;
             db::migrate(&pool).await?;
-            let row = pratibimba::privacy::erase(&pool, site, subject, &actor, flag("--reason").as_deref()).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let mut row = pratibimba::privacy::erase(&pool, site, subject, &actor, flag("--reason").as_deref()).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let id = row["id"].as_i64().context("an erasure has an id")?;
+            row["edge"] = pratibimba::edge::erased(&pool, &pratibimba::edge::Edge::from_env()?, id).await;
             println!("{}", serde_json::to_string_pretty(&row)?);
         }
         Some("erasures") => {

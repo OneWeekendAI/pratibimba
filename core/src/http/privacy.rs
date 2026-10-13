@@ -3,7 +3,9 @@
 //! - `GET /api/sites/{site}/privacy`, `POST /api/sites/{site}/privacy`: the consent mode and
 //!   the `fields_allowed` list. A POST changes only what it names; `"fields_allowed": null`
 //!   clears the list (every field is collected).
-//! - `POST /api/sites/{site}/erase` `{subject, actor, reason?}`: right-to-erase.
+//! - `POST /api/sites/{site}/erase` `{subject, actor, reason?}`: right-to-erase. With an edge
+//!   configured the answer's `edge` says the tombstone was pushed and the edge refuses the
+//!   subject within 60 s (EC4); `edge` is null on a Core without one.
 //! - `GET /api/sites/{site}/erasures`: the erase audit log (hashes, never subjects).
 //! - `GET /api/sites/{site}/subjects/{subject}`: right-of-access, everything held for a subject.
 
@@ -61,7 +63,11 @@ struct Erase {
 }
 
 async fn erase(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<Erase>) -> Result<Json<Value>, ApiError> {
-    privacy::erase(&state.pool, &site, &b.subject, &b.actor, b.reason.as_deref()).await.map(Json)
+    let mut row = privacy::erase(&state.pool, &site, &b.subject, &b.actor, b.reason.as_deref()).await?;
+    // EC4: after the commit, the tombstone to the edge; the answer says when the edge refuses.
+    let id = row["id"].as_i64().expect("an erasure has an id");
+    row["edge"] = crate::edge::erased(&state.pool, &state.edge, id).await;
+    Ok(Json(row))
 }
 
 async fn erasures(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {

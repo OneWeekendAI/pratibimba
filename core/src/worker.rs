@@ -566,6 +566,11 @@ pub async fn run_drain_edge(pool: &PgPool, edge: &crate::edge::Edge) -> Result<(
 }
 
 async fn publish_edge(pool: &PgPool, edge: &crate::edge::Edge) {
+    match crate::edge::push_tombstones(pool, edge).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(erasures = n, "edge tombstones pushed"),
+        Err(e) => tracing::error!(error = %format!("{e:#}"), "edge tombstone pass failed"),
+    }
     match crate::edge::publish_all(pool, edge).await {
         Ok(0) => {}
         Ok(n) => tracing::info!(sites = n, "edge snapshots published"),

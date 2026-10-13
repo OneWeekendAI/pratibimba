@@ -55,16 +55,24 @@ pub struct Edge {
     /// edge-made decisions (`POST /edge/decisions`) and tells the Worker the stored subject of the
     /// decisions it makes (see [`crate::http::decide`]). `None` turns both off.
     token: Option<String>,
+    /// EC4: where erasures' tombstone hashes go (KV only: the beacon holds snapshots, not keys).
+    tombstones: Option<Arc<dyn Store>>,
 }
 
 impl Edge {
     /// No edge: nothing is built or written.
     pub fn off() -> Self {
-        Edge { store: None, token: None }
+        Edge { store: None, token: None, tombstones: None }
     }
 
+    /// Snapshots and tombstones both to `store` (tests use one in-memory store for both).
     pub fn with_store(store: Arc<dyn Store>) -> Self {
-        Edge { store: Some(store), token: None }
+        Edge { store: Some(store.clone()), token: None, tombstones: Some(store) }
+    }
+
+    /// Whether erasures are pushed to the edge (EC4).
+    pub fn has_tombstones(&self) -> bool {
+        self.tombstones.is_some()
     }
 
     /// This edge with the Worker's shared token set.
@@ -105,11 +113,14 @@ impl Edge {
         let val = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let (account, namespace, token) = (val("PRB_EDGE_KV_ACCOUNT"), val("PRB_EDGE_KV_NAMESPACE"), val("PRB_EDGE_KV_TOKEN"));
         let mut stores: Vec<Arc<dyn Store>> = Vec::new();
+        let mut tombstones: Option<Arc<dyn Store>> = None;
         match (account, namespace, token) {
             (None, None, None) => {}
             (Some(account), Some(namespace), Some(token)) => {
                 let api = val("PRB_EDGE_KV_API").unwrap_or_else(|| "https://api.cloudflare.com/client/v4".into());
-                stores.push(Arc::new(CloudflareKv { api, account, namespace, token, http: reqwest::Client::new() }));
+                let kv: Arc<dyn Store> = Arc::new(CloudflareKv { api, account, namespace, token, http: reqwest::Client::new() });
+                tombstones = Some(kv.clone());
+                stores.push(kv);
             }
             _ => bail!("set all of PRB_EDGE_KV_ACCOUNT, PRB_EDGE_KV_NAMESPACE and PRB_EDGE_KV_TOKEN, or none of them"),
         }
@@ -125,7 +136,7 @@ impl Edge {
             1 => stores.pop(),
             _ => Some(Arc::new(Fanout(stores))),
         };
-        Ok(Edge { store, token: edge_token })
+        Ok(Edge { store, token: edge_token, tombstones })
     }
 }
 
@@ -407,4 +418,78 @@ pub async fn publish_all(pool: &PgPool, edge: &Edge) -> Result<usize> {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+// ---- EC4: erased subjects at the edge ----
+
+/// How long an erase takes to be refused at every edge PoP: the KV read the Worker makes is
+/// cached for 30 s (`cacheTtl`), and KV propagates a write in well under that (measured live, see
+/// the tracker's EC4), so 60 s is the bound the erase answer states (edge-cache.md, Decisions 1).
+pub const ERASE_EDGE_WINDOW_SECS: i64 = 60;
+
+/// The KV key a tombstone is pushed under: `gone/<site>/<subject_hash>`, where the hash is
+/// [`crate::privacy::subject_hash`] of the client's id (the Worker computes the same from the
+/// raw subject, whatever the privacy mode, so no salt is needed).
+pub fn tombstone_key(site: &str, subject_hash: &str) -> String {
+    format!("gone/{site}/{subject_hash}")
+}
+
+async fn push_rows(pool: &PgPool, store: &Arc<dyn Store>, rows: Vec<(i64, String, String, chrono::DateTime<chrono::Utc>)>) -> Result<usize> {
+    let mut n = 0;
+    let mut failed = None;
+    for (id, site, hash, at) in rows {
+        let body = serde_json::to_vec(&json!({ "site": site, "erased_at": at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) }))?;
+        match store.put(&tombstone_key(&site, &hash), body).await {
+            Ok(()) => {
+                sqlx::query("UPDATE erasures SET edge_pushed_at = now() WHERE id = $1").bind(id).execute(pool).await?;
+                n += 1;
+            }
+            Err(e) => {
+                tracing::error!(site, erasure = id, error = %format!("{e:#}"), "edge tombstone push failed");
+                failed = Some(e);
+            }
+        }
+    }
+    match failed {
+        Some(e) if n == 0 => Err(e),
+        _ => Ok(n),
+    }
+}
+
+/// Push one erasure's tombstone, right after the erase commits. `Ok(true)` when it is at the edge
+/// store now; `Ok(false)` when there is no tombstone store. A failure leaves it pending, and the
+/// next worker pass ([`push_tombstones`]) retries.
+pub async fn push_tombstone(pool: &PgPool, edge: &Edge, erasure: i64) -> Result<bool> {
+    let Some(store) = &edge.tombstones else { return Ok(false) };
+    let rows = sqlx::query_as("SELECT id, site_id, subject_hash, created_at FROM erasures WHERE id = $1").bind(erasure).fetch_all(pool).await?;
+    Ok(push_rows(pool, store, rows).await? == 1)
+}
+
+/// Every erasure not yet at the edge store (a failed push, or one made before the edge was
+/// configured, or by the CLI), at most 500 per call: what each worker pass runs.
+pub async fn push_tombstones(pool: &PgPool, edge: &Edge) -> Result<usize> {
+    let Some(store) = &edge.tombstones else { return Ok(0) };
+    let rows = sqlx::query_as("SELECT id, site_id, subject_hash, created_at FROM erasures WHERE edge_pushed_at IS NULL ORDER BY id LIMIT 500")
+        .fetch_all(pool)
+        .await?;
+    push_rows(pool, store, rows).await
+}
+
+/// What an erase answer says about the edge: `null` with no edge configured (the erase is
+/// complete when it returns), else whether the tombstone is at the edge store and the window.
+pub async fn erased(pool: &PgPool, edge: &Edge, erasure: i64) -> Value {
+    if !edge.is_on() && !edge.has_token() {
+        return Value::Null;
+    }
+    let w = ERASE_EDGE_WINDOW_SECS;
+    match push_tombstone(pool, edge, erasure).await {
+        Ok(true) => json!({ "tombstone": "pushed", "effective_within_secs": w, "note": format!("effective at the edge within {w} s") }),
+        Ok(false) => json!({ "tombstone": "unconfigured", "effective_within_secs": null,
+                             "note": "no edge tombstone store is configured (PRB_EDGE_KV_*): the edge is not told; Core refuses every write" }),
+        Err(e) => {
+            tracing::error!(erasure, error = %format!("{e:#}"), "edge tombstone push failed; the worker retries");
+            json!({ "tombstone": "pending", "effective_within_secs": w,
+                    "note": format!("the edge push failed and the next worker pass retries it; effective at the edge within {w} s of that pass") })
+        }
+    }
 }

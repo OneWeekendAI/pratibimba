@@ -152,12 +152,14 @@ test('anything Core would refuse goes to Core, which answers it', async () => {
   }
 });
 
-test('an erased visitor: once Core says gone, the PoP sends them to Core', async () => {
+test('an erased visitor: once Core says gone, the PoP refuses them itself (EC4: 410, Core not asked)', async () => {
   const h = harness({ kv: snapshot(), beaconSnap: snapshot(), ingest: 'gone' });
   await h.call(req('erased-1'));
   h.clock.t += 61_000;
   const r = await h.call(req('erased-1'));
-  assert.equal(r.headers.get('x-prb-edge-fallback'), 'erased');
+  assert.equal(r.status, 410);
+  assert.equal(r.headers.get('x-prb-erased'), 'yes');
+  assert.equal(h.decides().length, 0);
 });
 
 test('batch: decided at the edge as one answer', async () => {

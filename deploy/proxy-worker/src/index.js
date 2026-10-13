@@ -41,6 +41,16 @@
 // field, a malformed body) still go straight to Core, which answers them as before. Off switch:
 // deploy/proxy-worker/queue.sh off (the direct path, unchanged); the consumer keeps draining.
 //
+// EC4, erased subjects. On erase Core puts the subject's tombstone hash in KV
+// (gone/<site>/<sha256(site 0 subject)>, the hash of the client's raw id, so no salt is needed).
+// The Worker reads it (cached GONE_CACHE_TTL_S at the PoP) on every edge decide, in parallel with
+// the snapshot, and refuses an erased subject with 410 itself; a read that does not answer in
+// KV_WAIT_MS sends the decide to Core. A queued /e is answered at once, then checked before the
+// send: an erased subject's events are dropped, never queued. Either way the PoP remembers the
+// subject (Cache API, a day), so its next /e is refused with 410 before anything else. Core is
+// still the authority: a cookieless subject this PoP has not seen goes to Core, and Core refuses
+// every write of an erased subject. So the edge window is about a minute; nothing is stored.
+//
 // Rollback: EDGE_DECIDE=off (deploy/proxy-worker/edge-decide.sh off) puts every decide back on
 // Core; deleting the route (switch.sh off) takes the Worker out entirely.
 
@@ -51,6 +61,10 @@ export const BEACON_FRESH_MS = 3000;
 export const BEACON_REFRESH_MS = 1000;
 export const BEACON_WAIT_MS = 400;
 export const KV_WAIT_MS = 150;
+/** How long a PoP caches a tombstone read (KV `cacheTtl`; 30 s is KV's minimum). It bounds how
+ * stale a "not erased" answer can be, so with KV's propagation it makes the erase window. */
+export const GONE_CACHE_TTL_S = 30;
+const GONE_BODY = { error: 'this subject was erased; start a new one' };
 /** No edge decide this close to midnight UTC: the cookieless pseudonym changes there. */
 export const MIDNIGHT_GUARD_MS = 60_000;
 const DECIDE_PATHS = new Set(['/decide', '/decide/batch']);
@@ -211,6 +225,7 @@ export function createWorker(deps = {}) {
   const pseudonymKey = async (site, raw, ms) => keyUrl('p', await sha256hex(`${site}\0${raw}\0${dayOf(ms)}`));
   const stickyKey = async (site, slot, stored) => keyUrl('d', await sha256hex(`${site}\0${slot}\0${stored}`));
   const goneKey = async (site, raw) => keyUrl('g', await sha256hex(`${site}\0${raw}`));
+  const tombstoneKey = async (site, raw) => `gone/${site}/${await sha256hex(`${site}\0${raw}`)}`;
 
   async function cached(url) {
     try {
@@ -226,6 +241,23 @@ export function createWorker(deps = {}) {
       await cacheOf().put(url, new Response(text, { headers: { 'cache-control': `max-age=${Math.floor(seconds)}` } }));
     } catch {}
   }
+
+  /** Whether `raw` is erased on `site`: true (this PoP's hint, or KV's tombstone, which then
+   * becomes the hint), false, or null when KV did not answer in KV_WAIT_MS (unknown). */
+  async function erasedAt(env, site, raw) {
+    const hint = await goneKey(site, raw);
+    if (await cached(hint)) return true;
+    if (!env.SNAPSHOTS) return false;
+    const key = await tombstoneKey(site, raw);
+    const got = await within(env.SNAPSHOTS.get(key, { type: 'json', cacheTtl: GONE_CACHE_TTL_S }).then((v) => (v ? 'gone' : 'live')), KV_WAIT_MS, 'unknown');
+    if (got === 'gone') {
+      await keep(hint, '1', 86_400);
+      return true;
+    }
+    return got === 'live' ? false : null;
+  }
+
+  const goneResponse = (extra = {}) => json(GONE_BODY, 410, { 'x-prb-erased': 'yes', 'cache-control': 'no-store', ...extra });
 
   /** What Core's `x-prb-edge` header taught us: the stored subject and its live decisions. */
   async function learn(site, rawSubject, edgeHeader, bodyText, snap) {
@@ -354,12 +386,19 @@ export function createWorker(deps = {}) {
     const batch = path === '/decide/batch';
     const slots = batch ? body.slots : [body.slot];
     if (!Array.isArray(slots) || slots.length === 0 || slots.length > 20 || !slots.every((s) => typeof s === 'string')) return fallback('bad-request');
+    // The tombstone read runs alongside the snapshot's; it never rejects.
+    const erasedP = erasedAt(env, body.site, body.subject);
     const got = await current(env, ctx, body.site);
     if (!got.snap) return fallback(got.reason);
     const snap = got.snap;
     if (snap.format !== FORMAT) return fallback('snapshot-format', snap);
     for (const s of slots) if (snap.slots[s] && snap.slots[s].picker_keys.length > 0) return fallback('picker', snap);
-    if (await cached(await goneKey(body.site, body.subject))) return fallback('erased', snap);
+    const erased = await erasedP;
+    if (erased === true) {
+      console.log(JSON.stringify({ msg: 'edge refused erased subject', site: body.site, colo: request.cf?.colo }));
+      return goneResponse({ 'x-prb-decided-by': 'edge', 'x-prb-snapshot-version': String(snap.version) });
+    }
+    if (erased === null) return fallback('erase-check-timeout', snap);
     const t = now();
     const consent = body.ctx && typeof body.ctx === 'object' ? body.ctx.consent : undefined;
     let stored = null;
@@ -425,7 +464,24 @@ export function createWorker(deps = {}) {
     } catch {}
     if (raw.byteLength > MAX_QUEUED_BYTES || !queueable(body)) return direct(request, env, raw, 'not-queueable');
     const message = { kind: 'events', received_at: new Date(now()).toISOString(), request: body };
-    ctx.waitUntil(env.EVENTS_QUEUE.send(message).catch(async (e) => {
+    const headers = { 'x-prb-queued': 'yes', 'cache-control': 'no-store' };
+    const origin = request.headers.get('origin');
+    const allowed = (env.SITE_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
+    if (origin && allowed.includes(origin)) Object.assign(headers, { 'access-control-allow-origin': origin, vary: 'origin' });
+    // EC4: a subject this PoP knows is erased is refused now; a KV tombstone is checked after
+    // the answer (so /e never waits on KV) and drops the events before the send.
+    if (await cached(await goneKey(body.site, body.subject))) return goneResponse({ ...headers, 'x-prb-queued': 'no; erased' });
+    ctx.waitUntil(erasedAt(env, body.site, body.subject).then((erased) => {
+      if (erased === true) {
+        console.log(JSON.stringify({ msg: 'events of an erased subject dropped', site: body.site, events: body.events.length }));
+        return;
+      }
+      return send();
+    }));
+    return json({ queued: body.events.length }, 202, headers);
+
+    function send() {
+    return env.EVENTS_QUEUE.send(message).catch(async (e) => {
       console.log(JSON.stringify({ msg: 'event enqueue failed, sending direct', site: body.site, error: String(e) }));
       try {
         const res = await proxy(new Request(request.url, { method: 'POST', headers: request.headers }), env, { body: raw });
@@ -433,12 +489,8 @@ export function createWorker(deps = {}) {
       } catch (err) {
         console.log(JSON.stringify({ msg: 'event lost: queue and Core both refused', site: body.site, error: String(err) }));
       }
-    }));
-    const headers = { 'x-prb-queued': 'yes', 'cache-control': 'no-store' };
-    const origin = request.headers.get('origin');
-    const allowed = (env.SITE_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
-    if (origin && allowed.includes(origin)) Object.assign(headers, { 'access-control-allow-origin': origin, vary: 'origin' });
-    return json({ queued: body.events.length }, 202, headers);
+    });
+    }
   }
 
   async function direct(request, env, raw, why) {

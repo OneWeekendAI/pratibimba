@@ -116,7 +116,23 @@ async function visits(from, to) {
 }
 // Move the decisions made since `since` back in time, oldest to `fromDays` ago and the newest
 // `keep` of them still at now, so their attribution windows have closed.
+// The worker is running during the second call and updates decisions rows in its own order
+// (exposures, settles), so this bulk UPDATE over every decision of the run can deadlock with it;
+// Postgres then aborts this statement (40P01) and the whole shift rolls back (one implicit
+// transaction, the temp table included). It is the seed racing the worker, not a product path:
+// retry the shift, which is then all-or-nothing again.
 function backdate(since, fromDays, toDays, keep = 0) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return shiftOnce(since, fromDays, toDays, keep);
+    } catch (e) {
+      const text = String(e.stderr ?? e.message);
+      if (!/deadlock detected/.test(text) || attempt >= 5) throw e;
+      console.error(`stack: backdate deadlocked with the worker (attempt ${attempt}); retrying`);
+    }
+  }
+}
+function shiftOnce(since, fromDays, toDays, keep) {
   psql(
     `CREATE TEMP TABLE shift AS
        SELECT id, make_interval(secs => ${toDays * 86400} + greatest(0, (1 - (row_number() OVER (ORDER BY created_at))::float / count(*) OVER () - ${keep})) * ${(fromDays - toDays) * 86400}) AS by
