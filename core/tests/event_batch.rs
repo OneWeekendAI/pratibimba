@@ -374,3 +374,23 @@ async fn fields_the_site_does_not_collect_are_dropped(pool: PgPool) {
     assert_eq!((decision, tz), (None, None), "a field the site does not collect was stored");
     assert!(slot.is_some(), "the slot, which it collects, was dropped");
 }
+
+/// The queue can also deliver a click before the exposure of the same decision (EC3 cohort, live:
+/// one click in 53 lost this way). A goal event that names a decision not yet exposed waits for
+/// the exposure, so the click is credited as it would have been on the direct path.
+#[sqlx::test(migrations = false)]
+async fn a_click_that_arrives_before_its_exposure_waits_for_it(pool: PgPool) {
+    setup(&pool, "full").await;
+    let app = edge_app(&pool);
+    let d = decide(&app, "v", false).await.json()["decision_id"].clone();
+    let t = now();
+    // The click lands first (an earlier batch), though the edge received the exposure first.
+    assert_eq!(ids(&batch(&app, vec![events_item("v", vec![ev_for("click", &d)], t + chrono::Duration::seconds(1))]).await, "accepted").len(), 1);
+    pratibimba::worker::run_once(&pool, now() + chrono::Duration::seconds(10)).await.unwrap();
+    assert_eq!(ids(&batch(&app, vec![events_item("v", vec![ev_for("exposure", &d)], t)]).await, "accepted").len(), 1);
+    pratibimba::worker::run_once(&pool, now() + chrono::Duration::seconds(10)).await.unwrap();
+    pratibimba::worker::run_once(&pool, now() + chrono::Duration::seconds(10)).await.unwrap();
+    let outcome: Option<i16> = sqlx::query_scalar("SELECT outcome FROM decisions").fetch_one(&pool).await.unwrap();
+    assert_eq!(outcome, Some(1), "the click drained before its exposure was lost");
+    assert_eq!(count(&pool, "SELECT count(*) FROM pending_events").await, 0);
+}

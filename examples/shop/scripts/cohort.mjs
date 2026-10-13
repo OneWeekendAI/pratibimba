@@ -48,6 +48,8 @@ const PLANS = {
   smoke: [{ name: 'smoke', rate: 1, secs: 20 }],
   // E5 (2026-10-08): one steady block, then estimates.mjs while the windows close.
   short: [{ name: 'steady', rate: 2.5, secs: 1200 }],
+  // EC3 (2026-10-13): four minutes through the events queue, to reconcile against Core.
+  ec3: [{ name: 'steady', rate: 2.5, secs: 240 }],
   // Only idle gaps: every render comes 4.5-9 s after the last one.
   sparse: [{ name: 'sparse', gap: [4.5, 9], secs: 300 }],
   full: [

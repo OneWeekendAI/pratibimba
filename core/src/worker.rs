@@ -55,8 +55,10 @@ pub const BATCH: i64 = 500;
 /// The edge queue (EC3) does not keep order, so an exposure or a click can land before the
 /// decision record it names; drained then, it would find nothing to expose or credit and be
 /// lost. It waits instead, up to this long (longer than the queue's whole retry schedule, see
-/// deploy/proxy-worker), and is then drained as before. Events that name no decision, or one
-/// Core has, are never held.
+/// deploy/proxy-worker), and is then drained as before. The same for a goal event (a click) whose
+/// decision exists but is not exposed yet: its exposure may still be in the queue, and a click
+/// drained before it credits nothing (measured live in the EC3 cohort: 1 click in 53). Events
+/// that name no decision, exposures, and events for an exposed decision are never held.
 pub const ORPHAN_HOLD_SECS: i64 = 1800;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +111,9 @@ async fn run_scoped(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option
     loop {
         let (n, s) = retry(|| drain_batch(pool, now, batch, scope)).await?;
         stats.add(s);
-        if n < batch as u64 {
+        // Until a batch finds nothing: an exposure drained here releases a click held for it
+        // (ORPHAN_HOLD_SECS), and the click should count in the same pass.
+        if n == 0 {
             break;
         }
     }
@@ -162,7 +166,8 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
            FROM pending_events p JOIN live_events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
           WHERE {scope}
             AND (e.decision_id IS NULL OR e.received_at <= $3 - make_interval(secs => $4)
-                 OR EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.decision_id))
+                 OR EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.decision_id
+                               AND (d.exposed_at IS NOT NULL OR e.name IN ('exposure', 'missed'))))
           ORDER BY p.id LIMIT $1
           FOR UPDATE OF p SKIP LOCKED",
         2,
