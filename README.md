@@ -501,6 +501,21 @@ transaction. The Docker image includes `pg_dump` and `psql` (Debian's 17, so the
 | `PRB_DASHBOARD_DIR` | (none; set in the Docker image) | the built dashboard (`dashboard/out`), served at `/app` |
 | `PRB_PG_BIN` | (`PATH`) | the directory holding `pg_dump` and `psql`, for `backup` and `restore` |
 | `RUST_LOG` | `info` | log filter |
+| `PRB_EDGE_KV_ACCOUNT`, `PRB_EDGE_KV_NAMESPACE`, `PRB_EDGE_KV_TOKEN` | (none: off) | optional edge snapshot push to Cloudflare Workers KV; set all three or none (see below) |
+
+### Edge snapshot (optional)
+
+With the three `PRB_EDGE_KV_*` variables set, Core writes one JSON document per site to a
+Workers KV namespace, under the key `site/<id>`: everything `/decide` reads that is the same for
+every visitor (approved arms and payloads, shares, audience gates, the running experiment, model
+state and version, cold-start counts, privacy mode, holdout, kill switch, the manifest and the
+installed plugins' names). It carries `version` (one more each time the content changes) and
+`generated_at`. Core pushes it after every change that affects a decision (approve, retire, kill
+switch, privacy settings, audiences, experiments, plugins, model rollback, `apply`) and after
+every worker pass (learned models, cold-start counts). A push that fails is retried by the next
+worker pass. A Worker in front of Core can read it; `deploy/proxy-worker` reports its age in
+`x-prb-snapshot-version` / `x-prb-snapshot-age-ms` and still forwards every request. Without the
+variables nothing is built or written, and Core behaves exactly as before.
 
 ## HTTP API
 

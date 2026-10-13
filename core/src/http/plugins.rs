@@ -44,6 +44,7 @@ async fn install(State(state): State<Arc<AppState>>, Path(name): Path<String>, J
     let mut tx = state.pool.begin().await?;
     let out = plugins::install(&mut tx, &b.site, p, config, &who).await?;
     tx.commit().await?;
+    crate::edge::changed(&state.pool, &state.edge, &b.site).await;
     Ok((StatusCode::CREATED, Json(out)))
 }
 
@@ -56,7 +57,9 @@ struct Uninstall {
 
 async fn uninstall(State(state): State<Arc<AppState>>, Path(name): Path<String>, Json(b): Json<Uninstall>) -> Result<Json<Value>, ApiError> {
     let who = actor(&b.actor)?;
-    plugins::uninstall(&state.pool, &b.site, &name, &who).await.map(Json)
+    let out = plugins::uninstall(&state.pool, &b.site, &name, &who).await?;
+    crate::edge::changed(&state.pool, &state.edge, &b.site).await;
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
@@ -69,7 +72,9 @@ struct Decision {
 
 async fn confirm(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<Decision>) -> Result<Json<Value>, ApiError> {
     let who = actor(&b.actor)?;
-    plugins::decide(&state.pool, id, true, &who, b.comment.as_deref()).await.map(Json)
+    let out = plugins::decide(&state.pool, id, true, &who, b.comment.as_deref()).await?;
+    crate::edge::changed_by(&state.pool, &state.edge, "SELECT site_id FROM plugin_requests WHERE id = $1", id).await;
+    Ok(Json(out))
 }
 
 async fn decline(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<Decision>) -> Result<Json<Value>, ApiError> {

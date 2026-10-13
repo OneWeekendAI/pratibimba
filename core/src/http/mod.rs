@@ -54,6 +54,8 @@ pub struct AppState {
     /// against the database in the same statement that reads everything else (see
     /// [`decide`]), and makes or rereads the salt as before when it is stale.
     pub salts: Mutex<std::collections::HashMap<String, String>>,
+    /// The edge snapshot publisher ([`crate::edge`]); off unless configured.
+    pub edge: crate::edge::Edge,
 }
 
 impl AppState {
@@ -66,6 +68,7 @@ impl AppState {
             http: crate::probes::client(),
             stream_every: Duration::from_secs(3),
             salts: Mutex::new(std::collections::HashMap::new()),
+            edge: crate::edge::Edge::off(),
         }
     }
 
@@ -79,10 +82,22 @@ impl AppState {
 
     /// The full state for `serve`: an admin token and a dashboard directory, both optional.
     pub fn configured(pool: PgPool, seed: Option<u64>, admin_token: Option<String>, dashboard_dir: Option<PathBuf>) -> Arc<Self> {
+        Self::configured_with_edge(pool, seed, admin_token, dashboard_dir, crate::edge::Edge::off())
+    }
+
+    /// [`Self::configured`] with an edge snapshot publisher.
+    pub fn configured_with_edge(
+        pool: PgPool,
+        seed: Option<u64>,
+        admin_token: Option<String>,
+        dashboard_dir: Option<PathBuf>,
+        edge: crate::edge::Edge,
+    ) -> Arc<Self> {
         let rng = seed.map(ChaCha8Rng::seed_from_u64).unwrap_or_else(ChaCha8Rng::from_os_rng);
         let mut s = Self::build(pool, rng);
         s.admin_token = admin_token.filter(|t| !t.is_empty());
         s.dashboard_dir = dashboard_dir;
+        s.edge = edge;
         Arc::new(s)
     }
 }

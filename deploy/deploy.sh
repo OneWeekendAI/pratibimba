@@ -16,19 +16,25 @@ if [ -z "${IMAGE:-}" ]; then
 fi
 DIGEST=${IMAGE##*@}
 echo "deploying $IMAGE"
+# The edge snapshot publisher (core/src/edge.rs): on when config.sh names a KV namespace.
+EDGE_ENV=""; EDGE_SECRET=""
+if [ -n "${EDGE_KV_NAMESPACE:-}" ]; then
+  EDGE_ENV=",PRB_EDGE_KV_ACCOUNT=$EDGE_KV_ACCOUNT,PRB_EDGE_KV_NAMESPACE=$EDGE_KV_NAMESPACE"
+  EDGE_SECRET=",PRB_EDGE_KV_TOKEN=prb-edge-kv-token:latest"
+fi
 
 # The API (also /mcp, /sdk.js, /manifest, /app). Scales to zero.
 gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
   --args serve --port 8080 --allow-unauthenticated \
   --min-instances 0 --max-instances 2 --cpu 1 --memory 512Mi --concurrency 80 \
-  --set-env-vars "PRB_SITE_ORIGIN=$SITE_ORIGIN,PRB_DB_MAX_CONNECTIONS=4,RUST_LOG=info" \
-  --set-secrets "PRB_DB=prb-db:latest,PRB_ADMIN_TOKEN=prb-admin-token:latest"
+  --set-env-vars "PRB_SITE_ORIGIN=$SITE_ORIGIN,PRB_DB_MAX_CONNECTIONS=4,RUST_LOG=info$EDGE_ENV" \
+  --set-secrets "PRB_DB=prb-db:latest,PRB_ADMIN_TOKEN=prb-admin-token:latest$EDGE_SECRET"
 
 # The learning worker: one pass per execution (`worker --once`), triggered by Cloud Scheduler.
 gcloud run jobs deploy "$JOB" --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
   --args worker,--once --tasks 1 --max-retries 0 --task-timeout 300s --cpu 1 --memory 512Mi \
-  --set-env-vars "PRB_DB_MAX_CONNECTIONS=2,RUST_LOG=info" \
-  --set-secrets "PRB_DB=prb-db:latest"
+  --set-env-vars "PRB_DB_MAX_CONNECTIONS=2,RUST_LOG=info$EDGE_ENV" \
+  --set-secrets "PRB_DB=prb-db:latest$EDGE_SECRET"
 
 # Check: both run the pushed digest.
 for got in "$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(spec.template.spec.containers[0].image)')" \

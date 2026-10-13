@@ -1,0 +1,6 @@
+{
+  "name": "pratibimba-api-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test --test-reporter=tap test/*.test.mjs" }
+}

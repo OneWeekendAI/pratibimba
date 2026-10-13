@@ -346,6 +346,7 @@ async fn promote(State(state): St, Path(id): Path<i64>, Json(b): Json<ActorBody>
     .bind(from)
     .fetch_one(&state.pool)
     .await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
     Ok(Json(segment_json(row)))
 }
 
@@ -356,5 +357,6 @@ async fn archive(State(state): St, Path(id): Path<i64>, Json(b): Json<ActorBody>
             .bind(id)
             .fetch_optional(&state.pool)
             .await?;
+    crate::edge::changed_by(&state.pool, &state.edge, "SELECT site_id FROM segments WHERE id = $1", id).await;
     row.map(|r| Json(segment_json(r))).ok_or_else(|| ApiError::NotFound(format!("unknown segment {id}")))
 }

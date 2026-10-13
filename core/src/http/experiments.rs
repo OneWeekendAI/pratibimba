@@ -50,6 +50,7 @@ struct Create {
 
 async fn create(State(state): State<Arc<AppState>>, Json(b): Json<Create>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let who = actor(&b.actor)?;
+    let site = b.site.clone();
     let new = New {
         site: b.site,
         slot: b.slot,
@@ -60,7 +61,9 @@ async fn create(State(state): State<Arc<AppState>>, Json(b): Json<Create>) -> Re
         stops_at: b.stops_at,
         actor: who,
     };
-    Ok((StatusCode::CREATED, Json(experiments::create(&state.pool, new).await?)))
+    let out = experiments::create(&state.pool, new).await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
+    Ok((StatusCode::CREATED, Json(out)))
 }
 
 #[derive(Deserialize)]
@@ -71,5 +74,7 @@ struct Stop {
 
 async fn stop(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<Stop>) -> Result<Json<Value>, ApiError> {
     let who = actor(&b.actor)?;
-    experiments::stop(&state.pool, id, &who).await.map(Json)
+    let out = experiments::stop(&state.pool, id, &who).await?;
+    crate::edge::changed_by(&state.pool, &state.edge, "SELECT site_id FROM experiments WHERE id = $1", id).await;
+    Ok(Json(out))
 }

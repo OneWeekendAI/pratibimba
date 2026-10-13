@@ -370,6 +370,50 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
     }))
 }
 
+/// What [`decide`] reads for `(site, slot)` that is the same for every visitor, as JSON: the
+/// edge snapshot ([`crate::edge`]) is built from this, so it holds exactly what decide reads.
+/// It runs [`SNAPSHOT`] itself with an empty subject (no real subject is empty, so the sticky
+/// decision and the latest picks come back empty) and drops the clock, the salt and the subject.
+/// `None` for an unknown site; the slot part is `null` for an unknown slot.
+pub(crate) async fn shared_inputs(conn: &mut sqlx::PgConnection, site: &str, slot: &str) -> Result<Option<(Value, Value)>, ApiError> {
+    let req = DecideRequest { site: site.to_string(), slot: slot.to_string(), subject: String::new(), ctx: Ctx::default() };
+    let Some(snap) = snapshot(conn, &req, "", None).await? else {
+        return Ok(None);
+    };
+    let settings = json!({
+        "privacy_mode": snap.policy.mode,
+        "fields_allowed": snap.policy.fields,
+        "holdout_fraction": snap.holdout_fraction,
+        "paused": snap.paused,
+        "night": { "start": snap.night_start, "end": snap.night_end },
+    });
+    let slot = match snap.slot {
+        None => Value::Null,
+        Some(s) => json!({
+            "id": s.id,
+            "cold_start_exposures": s.cold_until,
+            "arms": s.arms.iter().map(|(id, key, payload, baseline, share)| json!({
+                "id": id, "key": key, "payload": payload, "baseline": baseline, "traffic_share": share,
+            })).collect::<Vec<_>>(),
+            "gates": s.gates.iter().map(|(vid, vkey, gid, name, predicate, status)| json!({
+                "variant_id": vid, "variant": vkey, "audience_id": gid, "audience": name, "predicate": predicate, "status": status,
+            })).collect::<Vec<_>>(),
+            "picker_keys": s.site_keys,
+            "declared_features": s.declared,
+            "experiment": s.experiment.map(|e| json!({
+                "id": e.id, "name": e.name,
+                "arms": e.arms.iter().map(|(v, w)| json!({ "variant_id": v, "weight": w })).collect::<Vec<_>>(),
+            })),
+            "model": s.model.map(|(version, state)| json!({ "version": version, "state": state })),
+            "cold_start": s.cold.map(|(exposures, served)| json!({
+                "exposures": exposures,
+                "served": served.into_iter().map(|(v, n)| (v.to_string(), json!(n))).collect::<Map<String, Value>>(),
+            })),
+        }),
+    };
+    Ok(Some((settings, slot)))
+}
+
 /// Decide for one slot.
 ///
 /// Round trips (a warm decide that writes a decision makes four, one that reuses a sticky

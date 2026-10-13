@@ -186,6 +186,23 @@ pub async fn apply_path(pool: &PgPool, path: &std::path::Path) -> Result<()> {
     apply(pool, &file).await
 }
 
+/// [`apply_path`], then publish the site's edge snapshot ([`crate::edge`]; nothing when off).
+/// The file is applied even when the publish fails; the error says so, and the next worker pass
+/// retries the publish.
+pub async fn apply_path_edge(pool: &PgPool, path: &std::path::Path, edge: &crate::edge::Edge) -> Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let file: SiteFile = serde_json::from_str(&text)?;
+    apply_edge(pool, &file, edge).await
+}
+
+pub async fn apply_edge(pool: &PgPool, file: &SiteFile, edge: &crate::edge::Edge) -> Result<()> {
+    apply(pool, file).await?;
+    crate::edge::publish(pool, edge, &file.site)
+        .await
+        .map_err(|e| anyhow::anyhow!("applied, but the edge snapshot was not published (the worker retries): {e:#}"))?;
+    Ok(())
+}
+
 pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
     let mut tx = pool.begin().await?;

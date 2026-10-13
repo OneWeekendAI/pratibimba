@@ -86,7 +86,9 @@ async fn main() -> Result<()> {
                 Some(d) => tracing::info!(dir = %d.display(), "serving the dashboard at /app"),
                 None => tracing::info!("no dashboard: set PRB_DASHBOARD_DIR to a built dashboard (dashboard/out)"),
             }
-            let app = http::router(http::AppState::configured(pool, None, admin, dashboard), &origins);
+            let edge = pratibimba::edge::Edge::from_env()?;
+            tracing::info!(on = edge.is_on(), "edge snapshot publisher");
+            let app = http::router(http::AppState::configured_with_edge(pool, None, admin, dashboard, edge), &origins);
             let bind = std::env::var("PRB_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
             let listener = tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("cannot bind {bind}"))?;
             tracing::info!(%bind, "serving");
@@ -95,14 +97,14 @@ async fn main() -> Result<()> {
         Some("worker") => {
             db::migrate(&pool).await?;
             if args.get(1).map(String::as_str) == Some("--once") {
-                worker::run_drain(&pool).await?;
+                worker::run_drain_edge(&pool, &pratibimba::edge::Edge::from_env()?).await?;
                 tracing::info!("worker pass done (--once)");
                 return Ok(());
             }
             let tick = std::env::var("PRB_WORKER_TICK_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
             tracing::info!(tick_ms = tick, "worker running");
             tokio::select! {
-                r = worker::run_loop(pool, Duration::from_millis(tick)) => r?,
+                r = worker::run_loop_edge(pool, Duration::from_millis(tick), pratibimba::edge::Edge::from_env()?) => r?,
                 _ = shutdown() => {}
             }
         }
@@ -113,7 +115,7 @@ async fn main() -> Result<()> {
         Some("apply") => {
             let path = args.get(1).context(USAGE)?;
             db::migrate(&pool).await?;
-            site_file::apply_path(&pool, std::path::Path::new(path)).await?;
+            site_file::apply_path_edge(&pool, std::path::Path::new(path), &pratibimba::edge::Edge::from_env()?).await?;
             println!("applied {path}");
         }
         Some("mcp-token") => {

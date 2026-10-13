@@ -1,0 +1,293 @@
+//! The edge snapshot (edge-cache.md, phase EC1): a versioned per-site JSON document holding
+//! everything `/decide` reads that is the same for every visitor, pushed to an edge store
+//! (Cloudflare Workers KV) whenever it changes, so a Worker in front of Core can read it.
+//!
+//! **Pluggable and off by default.** With no store configured ([`Edge::off`]) nothing here runs:
+//! no snapshot is built, no row is written, so a self-hosted Core is unaffected. Configure the
+//! Cloudflare KV store with all three of `PRB_EDGE_KV_ACCOUNT`, `PRB_EDGE_KV_NAMESPACE` and
+//! `PRB_EDGE_KV_TOKEN` (`PRB_EDGE_KV_API` overrides the API base, for tests). Setting only some
+//! of them is an error, not a silent "off".
+//!
+//! **What is in it.** The slot part of each live slot is [`crate::http::decide`]'s own read
+//! (`shared_inputs`, which runs decide's `SNAPSHOT` statement), so the snapshot cannot hold
+//! anything decide does not read: approved arms with payloads and shares, audience gates,
+//! the running experiment, the model state and version, cold-start counts, the site's
+//! privacy mode, holdout fraction, kill switch and night window. Plus the manifest
+//! (`/manifest/:site`) and the installed plugins (name and kind only, never their config).
+//! Left out on purpose: the per-visitor rows (sticky decision, latest picks), the clock, and the
+//! cookieless salt (whether a salt may leave Core is EC2's decision).
+//!
+//! **When it is pushed.** Every handler that changes one of those inputs calls [`changed`]
+//! after its commit (approve, retire, kill switch, privacy settings, audiences, experiments,
+//! plugins, model rollback, `apply`), and every worker pass calls [`publish_all`], which covers
+//! what the worker itself changes (learned model versions, cold-start counts, guard pauses) and
+//! anything a clock changes (an experiment's start or end). A push happens only when the
+//! content's hash differs from the last one published, and `version` rises by one each time.
+//! A failed push changes nothing in the database, so the next trigger or worker pass retries it.
+
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
+use sqlx::PgPool;
+use std::sync::{Arc, Mutex};
+
+/// The snapshot's format; bump when its shape changes incompatibly.
+pub const FORMAT: i64 = 1;
+
+/// The key a site's snapshot is stored under.
+pub fn key(site: &str) -> String {
+    format!("site/{site}")
+}
+
+/// Where snapshots go. Implementations must be idempotent: the same `(key, body)` may be put twice.
+pub trait Store: Send + Sync {
+    fn put<'a>(&'a self, key: &'a str, body: Vec<u8>) -> futures_util::future::BoxFuture<'a, Result<()>>;
+}
+
+/// The edge publisher Core runs with: off, or a store.
+#[derive(Clone, Default)]
+pub struct Edge {
+    store: Option<Arc<dyn Store>>,
+}
+
+impl Edge {
+    /// No edge: nothing is built or written.
+    pub fn off() -> Self {
+        Edge { store: None }
+    }
+
+    pub fn with_store(store: Arc<dyn Store>) -> Self {
+        Edge { store: Some(store) }
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// Read the configuration from the process environment.
+    pub fn from_env() -> Result<Self> {
+        Self::from_vars(|k| std::env::var(k).ok())
+    }
+
+    /// Read the configuration through `get` (the environment, or a map in tests). All three of
+    /// account, namespace and token, or none of them.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let val = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let (account, namespace, token) = (val("PRB_EDGE_KV_ACCOUNT"), val("PRB_EDGE_KV_NAMESPACE"), val("PRB_EDGE_KV_TOKEN"));
+        match (account, namespace, token) {
+            (None, None, None) => Ok(Edge::off()),
+            (Some(account), Some(namespace), Some(token)) => {
+                let api = val("PRB_EDGE_KV_API").unwrap_or_else(|| "https://api.cloudflare.com/client/v4".into());
+                Ok(Edge::with_store(Arc::new(CloudflareKv { api, account, namespace, token, http: reqwest::Client::new() })))
+            }
+            _ => bail!("set all of PRB_EDGE_KV_ACCOUNT, PRB_EDGE_KV_NAMESPACE and PRB_EDGE_KV_TOKEN, or none of them"),
+        }
+    }
+}
+
+/// Cloudflare Workers KV through the REST API: `PUT .../storage/kv/namespaces/:ns/values/:key`.
+pub struct CloudflareKv {
+    api: String,
+    account: String,
+    namespace: String,
+    token: String,
+    http: reqwest::Client,
+}
+
+impl Store for CloudflareKv {
+    fn put<'a>(&'a self, key: &'a str, body: Vec<u8>) -> futures_util::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            // The key is `site/<id>`: escape the slash, since the key is one path segment.
+            let url = format!(
+                "{}/accounts/{}/storage/kv/namespaces/{}/values/{}",
+                self.api.trim_end_matches('/'),
+                self.account,
+                self.namespace,
+                key.replace('%', "%25").replace('/', "%2F")
+            );
+            let res = self
+                .http
+                .put(url)
+                .bearer_auth(&self.token)
+                .header("content-type", "application/json")
+                .body(body)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .context("edge store unreachable")?;
+            let status = res.status();
+            if !status.is_success() {
+                let text = res.text().await.unwrap_or_default();
+                bail!("edge store answered {status}: {}", text.chars().take(300).collect::<String>());
+            }
+            Ok(())
+        })
+    }
+}
+
+/// An in-memory store, for tests: every put, in order.
+#[derive(Default)]
+pub struct MemoryStore {
+    pub puts: Mutex<Vec<(String, Value)>>,
+}
+
+impl MemoryStore {
+    /// The last snapshot put for `site`.
+    pub fn last(&self, site: &str) -> Option<Value> {
+        self.puts.lock().unwrap().iter().rev().find(|(k, _)| *k == key(site)).map(|(_, v)| v.clone())
+    }
+
+    pub fn count(&self, site: &str) -> usize {
+        self.puts.lock().unwrap().iter().filter(|(k, _)| *k == key(site)).count()
+    }
+}
+
+impl Store for MemoryStore {
+    fn put<'a>(&'a self, key: &'a str, body: Vec<u8>) -> futures_util::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let v: Value = serde_json::from_slice(&body)?;
+            self.puts.lock().unwrap().push((key.to_string(), v));
+            Ok(())
+        })
+    }
+}
+
+/// The snapshot's content for `site`: everything but `version` and `generated_at`. `None` for an
+/// unknown site. Deterministic (serde_json maps are sorted), so its hash says whether it changed.
+pub async fn content(pool: &PgPool, site: &str) -> Result<Option<Value>> {
+    let mut conn = pool.acquire().await?;
+    // The live slots: those with an approved arm, as in the manifest. A draft slot decides nothing.
+    let slots: Vec<String> = sqlx::query_scalar(
+        "SELECT s.key FROM slots s WHERE s.site_id = $1 AND EXISTS (SELECT 1 FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved') ORDER BY s.key",
+    )
+    .bind(site)
+    .fetch_all(&mut *conn)
+    .await?;
+    // Read with no slot first, so a site with no live slot still has its settings.
+    let Some((settings, _)) = crate::http::decide::shared_inputs(&mut conn, site, "").await.map_err(api_err)? else {
+        return Ok(None);
+    };
+    let mut by_key = Map::new();
+    for slot in slots {
+        if let Some((_, s)) = crate::http::decide::shared_inputs(&mut conn, site, &slot).await.map_err(api_err)?
+            && !s.is_null()
+        {
+            by_key.insert(slot, s);
+        }
+    }
+    drop(conn);
+    let plugins: Vec<(String, String, bool, Option<String>)> =
+        sqlx::query_as("SELECT name, kind, deanonymiser, attributor FROM plugins WHERE site_id = $1 ORDER BY name").bind(site).fetch_all(pool).await?;
+    let plugins: Vec<Value> = plugins
+        .into_iter()
+        .map(|(name, kind, deanonymiser, attributor)| json!({ "name": name, "kind": kind, "deanonymiser": deanonymiser, "attributor": attributor }))
+        .collect();
+    let manifest = match crate::http::manifest::load(pool, site).await {
+        Ok(m) => serde_json::to_value(m)?,
+        Err(e) => return Err(api_err(e)),
+    };
+    Ok(Some(json!({
+        "format": FORMAT,
+        "site": site,
+        "settings": settings,
+        "slots": by_key,
+        "plugins": plugins,
+        "manifest": manifest,
+    })))
+}
+
+fn api_err(e: crate::http::ApiError) -> anyhow::Error {
+    anyhow::anyhow!("{e:?}")
+}
+
+/// One publish: the version written and the body's size.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Published {
+    pub version: i64,
+    pub bytes: usize,
+}
+
+/// Build `site`'s snapshot and put it when its content changed since the last publish.
+/// `Ok(None)` when the edge is off, the site is unknown, or nothing changed. Publishes for one
+/// site are serialised by an advisory lock, so two concurrent publishes cannot land out of order.
+pub async fn publish(pool: &PgPool, edge: &Edge, site: &str) -> Result<Option<Published>> {
+    let Some(store) = &edge.store else {
+        return Ok(None);
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('prb-edge:' || $1, 0))").bind(site).execute(&mut *tx).await?;
+    let Some(mut body) = content(pool, site).await? else {
+        return Ok(None);
+    };
+    let hash = hex(&Sha256::digest(serde_json::to_vec(&body)?));
+    let last: Option<(i64, String)> =
+        sqlx::query_as("SELECT version, content_hash FROM edge_snapshots WHERE site_id = $1").bind(site).fetch_optional(&mut *tx).await?;
+    if last.as_ref().is_some_and(|(_, h)| *h == hash) {
+        return Ok(None);
+    }
+    let version = last.map_or(1, |(v, _)| v + 1);
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT now()").fetch_one(&mut *tx).await?;
+    let o = body.as_object_mut().expect("content is an object");
+    o.insert("version".into(), json!(version));
+    o.insert("generated_at".into(), json!(now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)));
+    o.insert("content_hash".into(), json!(hash));
+    let bytes = serde_json::to_vec(&body)?;
+    let size = bytes.len();
+    store.put(&key(site), bytes).await.with_context(|| format!("edge snapshot for {site:?}"))?;
+    sqlx::query(
+        "INSERT INTO edge_snapshots (site_id, version, content_hash, bytes, published_at) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (site_id) DO UPDATE SET version = EXCLUDED.version, content_hash = EXCLUDED.content_hash,
+                                             bytes = EXCLUDED.bytes, published_at = EXCLUDED.published_at",
+    )
+    .bind(site)
+    .bind(version)
+    .bind(&hash)
+    .bind(size as i32)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    tracing::info!(site, version, bytes = size, "edge snapshot published");
+    Ok(Some(Published { version, bytes: size }))
+}
+
+/// After a handler's commit: publish `site`, and never fail the request over it. A failure is
+/// logged; the next worker pass retries, since the stored hash did not move.
+pub async fn changed(pool: &PgPool, edge: &Edge, site: &str) {
+    if let Err(e) = publish(pool, edge, site).await {
+        tracing::error!(site, error = %format!("{e:#}"), "edge snapshot publish failed");
+    }
+}
+
+/// [`changed`] for the site a row belongs to: `sql` takes the id as `$1` and returns the site id.
+pub async fn changed_by(pool: &PgPool, edge: &Edge, sql: &str, id: i64) {
+    if !edge.is_on() {
+        return;
+    }
+    match sqlx::query_scalar::<_, String>(sql).bind(id).fetch_optional(pool).await {
+        Ok(Some(site)) => changed(pool, edge, &site).await,
+        Ok(None) => {}
+        Err(e) => tracing::error!(error = %e, "edge: finding the site failed"),
+    }
+}
+
+/// Every real site (never a sandbox): what a worker pass calls. Returns how many were pushed.
+pub async fn publish_all(pool: &PgPool, edge: &Edge) -> Result<usize> {
+    if !edge.is_on() {
+        return Ok(0);
+    }
+    let sites: Vec<String> = sqlx::query_scalar("SELECT id FROM sites WHERE sandbox_of IS NULL ORDER BY id").fetch_all(pool).await?;
+    let mut n = 0;
+    for site in sites {
+        match publish(pool, edge, &site).await {
+            Ok(Some(_)) => n += 1,
+            Ok(None) => {}
+            Err(e) => tracing::error!(site, error = %format!("{e:#}"), "edge snapshot publish failed"),
+        }
+    }
+    Ok(n)
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}

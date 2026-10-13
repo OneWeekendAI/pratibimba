@@ -451,11 +451,25 @@ pub async fn run_loop(pool: PgPool, tick: Duration) -> Result<()> {
     run_loop_with(pool, tick, GUARD_EVERY).await
 }
 
+/// [`run_loop`] that also publishes the edge snapshot ([`crate::edge`]), at most every
+/// [`EDGE_EVERY`]: Workers KV takes one write per key per second, and a learning site changes
+/// its snapshot on almost every pass.
+pub async fn run_loop_edge(pool: PgPool, tick: Duration, edge: crate::edge::Edge) -> Result<()> {
+    run_loop_full(pool, tick, GUARD_EVERY, edge).await
+}
+
+pub const EDGE_EVERY: Duration = Duration::from_secs(10);
+
 /// How often the loop runs the auto-rollback guard. It reads every closed decision of every
 /// site, so it runs on a clock, not on every event.
 pub const GUARD_EVERY: Duration = Duration::from_secs(30);
 
 pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) -> Result<()> {
+    run_loop_full(pool, tick, guard_every, crate::edge::Edge::off()).await
+}
+
+async fn run_loop_full(pool: PgPool, tick: Duration, guard_every: Duration, edge: crate::edge::Edge) -> Result<()> {
+    let mut last_edge: Option<std::time::Instant> = None;
     let mut listener = PgListener::connect_with(&pool).await?;
     listener.listen(CHANNEL).await?;
     let mut last_guard: Option<std::time::Instant> = None;
@@ -463,6 +477,10 @@ pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) 
     loop {
         let guard = last_guard.is_none_or(|t| t.elapsed() >= guard_every);
         let _ = pass(&pool, &http, guard).await;
+        if edge.is_on() && last_edge.is_none_or(|t| t.elapsed() >= EDGE_EVERY) {
+            publish_edge(&pool, &edge).await;
+            last_edge = Some(std::time::Instant::now());
+        }
         if guard {
             last_guard = Some(std::time::Instant::now());
         }
@@ -518,5 +536,22 @@ pub async fn pass(pool: &PgPool, http: &reqwest::Client, guard: bool) -> Result<
 
 /// `pratibimba worker --once`: drain, settle, purge and guard once, then return (a Cloud Run job).
 pub async fn run_drain(pool: &PgPool) -> Result<()> {
-    pass(pool, &webhooks::client(), true).await
+    run_drain_edge(pool, &crate::edge::Edge::off()).await
+}
+
+/// [`run_drain`], then publish every site's edge snapshot that changed (learned models,
+/// cold-start counts, guard pauses, an experiment's start or end by the clock, or a push a
+/// handler failed to make).
+pub async fn run_drain_edge(pool: &PgPool, edge: &crate::edge::Edge) -> Result<()> {
+    let r = pass(pool, &webhooks::client(), true).await;
+    publish_edge(pool, edge).await;
+    r
+}
+
+async fn publish_edge(pool: &PgPool, edge: &crate::edge::Edge) {
+    match crate::edge::publish_all(pool, edge).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(sites = n, "edge snapshots published"),
+        Err(e) => tracing::error!(error = %e, "edge publish pass failed"),
+    }
 }

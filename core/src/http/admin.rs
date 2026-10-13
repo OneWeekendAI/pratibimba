@@ -598,6 +598,7 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
     let data = json!({ "variant_id": id, "slot": slot_key, "variant": variant_key, "approved_by": approver, "traffic_share": share });
     crate::webhooks::enqueue(&mut *tx, &site, "variant.approved", data).await?;
     tx.commit().await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
     Ok(Json(json!({ "id": id, "status": "approved", "traffic_share": share, "activated_slot": is_baseline })).into_response())
 }
 
@@ -655,6 +656,7 @@ async fn confirm_retire(State(state): State<Arc<AppState>>, Path(id): Path<i64>,
     let data = json!({ "variant_id": variant_id, "slot": slot, "variant": key, "retired_by": who, "proposal": id });
     crate::webhooks::enqueue(&mut *tx, &site, "variant.retired", data).await?;
     tx.commit().await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
     Ok(Json(json!({ "id": id, "status": "confirmed", "variant": key, "variant_status": "retired" })))
 }
 
@@ -744,6 +746,7 @@ async fn rollback(State(state): State<Arc<AppState>>, Path(slot): Path<i64>, Jso
     };
     let v = worker::write_model(&mut tx, slot, &snapshot, &format!("manual rollback to version {} by {who}", b.version)).await?;
     tx.commit().await?;
+    crate::edge::changed_by(&state.pool, &state.edge, "SELECT site_id FROM slots WHERE id = $1", slot).await;
     Ok(Json(json!({ "slot": slot, "restored": b.version, "version": v })))
 }
 
@@ -796,6 +799,7 @@ async fn pause_site(State(state): State<Arc<AppState>>, Path(site): Path<String>
     .fetch_one(&state.pool)
     .await?;
     tracing::info!(site, actor = who, paused = b.paused, "kill switch");
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
     Ok(Json(json!({ "site": site, "paused": row.0.map(|at| json!({ "at": at, "by": row.1 })) })))
 }
 
@@ -910,5 +914,6 @@ async fn set_audience(State(state): State<Arc<AppState>>, Path(id): Path<i64>, J
     sqlx::query("UPDATE variants SET audience_id = $2 WHERE id = $1").bind(id).bind(b.audience).execute(&mut *tx).await?;
     tx.commit().await?;
     tracing::info!(variant = id, audience = ?b.audience, actor = %who, "variant audience set");
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
     Ok(Json(json!({ "variant": id, "audience": b.audience })))
 }

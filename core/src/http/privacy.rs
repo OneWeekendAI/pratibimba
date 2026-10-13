@@ -46,7 +46,9 @@ struct SetPrivacy {
 }
 
 async fn write(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<SetPrivacy>) -> Result<Json<Value>, ApiError> {
-    privacy::set(&state.pool, &site, b.privacy_mode.as_deref(), b.fields_allowed).await.map(Json)
+    let out = privacy::set(&state.pool, &site, b.privacy_mode.as_deref(), b.fields_allowed).await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

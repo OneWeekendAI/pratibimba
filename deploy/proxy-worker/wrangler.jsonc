@@ -5,6 +5,8 @@
   "workers_dev": true,
   // Core on Cloud Run in asia-northeast3 (Seoul), next to Supabase.
   "vars": { "ORIGIN": "https://pratibimba-core-7i7wb4r5qa-du.a.run.app" },
+  // EC1: Core writes each site's edge snapshot here (key site/<id>); the Worker reads it.
+  "kv_namespaces": [{ "binding": "SNAPSHOTS", "id": "b30829cd168e42768f85c882fca47ac0" }],
   "observability": { "enabled": true }
   // The live route is added by deploy/proxy-worker/switch.sh (on|off), not here, so a plain
   // `wrangler deploy` never moves production traffic.

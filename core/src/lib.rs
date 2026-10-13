@@ -5,6 +5,7 @@ pub mod bandit;
 pub mod checks;
 pub mod conversions;
 pub mod db;
+pub mod edge;
 pub mod experiments;
 pub mod explain;
 pub mod features;

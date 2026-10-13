@@ -16,3 +16,8 @@ JOB=pratibimba-worker
 SCHEDULER=pratibimba-worker-every-minute
 SITE_ORIGIN=https://pratibimba.meetdev.in
 DOMAINS="pratibimbaapi.meetdev.in"
+# EC1 edge snapshots (edge-cache.md): Core pushes each site's snapshot to this Workers KV
+# namespace; the proxy Worker reads it (binding SNAPSHOTS). Not secrets. The API token is in
+# Secret Manager as prb-edge-kv-token. Leave these empty to deploy Core with the edge off.
+EDGE_KV_ACCOUNT=f35116f6863fad577cefb7900b50d073
+EDGE_KV_NAMESPACE=b30829cd168e42768f85c882fca47ac0
