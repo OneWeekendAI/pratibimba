@@ -268,6 +268,38 @@ pub async fn record_visit(tx: &mut Transaction<'_, Postgres>, site: &str, subjec
     Ok(())
 }
 
+/// [`record_visit`] for many visitors in one statement: `(site, subject, names, at)`, at most
+/// one entry per (site, subject) (Postgres cannot update a row twice in one statement).
+pub async fn record_visits(tx: &mut Transaction<'_, Postgres>, visits: &[(String, String, Vec<String>, DateTime<Utc>)]) -> Result<(), sqlx::Error> {
+    let visits: Vec<_> = visits.iter().filter(|v| !v.2.is_empty()).collect();
+    if visits.is_empty() {
+        return Ok(());
+    }
+    let sites: Vec<&str> = visits.iter().map(|v| v.0.as_str()).collect();
+    let subjects: Vec<&str> = visits.iter().map(|v| v.1.as_str()).collect();
+    let ats: Vec<DateTime<Utc>> = visits.iter().map(|v| v.3).collect();
+    let counts: Vec<i64> = visits.iter().map(|v| v.2.len() as i64).collect();
+    let tails: Vec<serde_json::Value> = visits.iter().map(|v| serde_json::json!(v.2[v.2.len().saturating_sub(RECENT)..])).collect();
+    sqlx::query(
+        "INSERT INTO visitors AS v (site_id, subject, first_seen, last_seen, events, recent)
+         SELECT t.s, t.sub, t.at, t.at, t.n, ARRAY(SELECT jsonb_array_elements_text(t.r))
+           FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::bigint[], $5::jsonb[]) AS t(s, sub, at, n, r)
+         ON CONFLICT (site_id, subject) DO UPDATE SET
+             last_seen = GREATEST(v.last_seen, EXCLUDED.last_seen),
+             events = v.events + EXCLUDED.events,
+             recent = (v.recent || EXCLUDED.recent)[GREATEST(1, cardinality(v.recent || EXCLUDED.recent) - $6 + 1):]",
+    )
+    .bind(&sites)
+    .bind(&subjects)
+    .bind(&ats)
+    .bind(&counts)
+    .bind(&tails)
+    .bind(RECENT as i32)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Every form the subject may be stored under: the id itself, and its pseudonym under each salt
 /// the site still holds (normally only today's). Older pseudonyms are unlinkable by design.
 async fn stored_forms(tx: &mut Transaction<'_, Postgres>, site: &str, subject: &str) -> Result<Vec<String>, sqlx::Error> {

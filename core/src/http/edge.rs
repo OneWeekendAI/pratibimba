@@ -30,8 +30,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// How far a decision's clock may sit from Core's: older is refused (the queue in EC3 will
-/// carry older ones), and the future allows for clock skew between the PoP and the database.
+/// How far a decision's clock may sit from Core's on `/edge/decisions`: older is refused (the
+/// queue's `/e/batch` takes older ones, see `ebatch::MAX_DECISION_AGE_SECS`), and the future allows for clock skew between the PoP and the database.
 pub const MAX_AGE_SECS: i64 = 600;
 pub const MAX_SKEW_SECS: i64 = 60;
 /// Most decisions in one send (a batch decide makes at most `decide::MAX_BATCH`).
@@ -97,38 +97,70 @@ pub async fn handler(State(state): State<Arc<AppState>>, headers: HeaderMap, Jso
     if body.decisions.is_empty() || body.decisions.len() > MAX_DECISIONS {
         return Err(ApiError::BadRequest(format!("send 1-{MAX_DECISIONS} decisions")));
     }
+    let Some(outcomes) = ingest(&state, &body, MAX_AGE_SECS).await? else {
+        return Err(ApiError::NotFound(format!("unknown site {:?}", body.site)));
+    };
+    let results: Vec<Value> = outcomes
+        .into_iter()
+        .map(|(id, o)| match o {
+            Outcome::Rejected(reason) => json!({ "id": id, "status": "rejected", "reason": reason }),
+            Outcome::Stored => json!({ "id": id, "status": "stored" }),
+            Outcome::Duplicate => json!({ "id": id, "status": "duplicate" }),
+            Outcome::Gone => json!({ "id": id, "status": "gone" }),
+        })
+        .collect();
+    Ok(Json(json!({ "results": results })))
+}
+
+/// What became of one edge decision.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Stored,
+    Duplicate,
+    /// The subject was erased: dropped, never written.
+    Gone,
+    /// A check failed; the reason.
+    Rejected(String),
+}
+
+/// Check and store each decision of `body` (see the module doc); `None` for an unknown site.
+/// `max_age` bounds how old a decision may be: `/edge/decisions` takes [`MAX_AGE_SECS`], the
+/// queue's `/e/batch` more, since a retried or replayed message is older and still the record of
+/// what a visitor saw. The caller checks the subject and the count.
+pub async fn ingest(state: &AppState, body: &Ingest, max_age: i64) -> Result<Option<Vec<(Uuid, Outcome)>>, ApiError> {
     let site: Option<(String, Option<Vec<String>>, f32, DateTime<Utc>)> =
         sqlx::query_as("SELECT privacy_mode, fields_allowed, holdout_fraction, now() FROM sites WHERE id = $1 AND sim_now IS NULL")
             .bind(&body.site)
             .fetch_optional(&state.pool)
             .await?;
     let Some((mode, fields, holdout, now)) = site else {
-        return Err(ApiError::NotFound(format!("unknown site {:?}", body.site)));
+        return Ok(None);
     };
     let policy = privacy::Policy { mode, fields, at: now };
     let identified = policy.identified(body.consent);
     let mut results = Vec::with_capacity(body.decisions.len());
     for d in &body.decisions {
-        let outcome = match check(&state, &body, d, identified, holdout, now).await? {
+        let outcome = match check(state, body, d, identified, holdout, now, max_age).await? {
             Err(reason) => {
                 tracing::warn!(site = body.site, decision = %d.id, reason, "edge decision refused");
-                json!({ "id": d.id, "status": "rejected", "reason": reason })
+                Outcome::Rejected(reason)
             }
-            Ok(scores) => match store(&state, &body, d, &scores).await? {
-                Stored::Written => json!({ "id": d.id, "status": "stored" }),
-                Stored::Duplicate => json!({ "id": d.id, "status": "duplicate" }),
-                Stored::Gone => json!({ "id": d.id, "status": "gone" }),
+            Ok(scores) => match store(state, body, d, &scores).await? {
+                Stored::Written => Outcome::Stored,
+                Stored::Duplicate => Outcome::Duplicate,
+                Stored::Gone => Outcome::Gone,
             },
         };
-        results.push(outcome);
+        results.push((d.id, outcome));
     }
-    Ok(Json(json!({ "results": results })))
+    Ok(Some(results))
 }
 
 /// Every check in the module doc. `Ok(Ok(scores))` is Core's replayed scores to store.
-async fn check(state: &AppState, body: &Ingest, d: &EdgeDecision, identified: bool, holdout: f32, now: DateTime<Utc>) -> Result<Result<Value, String>, ApiError> {
+#[allow(clippy::too_many_arguments)]
+async fn check(state: &AppState, body: &Ingest, d: &EdgeDecision, identified: bool, holdout: f32, now: DateTime<Utc>, max_age: i64) -> Result<Result<Value, String>, ApiError> {
     let age = (now - d.created_at).num_seconds();
-    if age > MAX_AGE_SECS || -age > MAX_SKEW_SECS {
+    if age > max_age || -age > MAX_SKEW_SECS {
         return Ok(Err(format!("created_at is {age} s from Core's clock")));
     }
     // The subject Core would have stored for this request on the decision's day.

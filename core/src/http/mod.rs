@@ -12,6 +12,7 @@
 
 pub mod admin;
 pub mod decide;
+pub mod ebatch;
 pub mod edge;
 pub mod events;
 pub mod experiments;
@@ -109,6 +110,7 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
         .route("/decide/batch", post(decide::batch_handler))
         .route("/edge/decisions", post(edge::handler))
         .route("/e", post(events::handler))
+        .route("/e/batch", post(ebatch::handler))
         .route("/manifest/{site}", get(manifest::handler))
         .route("/webhook/stripe/{site}", post(webhooks::stripe))
         .route("/webhook/conversion/{site}", post(webhooks::conversion))

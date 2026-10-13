@@ -51,6 +51,14 @@ use uuid::Uuid;
 
 pub const BATCH: i64 = 500;
 
+/// How long an event that names a decision Core does not have yet waits in the outbox for it.
+/// The edge queue (EC3) does not keep order, so an exposure or a click can land before the
+/// decision record it names; drained then, it would find nothing to expose or credit and be
+/// lost. It waits instead, up to this long (longer than the queue's whole retry schedule, see
+/// deploy/proxy-worker), and is then drained as before. Events that name no decision, or one
+/// Core has, are never held.
+pub const ORPHAN_HOLD_SECS: i64 = 1800;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     pub events: u64,
@@ -153,12 +161,16 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
                 e.source <> 'browser', e.name = ANY(t.authoritative_goals)
            FROM pending_events p JOIN live_events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
           WHERE {scope}
+            AND (e.decision_id IS NULL OR e.received_at <= $3 - make_interval(secs => $4)
+                 OR EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.decision_id))
           ORDER BY p.id LIMIT $1
           FOR UPDATE OF p SKIP LOCKED",
         2,
     ))
     .bind(batch)
     .bind(scope)
+    .bind(now)
+    .bind(ORPHAN_HOLD_SECS as f64)
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();

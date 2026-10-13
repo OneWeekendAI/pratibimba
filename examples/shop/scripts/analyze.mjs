@@ -32,6 +32,9 @@ const api = async (p) => {
   }
 };
 
+// An event the log counts as sent: Core took it (`accepted`), or the edge queued it (`queued`, EC3),
+// in which case only Core's records below can say it landed.
+const took = (e) => e?.status === 202 && (e.accepted === 1 || e.queued === 1);
 const visits = LOGS.flatMap((f) => readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((r) => !r.header));
 const served = visits.filter((r) => r.served);
 const pct = (a, b) => (b ? `${((100 * a) / b).toFixed(1)}%` : '-');
@@ -124,17 +127,17 @@ for (const c of ['returning', 'mobile', 'mobile+ad', 'desktop+ad', 'desktop even
 const settled = ok.filter((x) => x.d.settled_at || x.d.outcome !== null);
 const recon = { exposure_sent_not_exposed: 0, exposed_not_sent: 0, click_sent_not_converted: 0, converted_no_click: 0, unsettled: ok.length - settled.length };
 for (const { r, d } of ok) {
-  const sent = r.exposure?.status === 202 && r.exposure.accepted === 1;
+  const sent = took(r.exposure);
   if (sent && !d.exposed_at) recon.exposure_sent_not_exposed++;
   if (!sent && d.exposed_at) recon.exposed_not_sent++;
-  const clicked = r.click?.status === 202 && r.click.accepted === 1;
+  const clicked = took(r.click);
   if (d.settled_at || d.outcome !== null) {
     if (clicked && d.outcome !== 1) recon.click_sent_not_converted++;
     if (!clicked && d.outcome === 1) recon.converted_no_click++;
   }
 }
 console.log(`\n== Reconciliation (log vs Core, per decision): ${JSON.stringify(recon)}`);
-console.log(`log: exposures accepted ${ok.filter((x) => x.r.exposure?.accepted === 1).length}, clicks accepted ${ok.filter((x) => x.r.click?.accepted === 1).length}; Core: exposed ${ok.filter((x) => x.d.exposed_at).length}, converted ${ok.filter((x) => x.d.outcome === 1).length}`);
+console.log(`log: exposures accepted ${ok.filter((x) => took(x.r.exposure)).length}, clicks accepted ${ok.filter((x) => took(x.r.click)).length}; Core: exposed ${ok.filter((x) => x.d.exposed_at).length}, converted ${ok.filter((x) => x.d.outcome === 1).length}`);
 
 // ---- results page, recomputed from the log
 if (process.argv.includes('--results')) {
@@ -144,7 +147,7 @@ if (process.argv.includes('--results')) {
   const preHero = pre?.results.slots.find((s) => s.key === 'hero');
   const mine = (pred) => {
     const xs = ok.filter((x) => x.d.exposed_at && pred(x));
-    return { n: xs.length, conversions: xs.filter((x) => x.d.outcome === 1).length, clicks_in_log: xs.filter((x) => x.r.click?.accepted === 1).length };
+    return { n: xs.length, conversions: xs.filter((x) => x.d.outcome === 1).length, clicks_in_log: xs.filter((x) => took(x.r.click)).length };
   };
   console.log('\n== Results page vs log (Core minus the pre-run snapshot)');
   const line = (name, core, preC, m) => console.log(`  ${name.padEnd(14)} Core n=${core.n - (preC?.n ?? 0)} conv=${core.conversions - (preC?.conversions ?? 0)} credit=${(core.credit - (preC?.credit ?? 0)).toFixed(2)} | log n=${m.n} conv=${m.conversions} clicks=${m.clicks_in_log}`);

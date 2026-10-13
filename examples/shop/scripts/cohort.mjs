@@ -108,7 +108,8 @@ async function postEvent(subject, v, decision, name, clock) {
   try {
     const r = await fetch(`${BASE}/_prb/e`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => null);
-    return { status: r.status, accepted: j?.accepted ?? null };
+    // `accepted` when Core wrote it directly; `queued` when the edge put it on the events queue (EC3).
+    return { status: r.status, accepted: j?.accepted ?? null, queued: j?.queued ?? null };
   } catch (e) {
     return { status: 0, error: String(e) };
   }

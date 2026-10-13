@@ -31,6 +31,16 @@
 // A reading older than BEACON_REFRESH_MS is refreshed in the background. So a change reaches the
 // edge within BEACON_FRESH_MS of Core's push, whatever KV is doing.
 //
+// EC3, the write buffer. With QUEUE_WRITES = "on" (and the EVENTS_QUEUE producer bound), a
+// browser's POST /e and the Worker's own decision records go onto a Cloudflare Queue instead of
+// to Core, and /e answers 202 {queued} at once. The same script consumes the queue: it sends up
+// to 100 messages at a time to Core's POST /e/batch and acks the batch only on a 2xx; anything
+// else retries the whole batch with backoff (RETRY_DELAYS_S), and after max_retries (wrangler
+// config) a message goes to the dead-letter queue. Core is idempotent on every id, so a retry or
+// a replay is harmless. /e requests the Worker cannot vouch for (a pick, a rescore, an unknown
+// field, a malformed body) still go straight to Core, which answers them as before. Off switch:
+// deploy/proxy-worker/queue.sh off (the direct path, unchanged); the consumer keeps draining.
+//
 // Rollback: EDGE_DECIDE=off (deploy/proxy-worker/edge-decide.sh off) puts every decide back on
 // Core; deleting the route (switch.sh off) takes the Worker out entirely.
 
@@ -47,6 +57,35 @@ const DECIDE_PATHS = new Set(['/decide', '/decide/batch']);
 const PUSH_PATH = '/_prb/edge/snapshot';
 const CACHE_ORIGIN = 'https://prb-edge.internal';
 const DAY_MS = 86_400_000;
+/** Backoff per delivery attempt when Core does not take a batch; the last one repeats. The whole
+ * schedule (8 retries, about 23 min) stays inside Core's ORPHAN_HOLD_SECS (30 min), the time an
+ * event waits in Core's outbox for a decision record still in the queue. */
+export const RETRY_DELAYS_S = [15, 30, 60, 120, 240, 300];
+const EVENT_KEYS = new Set(['id', 'name', 'slot', 'decision_id']);
+const REQUEST_KEYS = new Set(['site', 'subject', 'events', 'tz_offset', 'consent']);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NAME_RE = /^[a-z0-9_:]{1,64}$/;
+const SUBJECT_RE = /^[\x21-\x7e]{1,256}$/;
+/** Largest /e body the Worker queues (a queue message holds 128 KB). */
+const MAX_QUEUED_BYTES = 64_000;
+
+/** Whether an /e body is one the queue may carry: exactly what Core's /e would accept as plain
+ * events (no pick or rescore). Anything else goes to Core, which answers it itself. */
+export function queueable(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  if (!Object.keys(body).every((k) => REQUEST_KEYS.has(k))) return false;
+  if (typeof body.site !== 'string' || !body.site || typeof body.subject !== 'string' || !SUBJECT_RE.test(body.subject)) return false;
+  if (body.tz_offset != null && !(Number.isInteger(body.tz_offset) && body.tz_offset >= -720 && body.tz_offset <= 840)) return false;
+  if (body.consent != null && typeof body.consent !== 'boolean') return false;
+  const ev = body.events;
+  if (!Array.isArray(ev) || ev.length < 1 || ev.length > 100) return false;
+  return ev.every((e) => e && typeof e === 'object' && !Array.isArray(e)
+    && Object.keys(e).every((k) => EVENT_KEYS.has(k))
+    && typeof e.id === 'string' && UUID_RE.test(e.id)
+    && typeof e.name === 'string' && NAME_RE.test(e.name) && e.name !== 'pick' && e.name !== 'rescore'
+    && (e.slot == null || typeof e.slot === 'string')
+    && (e.decision_id == null || (typeof e.decision_id === 'string' && UUID_RE.test(e.decision_id))));
+}
 
 /// The site's snapshot as this PoP's KV sees it: {version, age_ms} or {missing|error|timeout} (EC1).
 export async function snapshotAge(env, site, now = Date.now()) {
@@ -263,18 +302,27 @@ export function createWorker(deps = {}) {
       const ttl = snap.slots[slot].decision_ttl_secs;
       await keep(await stickyKey(body.site, slot, record.subject), JSON.stringify(record), ttl);
     }
+    const record = {
+      site: body.site,
+      subject: body.subject,
+      consent: body.ctx && typeof body.ctx.consent === 'boolean' ? body.ctx.consent : null,
+      snapshot_version: snap.version,
+      decisions: made.map((m) => m.record),
+    };
+    if (queueOn(env)) {
+      try {
+        await env.EVENTS_QUEUE.send({ kind: 'decisions', request: record });
+        return;
+      } catch (e) {
+        console.log(JSON.stringify({ msg: 'edge record enqueue failed, sending direct', site: body.site, error: String(e) }));
+      }
+    }
     let res;
     try {
       res = await fetch(new URL('/edge/decisions', env.ORIGIN), {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${env.EDGE_TOKEN}` },
-        body: JSON.stringify({
-          site: body.site,
-          subject: body.subject,
-          consent: body.ctx && typeof body.ctx.consent === 'boolean' ? body.ctx.consent : null,
-          snapshot_version: snap.version,
-          decisions: made.map((m) => m.record),
-        }),
+        body: JSON.stringify(record),
       });
     } catch (e) {
       console.log(JSON.stringify({ msg: 'edge record send failed', site: body.site, error: String(e) }));
@@ -365,15 +413,86 @@ export function createWorker(deps = {}) {
     return json(kept);
   }
 
+  /** POST /e onto the queue, or to Core when the queue cannot or should not take it. */
+  async function queueEvents(request, env) {
+    const raw = await request.clone().arrayBuffer();
+    let body = null;
+    try {
+      body = JSON.parse(new TextDecoder().decode(raw));
+    } catch {}
+    if (raw.byteLength > MAX_QUEUED_BYTES || !queueable(body)) return direct(request, env, raw, 'not-queueable');
+    try {
+      await env.EVENTS_QUEUE.send({ kind: 'events', received_at: new Date(now()).toISOString(), request: body });
+    } catch (e) {
+      console.log(JSON.stringify({ msg: 'event enqueue failed, sending direct', site: body.site, error: String(e) }));
+      return direct(request, env, raw, 'enqueue-failed');
+    }
+    const headers = { 'x-prb-queued': 'yes', 'cache-control': 'no-store' };
+    const origin = request.headers.get('origin');
+    const allowed = (env.SITE_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
+    if (origin && allowed.includes(origin)) Object.assign(headers, { 'access-control-allow-origin': origin, vary: 'origin' });
+    return json({ queued: body.events.length }, 202, headers);
+  }
+
+  async function direct(request, env, raw, why) {
+    const res = await proxy(request, env, { body: raw });
+    const out = new Headers(res.headers);
+    out.set('x-prb-queued', `no; ${why}`);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
+  }
+
+  /** The consumer: one /e/batch per delivery; ack only on Core's 2xx, else retry with backoff. */
+  async function consume(batch, env) {
+    const messages = batch.messages;
+    if (messages.length === 0) return;
+    const attempts = Math.max(...messages.map((m) => m.attempts || 1));
+    const retry = (why, status) => {
+      const delaySeconds = RETRY_DELAYS_S[Math.min(attempts, RETRY_DELAYS_S.length) - 1];
+      console.log(JSON.stringify({ msg: 'event batch not taken, retrying', why, status, messages: messages.length, attempts, delaySeconds }));
+      batch.retryAll({ delaySeconds });
+    };
+    const started = now();
+    let res;
+    try {
+      res = await fetch(new URL('/e/batch', env.ORIGIN), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${env.EDGE_TOKEN}` },
+        body: JSON.stringify({ items: messages.map((m) => m.body) }),
+      });
+    } catch (e) {
+      return retry(String(e));
+    }
+    if (res.status < 200 || res.status > 299) return retry('status', res.status);
+    let out = null;
+    try {
+      out = await res.json();
+    } catch {}
+    batch.ackAll();
+    const lagMs = Math.max(...messages.map((m) => started - +new Date(m.timestamp)));
+    const refused = (out && out.refused) || [];
+    console.log(JSON.stringify({
+      msg: 'event batch', messages: messages.length, attempts, accepted: out?.accepted?.length ?? null, duplicate: out?.duplicate?.length ?? null,
+      refused: refused.length, lag_ms: lagMs, core_ms: now() - started,
+    }));
+    for (const r of refused.slice(0, 20)) console.log(JSON.stringify({ msg: 'event refused', id: r.id, reason: r.reason }));
+  }
+
   return {
+    queue: (batch, env) => consume(batch, env),
     async fetch(request, env, ctx) {
       const path = new URL(request.url).pathname;
       if (request.method === 'POST' && path === PUSH_PATH) return push(request, env);
+      if (request.method === 'POST' && path === '/e' && queueOn(env)) return queueEvents(request, env);
       const decide = request.method === 'POST' && DECIDE_PATHS.has(path);
       if (decide && env.EDGE_DECIDE === 'on' && env.EDGE_TOKEN && env.BEACON) return edgeDecide(request, env, ctx, path);
       return proxyWithAge(request, env, decide);
     },
   };
+}
+
+/** EC3's switch: the write buffer is on, bound, and has a token for /e/batch. */
+export function queueOn(env) {
+  return env.QUEUE_WRITES === 'on' && !!env.EVENTS_QUEUE && !!env.EDGE_TOKEN;
 }
 
 /** Forward to Core, rewriting what a proxy must. `opts.body` replaces a body already read. */
