@@ -417,7 +417,7 @@ async fn rich(pool: &PgPool) -> (axum::Router, Arc<MemoryStore>) {
 async fn snapshot_holds_every_input_decide_reads(pool: PgPool) {
     let (_, store) = rich(&pool).await;
     let s = store.last("demo").unwrap();
-    assert_eq!(s["format"], json!(1));
+    assert_eq!(s["format"], json!(pratibimba::edge::FORMAT));
     assert_eq!(s["site"], json!("demo"));
     assert!(s["generated_at"].is_string());
     let set = &s["settings"];

@@ -22,6 +22,12 @@ if [ -n "${EDGE_KV_NAMESPACE:-}" ]; then
   EDGE_ENV=",PRB_EDGE_KV_ACCOUNT=$EDGE_KV_ACCOUNT,PRB_EDGE_KV_NAMESPACE=$EDGE_KV_NAMESPACE"
   EDGE_SECRET=",PRB_EDGE_KV_TOKEN=prb-edge-kv-token:latest"
 fi
+# EC2 edge decide: the Worker's shared token (Secret Manager prb-edge-token, the same value as the
+# Worker's EDGE_TOKEN secret) and its beacon URL, which then gets every snapshot too.
+if [ -n "${EDGE_BEACON_URL:-}" ]; then
+  EDGE_ENV="$EDGE_ENV,PRB_EDGE_BEACON_URL=$EDGE_BEACON_URL"
+  EDGE_SECRET="$EDGE_SECRET,PRB_EDGE_TOKEN=prb-edge-token:latest"
+fi
 
 # The API (also /mcp, /sdk.js, /manifest, /app). Scales to zero.
 gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" --image "$IMAGE" \

@@ -12,6 +12,7 @@
 
 pub mod admin;
 pub mod decide;
+pub mod edge;
 pub mod events;
 pub mod experiments;
 pub mod hooks;
@@ -106,6 +107,7 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
     let mut app = Router::new()
         .route("/decide", post(decide::handler))
         .route("/decide/batch", post(decide::batch_handler))
+        .route("/edge/decisions", post(edge::handler))
         .route("/e", post(events::handler))
         .route("/manifest/{site}", get(manifest::handler))
         .route("/webhook/stripe/{site}", post(webhooks::stripe))
@@ -160,6 +162,8 @@ pub enum ApiError {
     Conflict(String),
     /// The subject was erased: its tombstone refuses every later write.
     Gone(String),
+    /// A route behind a shared token was called without it.
+    Unauthorized,
     Internal(anyhow::Error),
 }
 
@@ -182,6 +186,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::Gone(m) => (StatusCode::GONE, m),
+            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "edge token required".to_string()),
             ApiError::Internal(e) => {
                 tracing::error!(error = %e, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())

@@ -1,12 +1,18 @@
 {
   "name": "pratibimba-api-proxy",
-  "main": "src/index.js",
+  "main": "src/worker.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
   // Core on Cloud Run in asia-northeast3 (Seoul), next to Supabase.
-  "vars": { "ORIGIN": "https://pratibimba-core-7i7wb4r5qa-du.a.run.app" },
+  // EDGE_DECIDE: "on" answers /decide at the edge (EC2); "off" forwards every decide to Core.
+  // Switch it with deploy/proxy-worker/edge-decide.sh on|off. EDGE_TOKEN is a secret (wrangler
+  // secret put EDGE_TOKEN), the same value as Core's PRB_EDGE_TOKEN.
+  "vars": { "ORIGIN": "https://pratibimba-core-7i7wb4r5qa-du.a.run.app", "EDGE_DECIDE": "on" },
   // EC1: Core writes each site's edge snapshot here (key site/<id>); the Worker reads it.
   "kv_namespaces": [{ "binding": "SNAPSHOTS", "id": "b30829cd168e42768f85c882fca47ac0" }],
+  // EC2: the version beacon, one Durable Object per site, strongly consistent.
+  "durable_objects": { "bindings": [{ "name": "BEACON", "class_name": "SiteBeacon" }] },
+  "migrations": [{ "tag": "ec2-beacon", "new_sqlite_classes": ["SiteBeacon"] }],
   "observability": { "enabled": true }
   // The live route is added by deploy/proxy-worker/switch.sh (on|off), not here, so a plain
   // `wrangler deploy` never moves production traffic.

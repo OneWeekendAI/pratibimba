@@ -32,7 +32,9 @@ use sqlx::PgPool;
 use std::sync::{Arc, Mutex};
 
 /// The snapshot's format; bump when its shape changes incompatibly.
-pub const FORMAT: i64 = 1;
+/// 2 (EC2): adds `settings.simulated_clock` and, per slot, `decision_ttl_secs`, the running
+/// experiment's `ends_at` and `next_experiment_at`, which the edge needs to decide on its own clock.
+pub const FORMAT: i64 = 2;
 
 /// The key a site's snapshot is stored under.
 pub fn key(site: &str) -> String {
@@ -44,24 +46,48 @@ pub trait Store: Send + Sync {
     fn put<'a>(&'a self, key: &'a str, body: Vec<u8>) -> futures_util::future::BoxFuture<'a, Result<()>>;
 }
 
-/// The edge publisher Core runs with: off, or a store.
+/// The edge publisher Core runs with: off, or a store; and, for EC2's edge decide, the token the
+/// Worker presents.
 #[derive(Clone, Default)]
 pub struct Edge {
     store: Option<Arc<dyn Store>>,
+    /// `PRB_EDGE_TOKEN`: the shared secret between Core and the edge Worker. With it Core accepts
+    /// edge-made decisions (`POST /edge/decisions`) and tells the Worker the stored subject of the
+    /// decisions it makes (see [`crate::http::decide`]). `None` turns both off.
+    token: Option<String>,
 }
 
 impl Edge {
     /// No edge: nothing is built or written.
     pub fn off() -> Self {
-        Edge { store: None }
+        Edge { store: None, token: None }
     }
 
     pub fn with_store(store: Arc<dyn Store>) -> Self {
-        Edge { store: Some(store) }
+        Edge { store: Some(store), token: None }
+    }
+
+    /// This edge with the Worker's shared token set.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into()).filter(|t: &String| !t.is_empty());
+        self
     }
 
     pub fn is_on(&self) -> bool {
         self.store.is_some()
+    }
+
+    /// Whether `presented` is the edge token. Constant-time in the token's bytes; false when no
+    /// token is configured.
+    pub fn token_matches(&self, presented: Option<&str>) -> bool {
+        match (&self.token, presented) {
+            (Some(t), Some(p)) if t.len() == p.len() => t.bytes().zip(p.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0,
+            _ => false,
+        }
+    }
+
+    pub fn has_token(&self) -> bool {
+        self.token.is_some()
     }
 
     /// Read the configuration from the process environment.
@@ -71,17 +97,84 @@ impl Edge {
 
     /// Read the configuration through `get` (the environment, or a map in tests). All three of
     /// account, namespace and token, or none of them.
+    ///
+    /// EC2 adds two more: `PRB_EDGE_TOKEN` (see [`Edge::token`]) and `PRB_EDGE_BEACON_URL`, the
+    /// Worker's strongly consistent version beacon, which then gets every snapshot too (see
+    /// [`Beacon`]). The beacon needs the token.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let val = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let (account, namespace, token) = (val("PRB_EDGE_KV_ACCOUNT"), val("PRB_EDGE_KV_NAMESPACE"), val("PRB_EDGE_KV_TOKEN"));
+        let mut stores: Vec<Arc<dyn Store>> = Vec::new();
         match (account, namespace, token) {
-            (None, None, None) => Ok(Edge::off()),
+            (None, None, None) => {}
             (Some(account), Some(namespace), Some(token)) => {
                 let api = val("PRB_EDGE_KV_API").unwrap_or_else(|| "https://api.cloudflare.com/client/v4".into());
-                Ok(Edge::with_store(Arc::new(CloudflareKv { api, account, namespace, token, http: reqwest::Client::new() })))
+                stores.push(Arc::new(CloudflareKv { api, account, namespace, token, http: reqwest::Client::new() }));
             }
             _ => bail!("set all of PRB_EDGE_KV_ACCOUNT, PRB_EDGE_KV_NAMESPACE and PRB_EDGE_KV_TOKEN, or none of them"),
         }
+        let edge_token = val("PRB_EDGE_TOKEN");
+        if let Some(url) = val("PRB_EDGE_BEACON_URL") {
+            let Some(token) = edge_token.clone() else {
+                bail!("PRB_EDGE_BEACON_URL needs PRB_EDGE_TOKEN");
+            };
+            stores.push(Arc::new(Beacon { url, token, http: reqwest::Client::new() }));
+        }
+        let store: Option<Arc<dyn Store>> = match stores.len() {
+            0 => None,
+            1 => stores.pop(),
+            _ => Some(Arc::new(Fanout(stores))),
+        };
+        Ok(Edge { store, token: edge_token })
+    }
+}
+
+/// Several stores, each put in turn; the put fails when any of them fails, so the next pass
+/// retries all of them (each put is idempotent).
+pub struct Fanout(pub Vec<Arc<dyn Store>>);
+
+impl Store for Fanout {
+    fn put<'a>(&'a self, key: &'a str, body: Vec<u8>) -> futures_util::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            for s in &self.0 {
+                s.put(key, body.clone()).await?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// EC2's version beacon: the edge Worker's `POST /_prb/edge/snapshot`, which keeps each site's
+/// newest snapshot in a Durable Object. KV can take a minute to show a new value at a PoP
+/// (EC1 measured 15 s and 51 s); a Durable Object is read where it lives, so it is current the
+/// moment the put returns. The Worker checks the beacon's version every few seconds and decides
+/// at the edge only from a snapshot of exactly that version (edge-cache.md, Decisions 6).
+pub struct Beacon {
+    url: String,
+    token: String,
+    http: reqwest::Client,
+}
+
+impl Store for Beacon {
+    fn put<'a>(&'a self, _key: &'a str, body: Vec<u8>) -> futures_util::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let res = self
+                .http
+                .post(&self.url)
+                .bearer_auth(&self.token)
+                .header("content-type", "application/json")
+                .body(body)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .context("edge beacon unreachable")?;
+            let status = res.status();
+            if !status.is_success() {
+                let text = res.text().await.unwrap_or_default();
+                bail!("edge beacon answered {status}: {}", text.chars().take(300).collect::<String>());
+            }
+            Ok(())
+        })
     }
 }
 
@@ -167,11 +260,35 @@ pub async fn content(pool: &PgPool, site: &str) -> Result<Option<Value>> {
     let Some((settings, _)) = crate::http::decide::shared_inputs(&mut conn, site, "").await.map_err(api_err)? else {
         return Ok(None);
     };
+    let mut settings = settings;
+    let simulated: bool = sqlx::query_scalar("SELECT sim_now IS NOT NULL FROM sites WHERE id = $1").bind(site).fetch_one(&mut *conn).await?;
+    settings["simulated_clock"] = json!(simulated);
     let mut by_key = Map::new();
     for slot in slots {
-        if let Some((_, s)) = crate::http::decide::shared_inputs(&mut conn, site, &slot).await.map_err(api_err)?
+        if let Some((_, mut s)) = crate::http::decide::shared_inputs(&mut conn, site, &slot).await.map_err(api_err)?
             && !s.is_null()
         {
+            // What the edge needs to decide on its own clock, which decide reads from the clock
+            // it shares with the database: how long a decision stays sticky, when the running
+            // experiment ends, and when the next one starts (the edge asks Core from then on).
+            let (ttl, ends, next): (i32, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+                "SELECT s.decision_ttl_secs,
+                        (SELECT least(x.stops_at, coalesce(x.stopped_at, 'infinity')) FROM experiments x WHERE x.id = $3),
+                        (SELECT min(x.starts_at) FROM experiments x, sites t
+                          WHERE x.slot_id = s.id AND t.id = s.site_id AND x.starts_at > COALESCE(t.sim_now, now()) AND x.stopped_at IS NULL)
+                   FROM slots s WHERE s.site_id = $1 AND s.key = $2",
+            )
+            .bind(site)
+            .bind(&slot)
+            .bind(s["experiment"]["id"].as_i64())
+            .fetch_one(&mut *conn)
+            .await?;
+            let stamp = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+            s["decision_ttl_secs"] = json!(ttl);
+            s["next_experiment_at"] = json!(stamp(next));
+            if s["experiment"].is_object() {
+                s["experiment"]["ends_at"] = json!(stamp(ends));
+            }
             by_key.insert(slot, s);
         }
     }

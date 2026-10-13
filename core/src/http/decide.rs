@@ -120,13 +120,51 @@ pub struct DecideResponse {
     pub explanation: Value,
 }
 
-pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<DecideRequest>) -> Result<Json<DecideResponse>, ApiError> {
-    decide(&state, &req).await.map(Json)
+/// The header the edge Worker presents its token in (see [`crate::edge::Edge::token_matches`]).
+pub const EDGE_TOKEN_HEADER: &str = "x-prb-edge-token";
+/// The header Core answers the Worker in: hex of `{subject, records}`, the subject as stored and
+/// each decision as stored, so the Worker can remember a cookieless visitor's pseudonym (which
+/// only Core can make) and keep the decision sticky at the edge. Only for the token's holder.
+pub const EDGE_RECORD_HEADER: &str = "x-prb-edge";
+
+/// What the edge Worker needs to know about a decision Core made, beyond the response.
+pub struct Made {
+    pub subject: String,
+    /// The decision's clock (the site's now), which is not the record's `created_at` when a
+    /// sticky decision was reused.
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub record: Value,
+}
+
+fn edge_header(state: &AppState, headers: &axum::http::HeaderMap, made: &[Made]) -> axum::http::HeaderMap {
+    let mut out = axum::http::HeaderMap::new();
+    let presented = headers.get(EDGE_TOKEN_HEADER).and_then(|v| v.to_str().ok());
+    if let (true, Some(first)) = (state.edge.token_matches(presented), made.first()) {
+        let body = json!({ "subject": first.subject, "at": first.at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true), "records": made.iter().map(|m| &m.record).collect::<Vec<_>>() }).to_string();
+        let hex: String = body.bytes().map(|b| format!("{b:02x}")).collect();
+        if let Ok(v) = axum::http::HeaderValue::from_str(&hex) {
+            out.insert(EDGE_RECORD_HEADER, v);
+        }
+    }
+    out
+}
+
+pub async fn handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<DecideRequest>,
+) -> Result<(axum::http::HeaderMap, Json<DecideResponse>), ApiError> {
+    let (res, made) = decide_full(&state, &req).await?;
+    Ok((edge_header(&state, &headers, &[made]), Json(res)))
 }
 
 /// `{decisions: [DecideResponse | {slot, error}]}` in request order. One bad slot does not
 /// fail the others: a page with a stale slot name must still render the rest.
-pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<BatchRequest>) -> Result<Json<Value>, ApiError> {
+pub async fn batch_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<BatchRequest>,
+) -> Result<(axum::http::HeaderMap, Json<Value>), ApiError> {
     if req.slots.is_empty() || req.slots.len() > MAX_BATCH {
         return Err(ApiError::BadRequest(format!("send 1-{MAX_BATCH} slots per batch")));
     }
@@ -134,23 +172,27 @@ pub async fn batch_handler(State(state): State<Arc<AppState>>, Json(req): Json<B
         return Err(ApiError::BadRequest("subject must be 1-256 printable ASCII characters".into()));
     }
     let mut out = Vec::with_capacity(req.slots.len());
+    let mut made = Vec::new();
     for slot in &req.slots {
         let one = DecideRequest { site: req.site.clone(), slot: slot.clone(), subject: req.subject.clone(), ctx: req.ctx.clone() };
-        out.push(match decide(&state, &one).await {
-            Ok(d) => serde_json::to_value(d).map_err(anyhow::Error::from)?,
+        out.push(match decide_full(&state, &one).await {
+            Ok((d, m)) => {
+                made.push(m);
+                serde_json::to_value(d).map_err(anyhow::Error::from)?
+            }
             Err(ApiError::NotFound(m) | ApiError::Conflict(m) | ApiError::BadRequest(m)) => json!({ "slot": slot, "error": m }),
             // An erased subject is refused as a whole, not slot by slot.
             Err(e) => return Err(e),
         });
     }
-    Ok(Json(json!({ "decisions": out })))
+    Ok((edge_header(&state, &headers, &made), Json(json!({ "decisions": out }))))
 }
 
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
 type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
 /// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start,
-/// experiment_id, allocation)`.
-type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>, Option<i64>, String);
+/// experiment_id, allocation, created_at)`.
+type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>, Option<i64>, String, chrono::DateTime<chrono::Utc>);
 
 /// Everything one decide reads, in one statement (one round trip). Binds: `$1` site, `$2` slot,
 /// `$3` the subject when the request is identified, `$4` its pseudonym under the salt decide
@@ -197,7 +239,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        x.id AS exp_id, x.name AS exp_name, x.arms AS exp_arms,
        r.id AS st_id, r.variant_id AS st_variant, r.features AS st_features, r.scores AS st_scores, r.seed AS st_seed,
        r.policy_version AS st_version, r.in_holdout AS st_held, r.policy AS st_policy, r.audiences AS st_audiences,
-       r.cold_start AS st_cold, r.experiment_id AS st_experiment, r.allocation AS st_allocation,
+       r.cold_start AS st_cold, r.experiment_id AS st_experiment, r.allocation AS st_allocation, r.created_at AS st_created,
        m.version AS model_version, m.state AS model_state,
        c.exposures AS cold_exposures,
        CASE WHEN c.exposures < s.cold_start_exposures THEN
@@ -216,7 +258,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        WHERE slot_id = s.id AND starts_at <= t.at AND t.at < least(stops_at, coalesce(stopped_at, 'infinity'))
        ORDER BY starts_at LIMIT 1) x ON true
   LEFT JOIN LATERAL (
-      SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start, experiment_id, allocation
+      SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start, experiment_id, allocation, created_at
         FROM decisions
        WHERE slot_id = s.id AND subject = (SELECT v FROM subj)
          AND created_at > t.at - make_interval(secs => s.decision_ttl_secs::float8) AND created_at <= t.at
@@ -325,6 +367,7 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                     row.try_get("st_cold")?,
                     row.try_get("st_experiment")?,
                     row.try_get("st_allocation")?,
+                    row.try_get("st_created")?,
                 )),
             };
             let model = match row.try_get::<Option<i64>, _>("model_version")? {
@@ -425,6 +468,35 @@ pub(crate) async fn shared_inputs(conn: &mut sqlx::PgConnection, site: &str, slo
 /// A cookieless site adds the salt statement only when decide's guess of the day's salt was
 /// wrong (the first decide of a day per process), plus one more read with the right subject.
 pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideResponse, ApiError> {
+    decide_full(state, req).await.map(|(r, _)| r)
+}
+
+/// The decision as stored, for the edge Worker (see [`EDGE_RECORD_HEADER`]).
+#[allow(clippy::too_many_arguments)]
+fn record(
+    id: Uuid,
+    variant_id: i64,
+    features: &Value,
+    scores: &Value,
+    seed: u64,
+    policy: &str,
+    version: i64,
+    held: bool,
+    audiences: &Value,
+    cold: &Option<Value>,
+    experiment_id: Option<i64>,
+    allocation: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Value {
+    json!({
+        "id": id, "variant_id": variant_id, "features": features, "scores": scores, "seed": seed.to_string(), "policy": policy,
+        "policy_version": version, "in_holdout": held, "audiences": audiences, "cold_start": cold, "experiment_id": experiment_id,
+        "allocation": allocation, "created_at": at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+    })
+}
+
+/// [`decide`], and what the edge Worker needs to know about the decision.
+pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(DecideResponse, Made), ApiError> {
     if !valid_subject(&req.subject) {
         return Err(ApiError::BadRequest("subject must be 1-256 printable ASCII characters".into()));
     }
@@ -508,14 +580,16 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
     let experiment_id = experiment.as_ref().map(|e| e.id);
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
-    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds, cold, exp_id, allocation)) = slot.sticky {
+    if let Some((id, variant_id, features, scores, seed, version, held, policy, auds, cold, exp_id, allocation, created)) = slot.sticky {
         // A visitor who has stated something new since gets a fresh decision, and so does one
         // decided before an experiment started or stopped.
         let same_statement = stated::from_features(&features) == said_now;
         if let (true, true, Some((key, payload))) = (same_statement, exp_id == experiment_id, key_of(variant_id)) {
             let auds = auds.unwrap_or_else(|| json!([]));
+            let rec = record(id, variant_id, &features, &scores, seed as u64, &policy, version, held, &auds, &cold, exp_id, &allocation, created);
             let alloc = Allocation { kind: &allocation, experiment: experiment.as_ref() };
-            return Ok(response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc));
+            let made = Made { subject: req.subject.clone(), at, record: rec };
+            return Ok((response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc), made));
         }
     }
 
@@ -630,8 +704,10 @@ pub async fn decide(state: &AppState, req: &DecideRequest) -> Result<DecideRespo
         return Err(privacy::gone());
     }
     tx.commit().await?;
+    let rec = record(id, chosen, &features, &scores_json, seed, policy, version, in_holdout, &audiences, &cold, experiment_id, allocation, at);
+    let made = Made { subject: req.subject.clone(), at, record: rec };
     let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
-    Ok(response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc))
+    Ok((response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc), made))
 }
 
 /// Who chose the treated arm, for the explanation.

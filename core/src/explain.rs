@@ -242,6 +242,18 @@ struct Row {
     experiment: Option<String>,
 }
 
+/// Re-run the policy a decision stored: its pick and its scores, ascending id. What the replay
+/// check compares, and what Core stores for a decision the edge made (`http::edge`).
+pub fn replay(model: &LinTs, policy: &str, features: &Value, x: &Vector, pool: &[i64], seed: u64) -> (i64, Vec<(i64, f64)>) {
+    let said = crate::stated::ext_from_features(features);
+    if crate::stated::is_extended(policy) {
+        let keys: Vec<String> = said.keys().cloned().collect();
+        crate::stated::choose(model, &keys, pool, x, &said, seed)
+    } else {
+        model.choose(pool, x, seed)
+    }
+}
+
 pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Option<Detail>> {
     let row: Option<Row> = sqlx::query_as(
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
@@ -309,13 +321,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
     let (replay_matches, policy_pick) = match (&model, x) {
         // An on-device decision has no seeded draw to replay.
         (Some(m), Some(x)) if !arm_pool.is_empty() && policy != crate::adapt::POLICY => {
-            let said = crate::stated::ext_from_features(&features);
-            let (pick, replayed) = if crate::stated::is_extended(&policy) {
-                let keys: Vec<String> = said.keys().cloned().collect();
-                crate::stated::choose(m, &keys, &arm_pool, &x, &said, seed as u64)
-            } else {
-                m.choose(&arm_pool, &x, seed as u64)
-            };
+            let (pick, replayed) = replay(m, &policy, &features, &x, &arm_pool, seed as u64);
             let matches = replayed.len() == scores.len()
                 && replayed.iter().all(|(vid, s)| scores.iter().any(|o| o.variant_id == *vid && o.score == *s));
             (Some(matches), Some(pick))

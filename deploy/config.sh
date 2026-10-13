@@ -21,3 +21,7 @@ DOMAINS="pratibimbaapi.meetdev.in"
 # Secret Manager as prb-edge-kv-token. Leave these empty to deploy Core with the edge off.
 EDGE_KV_ACCOUNT=f35116f6863fad577cefb7900b50d073
 EDGE_KV_NAMESPACE=b30829cd168e42768f85c882fca47ac0
+# EC2 edge decide: Core pushes every snapshot to the Worker's beacon here too, and accepts the
+# Worker's decisions (POST /edge/decisions) with the token in Secret Manager prb-edge-token.
+# Leave empty to deploy Core without edge decide (the Worker then always falls back).
+EDGE_BEACON_URL=https://pratibimbaapi.meetdev.in/_prb/edge/snapshot
