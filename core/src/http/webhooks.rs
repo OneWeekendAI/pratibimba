@@ -8,7 +8,8 @@
 //!   the goal (default `purchase`). The session id is the dedup key.
 //! - `POST /webhook/conversion/:site`: anything else, signed the same way with the site's
 //!   conversion secret (`Pratibimba-Signature`). Body:
-//!   `{id, subject, event?, decision_id?, occurred_at?}`; `id` is the dedup key.
+//!   `{id, subject, event?, decision_id?, occurred_at?, value?, currency?}`; `id` is the dedup
+//!   key, and `value` (major units) with `currency` is the order's revenue (F1).
 //! - `GET|POST /api/sites/:site/conversion-sources`: set the secrets, the goals the platform
 //!   is authoritative for, and the grace period. Secrets are write-only.
 //!
@@ -83,7 +84,12 @@ pub async fn stripe(State(state): State<Arc<AppState>>, Path(site): Path<String>
     // Stripe times are whole seconds; read one as the end of its second, so a checkout in the
     // same second as its decision does not appear to precede it. `record` caps it at the clock.
     let occurred_at = event["created"].as_i64().and_then(|t| DateTime::<Utc>::from_timestamp(t, 999_999_999));
-    let c = Conversion { site: &site, source: Source::Stripe, external_id: session_id, subject, goal, decision_id, occurred_at };
+    // The amount the customer paid, when Stripe says so in a currency code Core can store.
+    let value = match (session["amount_total"].as_i64(), session["currency"].as_str().and_then(crate::commerce::currency)) {
+        (Some(a), Some(c)) if a >= 0 => Some((conversions::major_units(a, &c), c)),
+        _ => None,
+    };
+    let c = Conversion { site: &site, source: Source::Stripe, external_id: session_id, subject, goal, decision_id, occurred_at, value };
     recorded(conversions::record(&state.pool, &c).await?)
 }
 
@@ -94,6 +100,9 @@ struct Generic {
     event: Option<String>,
     decision_id: Option<Uuid>,
     occurred_at: Option<DateTime<Utc>>,
+    /// The order's value in `currency`'s major unit (F1); both or neither.
+    value: Option<f64>,
+    currency: Option<String>,
 }
 
 pub async fn conversion(State(state): State<Arc<AppState>>, Path(site): Path<String>, headers: HeaderMap, body: Bytes) -> Result<Json<Value>, ApiError> {
@@ -110,7 +119,9 @@ pub async fn conversion(State(state): State<Arc<AppState>>, Path(site): Path<Str
     if !is_event_name(goal) {
         return Err(ApiError::BadRequest(format!("event {goal:?} must match [a-z0-9_:]{{1,64}}")));
     }
-    let c = Conversion { site: &site, source: Source::Conversion, external_id: id, subject, goal, decision_id: g.decision_id, occurred_at: g.occurred_at };
+    let cur = crate::commerce::check(None, g.value, g.currency.as_deref(), None).map_err(ApiError::BadRequest)?;
+    let value = g.value.zip(cur);
+    let c = Conversion { site: &site, source: Source::Conversion, external_id: id, subject, goal, decision_id: g.decision_id, occurred_at: g.occurred_at, value };
     recorded(conversions::record(&state.pool, &c).await?)
 }
 

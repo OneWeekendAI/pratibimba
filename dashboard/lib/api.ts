@@ -54,6 +54,10 @@ export interface Counts {
   conversions: number;
   /** Conversions credited (a sum of shares under multi-touch; equal to conversions under last touch). */
   credit: number;
+  /** Revenue credited, in the site's currency (F1). */
+  revenue?: number;
+  conversion_rate?: Interval | null;
+  revenue_per_visitor?: Interval | null;
 }
 export interface Check {
   name: string;
@@ -192,6 +196,8 @@ export interface SlotResult {
   treated: Counts;
   holdout: Counts;
   lift: Interval | null;
+  revenue_lift?: Interval | null;
+  goal?: 'conversion' | 'revenue';
   variants: VariantRow[];
 }
 export interface Results {
@@ -202,6 +208,7 @@ export interface Results {
     treated: Counts;
     holdout: Counts;
     lift: Interval | null;
+    currency?: string;
     slots: SlotResult[];
   };
   curves: Record<string, CurvePoint[]>;

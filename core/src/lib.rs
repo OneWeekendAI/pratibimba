@@ -3,6 +3,7 @@ pub mod backup;
 pub mod attribution;
 pub mod bandit;
 pub mod checks;
+pub mod commerce;
 pub mod conversions;
 pub mod db;
 pub mod edge;

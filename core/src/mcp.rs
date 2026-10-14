@@ -207,7 +207,7 @@ fn catalogue() -> Vec<Value> {
         tool("list_slots", "Every slot: selector, success metric, current champion and variant counts by status.", json!({}), &[]),
         tool("list_variants", "A slot's variants (any status) with their HTML, approval details and the reviewer comment thread.",
              json!({ "slot": slot }), &["slot"]),
-        tool("get_results", "Per-slot and per-variant results over closed attribution windows, with lift against the holdout.",
+        tool("get_results", "Per-slot and per-variant results over closed attribution windows: conversion rate and revenue per visitor (each with a 95% always-valid interval), lift and revenue lift against the holdout, the slot's goal (conversion or revenue) and the site's currency. Revenue comes from purchase events with a value; each slot gets its attributor's share of every order in its window.",
              json!({ "slot": { "type": "string", "description": "Optional: one slot only." },
                      "days": { "type": "integer", "minimum": 1, "description": "Optional: only the last N days (default: all time)." } }), &[]),
         tool("list_decisions", "Recent decisions, newest first.",
@@ -841,11 +841,11 @@ async fn slot_id(pool: &PgPool, site: &str, slot: &str) -> Result<i64, ApiError>
 async fn get_site(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
     let (origin, holdout, forbidden, facts): (String, f32, Vec<String>, Option<String>) =
         sqlx::query_as("SELECT origin, holdout_fraction, forbidden_claims, facts FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
-    let slots: Vec<(String, String, String, i32)> =
-        sqlx::query_as("SELECT key, selector, metric, attribution_window_secs FROM slots WHERE site_id = $1 ORDER BY key").bind(site).fetch_all(pool).await?;
+    let slots: Vec<(String, String, String, i32, String)> =
+        sqlx::query_as("SELECT key, selector, metric, attribution_window_secs, goal FROM slots WHERE site_id = $1 ORDER BY key").bind(site).fetch_all(pool).await?;
     Ok(json!({
         "id": site, "origin": origin, "holdout_fraction": holdout, "forbidden_claims": forbidden, "facts": facts,
-        "slots": slots.into_iter().map(|(key, selector, metric, w)| json!({ "key": key, "selector": selector, "metric": metric, "attribution_window_secs": w })).collect::<Vec<_>>(),
+        "slots": slots.into_iter().map(|(key, selector, metric, w, goal)| json!({ "key": key, "selector": selector, "metric": metric, "attribution_window_secs": w, "goal": goal })).collect::<Vec<_>>(),
     }))
 }
 

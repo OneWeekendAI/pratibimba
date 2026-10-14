@@ -57,6 +57,11 @@ Before you propose anything for a slot, make these calls in this session:
    - If `lo` and `hi` straddle zero, or `lift` is null, there is **no evidence yet**. Say so.
      Do not call a variant "winning" because its estimate is a bit higher.
    - A few hundred decisions is not much. Report the sample size along with any claim.
+   - Each `counts` also has `conversion_rate` and `revenue_per_visitor` (with `lo` and `hi`),
+     and each variant a `revenue_lift` against the holdout, in the site's `currency`. Revenue
+     comes from purchase events, whatever the slot's metric. Read both: a variant can win clicks
+     and lose revenue. The slot's `goal` says which one the bandit optimises (`conversion` or
+     `revenue`). Few orders make a wide revenue interval: say so rather than call a winner.
 4. `list_variants` with `slot`. Read every variant, not only the approved ones. `rejected`
    variants show what a person refused, and the comment thread shows why. `paused` variants
    were stopped by auto-rollback because they were losing. Treat both as findings: do not
@@ -171,6 +176,19 @@ A person approves. You do not, and you cannot.
   retired, removed or switched off because you proposed it.
 - Never create, change or retire slots through the site file. Applying it is the owner's own
   act and skips the person who reviews your work.
+
+## Reporting carts and orders in code
+
+When the user asks you to wire revenue into their app, use the SDK helpers, not a bare `track`:
+
+- Next.js (server code): `await prb.addToCart({ id, price, quantity })` and
+  `await prb.purchase({ order_id, value, currency, items })`. Edge: the same with the `Request`
+  first. Browser script: `window.prb.addToCart(item)`, `window.prb.purchase(order)`.
+- Call `purchase` where the order is confirmed, with the store's real order id: Core counts one
+  order once, however often it is sent. `value` is the order total in major units (49.99), in the
+  site's currency.
+- If the store already sends a Stripe or signed conversion webhook for purchases, do not also
+  send `purchase` from the browser for that goal; the webhook is the authoritative one.
 
 ## Plugins: you request, a person installs
 

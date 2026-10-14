@@ -13,16 +13,13 @@ export default async function ProductPage({ params, searchParams }: {
   const product = productBySlug(slug);
   if (!product) notFound();
 
-  // Conversions are reported from the server, for this request's visitor.
+  // Conversions are reported from the server, for this request's visitor. A purchase carries its
+  // order: Core stores one row per order_id and credits its value as revenue to the decisions
+  // that may have caused it (the promo and the hero both get their share).
   async function addToCart() {
     'use server';
-    await prb.track('add_to_cart');
+    await prb.addToCart({ id: product!.slug, price: product!.price, quantity: 1 });
     redirect(`/p/${slug}?added=1`);
-  }
-  async function buyNow() {
-    'use server';
-    await prb.track('purchase');
-    redirect('/thanks');
   }
 
   return (
@@ -31,7 +28,10 @@ export default async function ProductPage({ params, searchParams }: {
       <p>{product.blurb}</p>
       <p className="price">₹{product.price}</p>
       <form action={addToCart}><button type="submit">Add to cart</button></form>
-      <form action={buyNow}><button className="buy" type="submit">Buy now</button></form>
+      <form action="/checkout" method="post">
+        <input type="hidden" name="slug" value={product.slug} />
+        <button className="buy" type="submit">Buy now</button>
+      </form>
       {added && <p className="note">Added to your cart.</p>}
       <prb.Slot id="promo">
         <p className="promo">Free shipping over ₹999.</p>

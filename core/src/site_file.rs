@@ -41,6 +41,10 @@ pub struct SiteFile {
     /// `last_touch` (the default for a new site) or `linear`. Omitted: keep the current value.
     #[serde(default)]
     pub attribution: Option<String>,
+    /// ISO 4217 code revenue is counted in (see [`crate::commerce`]); a new site gets USD.
+    /// Omitted: keep the current value.
+    #[serde(default)]
+    pub currency: Option<String>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -71,6 +75,14 @@ pub struct SlotSpec {
     /// Overrides the site's attributor for this slot. Omitted: follow the site.
     #[serde(default)]
     pub attribution: Option<String>,
+    /// What the bandit optimises: `conversion` (the default: the metric) or `revenue` (the
+    /// revenue credited to a decision over `revenue_cap`, capped at 1).
+    #[serde(default)]
+    pub goal: Option<String>,
+    /// Required with `goal: "revenue"`, refused otherwise: an order value at or above which a
+    /// decision counts as a full success. Pick about the 95th percentile of an order.
+    #[serde(default)]
+    pub revenue_cap: Option<f64>,
     pub variants: Vec<VariantSpec>,
 }
 
@@ -126,6 +138,11 @@ impl SiteFile {
             crate::features::validate(f)?;
         }
         check_attribution("site", self.attribution.as_deref())?;
+        if let Some(c) = &self.currency {
+            if crate::commerce::currency(c).is_none() {
+                bail!("currency {c:?} must be a three-letter ISO 4217 code, e.g. USD");
+            }
+        }
         if let Some(h) = self.holdout_fraction {
             if !(0.0..=0.5).contains(&h) {
                 bail!("holdout_fraction must be between 0 and 0.5");
@@ -149,6 +166,7 @@ impl SiteFile {
                 bail!("slot {k:?}: cold_start_exposures must be between 0 and {MAX_COLD_START}");
             }
             check_attribution(&format!("slot {k:?}"), slot.attribution.as_deref())?;
+            check_goal(&format!("slot {k:?}"), slot.goal.as_deref(), slot.revenue_cap)?;
             crate::stated::validate_slot(slot)?;
             let baselines = slot.variants.iter().filter(|v| v.baseline).count();
             if baselines != 1 {
@@ -168,6 +186,19 @@ impl SiteFile {
         }
         crate::stated::validate_site(self)?;
         Ok(())
+    }
+}
+
+pub const GOALS: [&str; 2] = ["conversion", "revenue"];
+
+/// A slot's goal and revenue cap: the cap goes with `revenue` and only with it.
+pub fn check_goal(what: &str, goal: Option<&str>, cap: Option<f64>) -> Result<()> {
+    match (goal.unwrap_or("conversion"), cap) {
+        (g, _) if !GOALS.contains(&g) => bail!("{what}: goal {g:?} is not one of {GOALS:?}"),
+        ("revenue", Some(c)) if c.is_finite() && c > 0.0 && c <= crate::commerce::MAX_VALUE => Ok(()),
+        ("revenue", _) => bail!("{what}: goal \"revenue\" needs revenue_cap, an order value > 0 that counts as a full success"),
+        (_, Some(_)) => bail!("{what}: revenue_cap goes with goal \"revenue\""),
+        _ => Ok(()),
     }
 }
 
@@ -207,12 +238,13 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed, attribution)
-         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6, COALESCE($7, 'last_touch'))
+        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed, attribution, currency)
+         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6, COALESCE($7, 'last_touch'), COALESCE($8, 'USD'))
          ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction),
                                         facts = COALESCE($4, sites.facts), privacy_mode = COALESCE($5, sites.privacy_mode),
                                         fields_allowed = COALESCE($6, sites.fields_allowed),
-                                        attribution = COALESCE($7, sites.attribution)",
+                                        attribution = COALESCE($7, sites.attribution),
+                                        currency = COALESCE($8, sites.currency)",
     )
         .bind(&file.site)
         .bind(&file.origin)
@@ -221,6 +253,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(&file.privacy_mode)
         .bind(&file.fields_allowed)
         .bind(&file.attribution)
+        .bind(file.currency.as_deref().and_then(crate::commerce::currency))
         .execute(&mut *tx)
         .await?;
     if let Some(features) = &file.features {
@@ -236,12 +269,14 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     }
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
-            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures, attribution)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures, attribution,
+                                goal, revenue_cap)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
                  attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
                  kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker,
-                 cold_start_exposures = EXCLUDED.cold_start_exposures, attribution = EXCLUDED.attribution
+                 cold_start_exposures = EXCLUDED.cold_start_exposures, attribution = EXCLUDED.attribution,
+                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap
              RETURNING id",
         )
         .bind(&file.site)
@@ -255,6 +290,8 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(slot.picker.as_ref().map(serde_json::to_value).transpose()?)
         .bind(slot.cold_start_exposures)
         .bind(&slot.attribution)
+        .bind(slot.goal.as_deref().unwrap_or("conversion"))
+        .bind(slot.revenue_cap)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;

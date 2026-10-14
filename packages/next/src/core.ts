@@ -112,6 +112,11 @@ export interface EventIn {
   name: string;
   slot?: string;
   decision_id?: string;
+  /** Commerce (see commerce.ts). */
+  order_id?: string;
+  value?: number;
+  currency?: string;
+  items?: unknown[];
 }
 
 export async function postEvents(

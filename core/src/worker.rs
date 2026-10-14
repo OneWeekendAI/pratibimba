@@ -155,14 +155,16 @@ fn is_retryable(e: &anyhow::Error) -> bool {
         .any(|d| matches!(d.code().as_deref(), Some("40P01") | Some("40001")))
 }
 
-/// `(outbox id, event id, site, subject|name, decision, at, from a platform, authoritative goal)`.
-type PendingRow = (i64, Uuid, String, String, Option<Uuid>, DateTime<Utc>, bool, bool);
+/// `(outbox id, event id, site, subject|name, decision, at, from a platform, authoritative goal,
+/// order value in ten-thousandths when it is in the site's currency)`.
+type PendingRow = (i64, Uuid, String, String, Option<Uuid>, DateTime<Utc>, bool, bool, Option<i64>);
 
 async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option<&str>) -> Result<(u64, Stats)> {
     let mut tx = pool.begin().await?;
     let rows: Vec<PendingRow> = sqlx::query_as(&scoped(
         "SELECT p.id, e.id, e.site_id, e.subject || '|' || e.name, e.decision_id, COALESCE(e.occurred_at, e.received_at),
-                e.source <> 'browser', e.name = ANY(t.authoritative_goals)
+                e.source <> 'browser', e.name = ANY(t.authoritative_goals),
+                CASE WHEN e.currency = t.currency THEN (e.value * 10000)::int8 END
            FROM pending_events p JOIN live_events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
           WHERE {scope}
             AND (e.decision_id IS NULL OR e.received_at <= $3 - make_interval(secs => $4)
@@ -179,7 +181,7 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();
-    for (_, _, site, subject_name, decision_id, received_at, platform, authoritative) in &rows {
+    for (_, _, site, subject_name, decision_id, received_at, platform, authoritative, value) in &rows {
         let (subject, name) = subject_name.rsplit_once('|').expect("joined above");
         local.events += 1;
         match name {
@@ -219,6 +221,9 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
                     } else if *platform && correct(&mut tx, d, *received_at, now, share).await? {
                         local.corrected += 1;
                     }
+                }
+                if let Some(units) = value {
+                    attribute_revenue(&mut tx, site, subject, decision_id, *received_at, *units, now).await?;
                 }
             }
         }
@@ -285,6 +290,52 @@ async fn candidates(
     Ok(out)
 }
 
+/// Share one order's revenue among the decisions that may have caused it (see
+/// [`crate::commerce`]): per slot, whatever its metric, the subject's exposed decisions whose
+/// window contains `at`, split by the slot's attributor with every touch open. `units` are
+/// ten-thousandths of the site's currency. A decision's revenue is a record, not a lesson: a
+/// revenue-goal slot learns it when the window closes ([`settle_batch`]).
+async fn attribute_revenue(
+    tx: &mut Transaction<'_, Postgres>,
+    site: &str,
+    subject: &str,
+    named: Option<Uuid>,
+    at: DateTime<Utc>,
+    units: i64,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let rows: Vec<(Uuid, i64, String)> = sqlx::query_as(
+        "SELECT d.id, d.slot_id,
+                coalesce(s.attribution, (SELECT p.attributor FROM plugins p WHERE p.site_id = d.site_id AND p.kind = 'attributor'), t.attribution)
+           FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
+          WHERE d.site_id = $1 AND d.subject = $2 AND d.exposed_at IS NOT NULL
+            AND d.created_at <= $3 AND d.created_at + make_interval(secs => s.attribution_window_secs) >= $3
+          ORDER BY d.slot_id, d.created_at, d.id",
+    )
+    .bind(site)
+    .bind(subject)
+    .bind(at)
+    .fetch_all(&mut **tx)
+    .await?;
+    for group in rows.chunk_by(|a, b| a.1 == b.1) {
+        let attributor = crate::attribution::by_name(&group[0].2).context("unknown attributor")?;
+        let touches: Vec<Touch> = group.iter().map(|r| Touch { id: r.0, open: true }).collect();
+        // A decision the order names picks the touch in its own slot; other slots fall back.
+        let named = named.filter(|n| group.iter().any(|r| r.0 == *n));
+        let credit = attributor.credit(&touches, named);
+        let parts = crate::commerce::split(units, &credit.iter().map(|c| c.1).collect::<Vec<_>>());
+        for ((d, _), part) in credit.iter().zip(parts) {
+            sqlx::query("UPDATE decisions SET revenue = coalesce(revenue, 0) + $2::int8 / 10000.0, revenue_at = $3 WHERE id = $1")
+                .bind(d)
+                .bind(part)
+                .bind(now)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Credit one decision as converted with its `share` of the conversion, at most once. The model
 /// is not taught here: a treated decision is marked `learn_pending` and [`settle_batch`] teaches
 /// the share when the window closes. Returns whether it was credited.
@@ -326,13 +377,13 @@ async fn credit(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime
 /// browser click cannot rewrite history.
 async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTime<Utc>, now: DateTime<Utc>, share: f64) -> Result<bool> {
     #[allow(clippy::type_complexity)]
-    let row: Option<(i64, i64, Value, bool, String, String, String, String, String)> = sqlx::query_as(
+    let row: Option<(i64, i64, Value, bool, String, String, String, String, String, bool)> = sqlx::query_as(
         "UPDATE decisions d SET outcome = 1, outcome_at = $2, corrected_at = $3, credit = $4
            FROM slots s, variants v
           WHERE d.id = $1 AND s.id = d.slot_id AND v.id = d.variant_id
             AND d.settled_at IS NOT NULL AND d.outcome = 0 AND d.corrected_at IS NULL AND d.exposed_at IS NOT NULL
             AND $2 >= d.created_at AND $2 <= d.created_at + make_interval(secs => s.attribution_window_secs)
-          RETURNING d.slot_id, d.variant_id, d.features, d.in_holdout, d.site_id, s.key, v.key, s.metric, d.subject",
+          RETURNING d.slot_id, d.variant_id, d.features, d.in_holdout, d.site_id, s.key, v.key, s.metric, d.subject, s.goal = 'revenue'",
     )
     .bind(decision)
     .bind(at)
@@ -340,14 +391,15 @@ async fn correct(tx: &mut Transaction<'_, Postgres>, decision: Uuid, at: DateTim
     .bind(share)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject)) = row else { return Ok(false) };
+    let Some((slot, variant, features, held, site, slot_key, variant_key, metric, subject, revenue_goal)) = row else { return Ok(false) };
     let mut data = json!({ "decision_id": decision, "slot": slot_key, "variant": variant_key, "metric": metric,
                            "subject": subject, "in_holdout": held, "converted_at": at, "late": true });
     if share < 1.0 {
         data["credit"] = json!(share);
     }
     webhooks::enqueue(&mut **tx, &site, "conversion", data).await?;
-    if !held {
+    // A revenue-goal slot learned the decision's revenue, not its conversion: nothing to flip.
+    if !held && !revenue_goal {
         let x = from_named(&features).context("decision features are missing a named feature")?;
         let state: Value = sqlx::query_scalar("SELECT state FROM models WHERE slot_id = $1 FOR UPDATE").bind(slot).fetch_one(&mut **tx).await?;
         let mut model: LinTs = serde_json::from_value(state)?;
@@ -388,13 +440,16 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
     // Credited decisions are already settled (their record is final); `learn_pending` brings them
     // back once, at the same close, for their lesson.
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(Uuid, i64, i64, Value, bool, bool, bool, f64)> = sqlx::query_as(&scoped(
+    let rows: Vec<(Uuid, i64, i64, Value, bool, bool, bool, f64, Option<f64>)> = sqlx::query_as(&scoped(
         "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL, d.in_holdout,
-                d.learn_pending, coalesce(d.credit, 1)
+                d.learn_pending, coalesce(d.credit, 1),
+                CASE WHEN s.goal = 'revenue' THEN least(coalesce(d.revenue, 0) / s.revenue_cap, 1)::float8 END
            FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
           WHERE (d.settled_at IS NULL OR d.learn_pending) AND {scope}
             AND d.created_at + make_interval(secs => s.attribution_window_secs
-                  + CASE WHEN s.metric = ANY(t.authoritative_goals) THEN t.platform_grace_secs ELSE 0 END) < $1
+                  + CASE WHEN s.metric = ANY(t.authoritative_goals)
+                           OR (s.goal = 'revenue' AND cardinality(t.authoritative_goals) > 0)
+                         THEN t.platform_grace_secs ELSE 0 END) < $1
           ORDER BY d.created_at LIMIT $2
           FOR UPDATE OF d SKIP LOCKED",
         3,
@@ -405,14 +460,16 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
     .fetch_all(&mut *tx)
     .await?;
     let mut local = Stats::default();
-    for (id, slot, variant, features, exposed, held, pending, credit) in &rows {
+    // A revenue-goal slot (`revenue` is Some) learns each decision's credited revenue over its
+    // cap, converted or not; any other slot learns the conversion credit, as before.
+    for (id, slot, variant, features, exposed, held, pending, credit, revenue) in &rows {
         if *pending {
             sqlx::query("UPDATE decisions SET learn_pending = false WHERE id = $1").bind(id).execute(&mut *tx).await?;
-            learn(&mut tx, *slot, *variant, features, *credit).await?;
+            learn(&mut tx, *slot, *variant, features, revenue.unwrap_or(*credit)).await?;
         } else if *exposed {
             sqlx::query("UPDATE decisions SET outcome = 0, settled_at = $2 WHERE id = $1").bind(id).bind(now).execute(&mut *tx).await?;
             if !*held {
-                learn(&mut tx, *slot, *variant, features, 0.0).await?;
+                learn(&mut tx, *slot, *variant, features, revenue.unwrap_or(0.0)).await?;
             }
             local.settled_negative += 1;
         } else {

@@ -466,10 +466,42 @@
     );
   });
 
+  // --- commerce (F1) -------------------------------------------------------------------------
+  // Checked here as Core checks them, so a malformed order fails in the developer's console, not
+  // silently at Core. Core derives a purchase's event id from order_id: sending one order twice
+  // (a reloaded thank-you page) stores it once.
+  function bad(msg) { throw new TypeError('[pratibimba] ' + msg); }
+  function checkItems(items) {
+    if (items === undefined) return undefined;
+    if (!Array.isArray(items)) bad('items must be an array of {id, price?, quantity?}');
+    items.forEach(function (it) {
+      if (!it || typeof it.id !== 'string' || !it.id) bad('each item needs a string id');
+      if (it.price !== undefined && !(typeof it.price === 'number' && isFinite(it.price) && it.price >= 0)) bad('item price must be a number >= 0');
+      if (it.quantity !== undefined && !(typeof it.quantity === 'number' && it.quantity >= 1 && Math.floor(it.quantity) === it.quantity)) bad('item quantity must be a whole number >= 1');
+    });
+    return items;
+  }
+
   window.prb = {
     subject: subject,
     // A goal with no decision id: Core credits the subject's latest exposed decision per slot
     // whose metric is `name` (last touch).
-    track: function (name) { send(name); }
+    track: function (name) { send(name); },
+    // `add_to_cart` with the item: a goal like any other (a slot may measure it); its price is
+    // not revenue.
+    addToCart: function (item) {
+      send('add_to_cart', null, null, { items: checkItems([item]) });
+    },
+    // `purchase` with the order: Core shares its value among the decisions in each slot's window.
+    purchase: function (order) {
+      var o = order || {};
+      if (typeof o.order_id !== 'string' || !o.order_id || o.order_id.length > 256) bad('purchase needs an order_id (1-256 chars)');
+      if (!(typeof o.value === 'number' && isFinite(o.value) && o.value >= 0)) bad('purchase value must be a number >= 0, in major units (49.99)');
+      if (typeof o.currency !== 'string' || !/^[A-Za-z]{3}$/.test(o.currency)) bad('purchase currency must be an ISO 4217 code, e.g. USD');
+      var extra = { order_id: o.order_id, value: o.value, currency: o.currency.toUpperCase() };
+      var items = checkItems(o.items);
+      if (items) extra.items = items;
+      send('purchase', null, null, extra);
+    }
   };
 })();

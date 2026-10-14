@@ -93,12 +93,15 @@ async fn heatmap(State(state): St, Path(site): Path<String>, Query(q): Query<Hea
         (true, true) => "dow_local",
         (true, false) => "extract(dow from hour_utc AT TIME ZONE 'UTC')::int2",
     };
-    let rows: Vec<(i16, Option<i16>, i64, i64, f64, i64, i64)> = sqlx::query_as(&format!(
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(i16, Option<i16>, i64, i64, f64, i64, i64, f64, f64)> = sqlx::query_as(&format!(
         "SELECT {hour} AS h, {dow} AS d, variant_id,
                 coalesce(sum(n) FILTER (WHERE outcome <> 'pending'), 0)::int8,
                 coalesce(sum(credit) FILTER (WHERE outcome = 'converted'), 0)::float8,
                 coalesce(sum(n) FILTER (WHERE outcome = 'pending'), 0)::int8,
-                sum(tz_known)::int8
+                sum(tz_known)::int8,
+                coalesce(sum(revenue) FILTER (WHERE outcome <> 'pending'), 0)::float8,
+                coalesce(sum(revenue_sq) FILTER (WHERE outcome <> 'pending'), 0)::float8
            FROM rollup_hourly
           WHERE site_id = $1 AND segment_id = $2 AND hour_utc >= $3 AND ($4::int8 IS NULL OR slot_id = $4)
           GROUP BY 1, 2, 3 ORDER BY 2 NULLS FIRST, 1, 3"
@@ -113,12 +116,15 @@ async fn heatmap(State(state): St, Path(site): Path<String>, Query(q): Query<Hea
     let (mut total, mut known) = (0i64, 0i64);
     let cells: Vec<Value> = rows
         .iter()
-        .map(|(h, d, v, n, c, p, k)| {
+        .map(|(h, d, v, n, c, p, k, r, r2)| {
             total += n + p;
             known += k;
             let (slot, variant) = names.get(v).cloned().unwrap_or_default();
             let mut cell = json!({ "hour": h, "slot": slot, "variant": variant, "variant_id": v, "exposures": n, "conversions": super::count_json(*c),
-                                   "rate": if *n > 0 { *c / *n as f64 } else { 0.0 }, "pending": p });
+                                   "rate": if *n > 0 { *c / *n as f64 } else { 0.0 }, "pending": p,
+                                   "conversion_rate": crate::stats::rate_cs_credit(*c, *n as u64, crate::stats::ALPHA),
+                                   "revenue": r,
+                                   "revenue_per_visitor": crate::stats::mean_cs(*r, *r2, *n as u64, crate::stats::ALPHA) });
             if let Some(d) = d {
                 cell["dow"] = json!(d);
             }

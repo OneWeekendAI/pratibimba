@@ -47,6 +47,24 @@ pub struct EventIn {
     pub features: Option<Value>,
     #[serde(default)]
     pub score: Option<f64>,
+    /// Commerce (see [`crate::commerce`]): the order this event reports. Its id is derived from
+    /// `(site, order_id)`, so one order is one row however often it is sent.
+    #[serde(default)]
+    pub order_id: Option<String>,
+    /// The order's value in `currency`'s major unit (49.99, not 4999).
+    #[serde(default)]
+    pub value: Option<f64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    /// `[{id, price?, quantity?, ...}]`, kept as sent.
+    #[serde(default)]
+    pub items: Option<Value>,
+}
+
+impl EventIn {
+    pub fn is_commerce(&self) -> bool {
+        self.order_id.is_some() || self.value.is_some() || self.currency.is_some() || self.items.is_some()
+    }
 }
 
 pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsRequest>) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -61,6 +79,14 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
     }
     if req.tz_offset.is_some_and(|m| !crate::insights::localtime::valid_offset(m)) {
         return Err(ApiError::BadRequest("tz_offset is minutes east of UTC, -720 to 840".into()));
+    }
+    let mut req = req;
+    for e in &mut req.events {
+        let cur = crate::commerce::check(e.order_id.as_deref(), e.value, e.currency.as_deref(), e.items.as_ref()).map_err(ApiError::BadRequest)?;
+        e.currency = cur;
+        if let Some(o) = &e.order_id {
+            e.id = crate::commerce::order_event_id(&req.site, o);
+        }
     }
     let Some(policy) = crate::privacy::policy(&state.pool, &req.site).await? else {
         return Err(ApiError::NotFound(format!("unknown site {:?}", req.site)));
@@ -91,8 +117,10 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         let slot_id = e.slot.as_ref().and_then(|k| slots.get(k)).copied();
         let r = sqlx::query(
             "WITH ins AS (
-                 INSERT INTO events (id, site_id, subject, name, slot_id, decision_id, received_at, tz_offset_min, picks)
-                 VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(sim_now, now()) FROM sites WHERE id = $2), $7, $8)
+                 INSERT INTO events (id, site_id, subject, name, slot_id, decision_id, received_at, tz_offset_min, picks,
+                                     order_id, value, currency, items)
+                 VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(sim_now, now()) FROM sites WHERE id = $2), $7, $8,
+                         $9, $10::int8 / 10000.0, $11, $12)
                  ON CONFLICT (id) DO NOTHING
                  RETURNING id)
              INSERT INTO pending_events (event_id) SELECT id FROM ins",
@@ -105,6 +133,10 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         .bind(e.decision_id)
         .bind(req.tz_offset)
         .bind(&e.picks)
+        .bind(&e.order_id)
+        .bind(e.value.map(crate::commerce::units))
+        .bind(&e.currency)
+        .bind(&e.items)
         .execute(&mut *tx)
         .await?;
         if r.rows_affected() > 0 {

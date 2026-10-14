@@ -13,8 +13,9 @@ import { postEvents, type Ctx, type Decision, type Fetch } from './core.ts';
 import { createProxy, type ProxyOptions } from './proxy.ts';
 import { createRoute } from './route.ts';
 import { createSlot, type SlotConfig } from './slot.ts';
+import { addToCartEvent, purchaseEvent, type Item, type Order } from './commerce.ts';
 
-export type { Ctx, Decision, SlotConfig, ProxyOptions };
+export type { Ctx, Decision, SlotConfig, ProxyOptions, Item, Order };
 export { createProxy, createRoute, createSlot };
 export { encodeCtx, decodeCtx, contextFor, SUBJECT_COOKIE, SESSION_COOKIE, SDK_HEADER, VERSION } from './context.ts';
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone } from './timezone.ts';
@@ -34,6 +35,24 @@ export function createPratibimba(config: PratibimbaConfig) {
       const v = await visitor();
       if (!v) return;
       await postEvents(config, v.subject, [{ id: crypto.randomUUID(), name, slot: opts.slot, decision_id: opts.decisionId }], v.ctx.consent);
+    },
+    /** Post `add_to_cart` with the item for this request's visitor. Its price is not revenue. */
+    async addToCart(item: Item) {
+      const ev = addToCartEvent(item);
+      const v = await visitor();
+      if (!v) return;
+      await postEvents(config, v.subject, [ev], v.ctx.consent);
+    },
+    /**
+     * Post `purchase` with the order for this request's visitor. Core shares its value among the
+     * decisions in each slot's window and stores one row per `order_id`, so calling this twice
+     * for one order counts it once. Throws a TypeError for a malformed order.
+     */
+    async purchase(order: Order) {
+      const ev = purchaseEvent(order);
+      const v = await visitor();
+      if (!v) return;
+      await postEvents(config, v.subject, [ev], v.ctx.consent);
     },
     proxy: createProxy(config),
     route: createRoute({ core: config.core, fetch: config.fetch as Fetch | undefined }),

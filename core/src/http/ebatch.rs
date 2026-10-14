@@ -151,8 +151,11 @@ struct Row {
     tz: Option<i16>,
 }
 
-fn is_special(e: &EventIn) -> bool {
-    e.name == "pick" || e.name == "rescore" || e.picks.is_some() || e.variant.is_some() || e.features.is_some() || e.score.is_some()
+/// Events the batch path refuses, so their sender uses `/e`: picks and rescores (the next decide
+/// reads them) and commerce events (an order's id, value and items are validated there; the edge
+/// Worker never queues them, see deploy/proxy-worker `queueable`).
+pub fn is_special(e: &EventIn) -> bool {
+    e.name == "pick" || e.name == "rescore" || e.picks.is_some() || e.variant.is_some() || e.features.is_some() || e.score.is_some() || e.is_commerce()
 }
 
 async fn write_events(state: &AppState, items: Vec<(DateTime<Utc>, EventsRequest)>, answer: &mut Answer) -> Result<(), ApiError> {
@@ -203,7 +206,7 @@ async fn write_events(state: &AppState, items: Vec<(DateTime<Utc>, EventsRequest
         let tz = site.policy.tz(req.tz_offset);
         let (special, plain): (Vec<EventIn>, Vec<EventIn>) = req.events.into_iter().partition(is_special);
         for e in special {
-            answer.refuse(Some(e.id), "picks and rescores go to /e: the next decide reads them");
+            answer.refuse(Some(e.id), "picks, rescores and orders go to /e");
         }
         let kept = site.policy.events(plain);
         for e in kept {

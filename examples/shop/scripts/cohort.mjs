@@ -20,6 +20,11 @@
 // price-upfront's 20% beats 16%); mobile -> price-upfront; desktop evening -> tasting-notes.
 // The hero's metric is `click`, so a click is the conversion.
 //
+// ORDERS (F1): after a served hero, a visitor buys with probability BUY (more after a click),
+// through the store's own /checkout route (prb.purchase in @pratibimba/next): one product, 1-3
+// bags, INR. A RETRY share of orders is sent twice with the same order_id, which Core must count
+// once. analyze.mjs reconciles every order's value against the revenue Core credited.
+//
 // What the server can see: mobile (user agent), from_ad (utm_* on the URL), returning (a
 // subject cookie with consent: the site is consent_aware and the store runs PRB_PERSIST=1),
 // and the local clock through the `_prb_tz` cookie the beacon would have set. A referrer is
@@ -41,6 +46,10 @@ const PLAN = arg('plan', 'full');
 const SEED = Number(arg('seed', '7'));
 
 const TRUTH = TRUTH_TABLE;
+const BUY = Number(arg('buy', '0.06'));
+const BUY_AFTER_CLICK = Number(arg('buy-after-click', '0.35'));
+const RETRY = 0.25;
+const PRODUCTS = [{ slug: 'monday-espresso', price: 549 }, { slug: 'estate-filter', price: 699 }];
 
 // Phases: `rate` visits per second (Poisson), or `gap` [min, max] seconds between visits
 // (the sparse phases, to see the first render after an idle keep-alive socket).
@@ -50,6 +59,8 @@ const PLANS = {
   short: [{ name: 'steady', rate: 2.5, secs: 1200 }],
   // EC3 (2026-10-13): four minutes through the events queue, to reconcile against Core.
   ec3: [{ name: 'steady', rate: 2.5, secs: 240 }],
+  // F1 (2026-10-14): five minutes with orders, to reconcile revenue against Core.
+  f1: [{ name: 'steady', rate: 2.5, secs: 300 }],
   // Only idle gaps: every render comes 4.5-9 s after the last one.
   sparse: [{ name: 'sparse', gap: [4.5, 9], secs: 300 }],
   full: [
@@ -117,6 +128,19 @@ async function postEvent(subject, v, decision, name, clock) {
   }
 }
 
+async function checkout(subject, v, order) {
+  const cookies = [`_prb_subject=${encodeURIComponent(subject)}`];
+  if (v.consent) cookies.push('_prb_consent=granted');
+  const form = new URLSearchParams({ slug: order.slug, quantity: String(order.quantity), order_id: order.order_id });
+  try {
+    const r = await fetch(`${BASE}/checkout`, { method: 'POST', redirect: 'manual', body: form,
+      headers: { cookie: cookies.join('; '), 'user-agent': v.mobile ? UA.mobile : UA.desktop } });
+    return { status: r.status, at: new Date().toISOString() };
+  } catch (e) {
+    return { status: 0, error: String(e) };
+  }
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let n = 0;
 let lastStart = 0;
@@ -157,6 +181,14 @@ async function visit(phase) {
       if (rec.clicked) {
         await sleep(300 + rnd() * 2000);
         rec.click = await postEvent(subject, v, m[2], 'click', clock);
+      }
+      if (rnd() < (rec.clicked ? BUY_AFTER_CLICK : BUY)) {
+        await sleep(500 + rnd() * 3000);
+        const p = pick(PRODUCTS);
+        const quantity = 1 + Math.floor(rnd() * 3);
+        rec.order = { order_id: randomUUID(), slug: p.slug, quantity, value: p.price * quantity, currency: 'INR' };
+        rec.order.sent = [await checkout(subject, v, rec.order)];
+        if (rnd() < RETRY) rec.order.sent.push(await checkout(subject, v, rec.order));
       }
     }
     if (!v.returning && v.consent) returners.push({ subject, mobile: v.mobile, tz: v.tz, sendsTz: v.sendsTz, last: started });

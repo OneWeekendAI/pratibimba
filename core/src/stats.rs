@@ -80,6 +80,40 @@ pub fn lift_cs_credit(treated: (f64, u64), control: (f64, u64), alpha: f64) -> O
     Some(Interval { estimate: t.estimate - c.estimate, lo: t.lo - c.hi, hi: t.hi - c.lo })
 }
 
+/// Where a mean's sequence is tightest, in observations: the same ~2,000 visitors the rate
+/// sequence is tuned for. Used by [`mean_cs`], whose `rho` is set from the observed variance so
+/// the sequence does not depend on the unit (rupees or paise give the same interval, scaled).
+const MEAN_TIGHTEST_AT_N: f64 = 2_000.0;
+
+/// The sequence for a mean of unbounded non-negative outcomes (revenue per visitor): `sum` and
+/// `sum_sq` of `n` observations. The same asymptotic sequence as [`rate_cs_credit`], with the
+/// sample variance and `rho^2 = (l + ln(l + 1)) / (n0 * var)`. Like the rate sequence it holds
+/// asymptotically (Waudby-Smith et al. 2023); revenue is heavy-tailed, so trust it once a few
+/// dozen orders are in, not at the first one. `None` with no data.
+pub fn mean_cs(sum: f64, sum_sq: f64, n: u64, alpha: f64) -> Option<Interval> {
+    if n == 0 {
+        return None;
+    }
+    let t = n as f64;
+    let m = sum / t;
+    // A floor relative to the scale of the data (or to one unit with none), so a run of zeros
+    // does not claim certainty.
+    let var = (sum_sq / t - m * m).max(VAR_FLOOR * m.abs().max(1.0).powi(2));
+    let l = -2.0 * alpha.ln();
+    let r2 = (l + (l + 1.0).ln()) / (MEAN_TIGHTEST_AT_N * var);
+    let v = t * var * r2 + 1.0;
+    let h = (2.0 * v / (t * t * r2) * (v.sqrt() / alpha).ln()).sqrt();
+    Some(Interval { estimate: m, lo: (m - h).max(0.0), hi: m + h })
+}
+
+/// `treated mean - control mean`, each group as `(sum, sum_sq, n)`; `alpha/2` each, Minkowski
+/// difference, as [`lift_cs_credit`].
+pub fn mean_lift_cs(treated: (f64, f64, u64), control: (f64, f64, u64), alpha: f64) -> Option<Interval> {
+    let t = mean_cs(treated.0, treated.1, treated.2, alpha / 2.0)?;
+    let c = mean_cs(control.0, control.1, control.2, alpha / 2.0)?;
+    Some(Interval { estimate: t.estimate - c.estimate, lo: t.lo - c.hi, hi: t.hi - c.lo })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

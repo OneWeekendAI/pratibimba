@@ -153,7 +153,8 @@ export default { fetch: (req) => prb.handleRequest(req) };   // Cloudflare; Deno
 
 See `examples/next` and `examples/edge`. `examples/shop` is a small Next.js store wired to a hosted
 Core (`PRB_CORE_URL`, default `https://pratibimbaapi.meetdev.in`) with an add-to-cart and a purchase
-goal reported from server actions (`prb.track`), and the agent pack installed. The packages are not on
+reported from the server (`prb.addToCart`, and `prb.purchase` in its `/checkout` route; see
+[Commerce events](#commerce-events)), and the agent pack installed. The packages are not on
 npm yet: the examples depend on them with `file:` and need `install-links=true` in `.npmrc`, because
 Turbopack does not resolve a symlinked package outside the app.
 
@@ -184,7 +185,8 @@ the timeout. The two server-side installs above decide before any HTML is sent, 
 no flicker at all.
 
 Clicks inside a slot are reported automatically. For other goals, call
-`window.prb.track('purchase')`. Where the subject id lives follows the site's privacy mode (see
+`window.prb.track('signup')`; for a cart or an order, `window.prb.addToCart(item)` and
+`window.prb.purchase(order)` (see [Commerce events](#commerce-events)). Where the subject id lives follows the site's privacy mode (see
 [Privacy](#privacy)): `sessionStorage`, or a one-year first-party `_prb_subject` cookie (which
 turns on the `returning` feature). On a `consent_aware` site the script uses the cookie only
 with consent: `data-cookie="on"` on the tag, IAB TCF v2 purpose 1 from `__tcfapi`, a granted
@@ -396,6 +398,50 @@ sandbox rows; each sandbox learns in its own worker pass at its own clock. `/dec
 stamp a sandbox's rows with its clock, so you can also point a local SDK at `<site>~sim` and
 see what the simulated month taught it. Sandboxes are left out of the site list.
 
+## Commerce events
+
+An add-to-cart and a purchase are first-class events, with the same helpers in all three SDKs:
+
+```ts
+// @pratibimba/next, in server code for this request's visitor
+await prb.addToCart({ id: 'monday-espresso', price: 549, quantity: 1 });
+await prb.purchase({ order_id: 'ord_1042', value: 1098, currency: 'INR',
+                     items: [{ id: 'monday-espresso', price: 549, quantity: 2 }] });
+// @pratibimba/edge, for the visitor the request's cookie names
+await prb.purchase(request, { order_id: 'ord_1042', value: 1098, currency: 'INR' });
+// the script: window.prb.addToCart(item), window.prb.purchase(order)
+```
+
+- **Idempotent on `order_id`.** Core derives the event id from the site and the order id, so a
+  reloaded thank-you page, a retry, or the browser and the server both reporting the order store
+  one row. A malformed order (no order id, a negative or non-numeric value, a currency that is not
+  three letters) throws in the SDK and gets 400 from Core.
+- **`value` is the order total in major units** (49.99, not 4999) in `currency` (ISO 4217). The
+  site file's `"currency"` (default `USD`) is the one revenue is counted in; an order in another
+  currency is stored and counted in results as `other_currency_orders`, never summed.
+- **Revenue is attributed in every slot, whatever its metric.** Each slot's touches are the
+  visitor's exposed decisions whose attribution window contains the order; the slot's attributor
+  shares the value among them (all of it to the latest touch under `last_touch`, equal shares
+  under `linear`, rounded to 0.0001 with the remainder on the last share, so one order's revenue
+  sums to its value exactly). A second order in the window adds to the first. Revenue never makes
+  a decision a conversion: that is still the slot's `metric` (a slot may measure `purchase` or
+  `add_to_cart` too). An item's price on `add_to_cart` is not revenue.
+- **Results show both numbers per arm.** Every group in the results (site, slot, holdout,
+  variant) carries `conversion_rate` and `revenue_per_visitor`, each with a 95% always-valid
+  interval, and each slot and variant a `revenue_lift` against the holdout. Revenue per visitor
+  is revenue over closed, exposed decisions; its interval is the same asymptotic confidence
+  sequence as the rates, with the sample variance, so trust it once a few dozen orders are in.
+  The insights heatmap carries the same two numbers per cell, and `GET /api/decisions/<id>` the
+  decision's `revenue`.
+- **A slot can optimise revenue.** `"goal": "revenue"` with `"revenue_cap": 2000` makes its
+  bandit learn each decision's credited revenue over the cap (capped at 1) when the window closes,
+  instead of the conversion. Pick the cap near your 95th-percentile order: a smaller one makes
+  every big order look the same. The default, `"goal": "conversion"`, is unchanged.
+- **Platform webhooks carry revenue too.** The generic webhook takes `value` and `currency`; a
+  Stripe checkout's `amount_total` and `currency` are read (minor units, except Stripe's
+  zero-decimal currencies). For a goal a platform is authoritative for, a browser order is a hint
+  and takes no revenue, so an order is never counted from both.
+
 ## Conversion webhooks
 
 For checkouts you control, the platform is the source of truth for a sale, not the browser.
@@ -410,7 +456,7 @@ secret (HMAC-SHA256 over `t.body`, five-minute tolerance), counts only paid sess
 answers 200 to events it ignores so Stripe stops retrying.
 
 **Anything else.** `POST /webhook/conversion/<site>` with
-`{id, subject, event?, decision_id?, occurred_at?}`, signed exactly like Stripe: header
+`{id, subject, event?, decision_id?, occurred_at?, value?, currency?}`, signed exactly like Stripe: header
 `Pratibimba-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>.<raw body>")>`. `id` is
 your order or conversion id.
 

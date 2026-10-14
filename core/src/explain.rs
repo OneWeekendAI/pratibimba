@@ -185,6 +185,9 @@ pub struct Detail {
     /// when it took the whole conversion (always so under last touch) or none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credit: Option<f64>,
+    /// Revenue credited to this decision in the site's currency (F1); absent when none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revenue: Option<f64>,
     pub window_closes_at: DateTime<Utc>,
     pub in_holdout: bool,
     pub policy: String,
@@ -239,6 +242,7 @@ struct Row {
     corrected_at: Option<DateTime<Utc>>,
     cold_start: Option<Value>,
     credit: Option<f64>,
+    revenue: Option<f64>,
     experiment: Option<String>,
 }
 
@@ -259,6 +263,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         "SELECT d.id, d.site_id, d.slot_id, s.key, s.metric, s.attribution_window_secs, d.subject, d.variant_id, d.pool,
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
                 d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start, d.credit,
+                d.revenue::float8 AS revenue,
                 CASE WHEN d.allocation = 'experiment' THEN e.name END AS experiment
            FROM decisions d JOIN slots s ON s.id = d.slot_id LEFT JOIN experiments e ON e.id = d.experiment_id WHERE d.id = $1",
     )
@@ -290,6 +295,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         corrected_at,
         cold_start,
         credit,
+        revenue,
         experiment,
     }) = row
     else {
@@ -431,6 +437,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         settled_at: settled,
         corrected_at,
         credit: share,
+        revenue,
         window_closes_at,
         in_holdout: held,
         policy,

@@ -11,11 +11,12 @@ import { beforeBodyEnd, rewriter, type Replacement } from './markers.ts';
 import { GEO_TZ_HEADERS, TZ_COOKIE, validTimeZone, visitorTimeZone } from './timezone.ts';
 import { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
 import { MANIFEST_TTL_MS, featuresFor, manifestReader, type FeatureValues } from './features.ts';
+import { addToCartEvent, purchaseEvent, type Item, type Order } from './commerce.ts';
 
 export { rewriter, beforeBodyEnd, BEACON_JS };
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone, CONSENT_COOKIE, visitorConsent };
 export { MANIFEST_TTL_MS };
-export type { ConsentOption, FeatureValues };
+export type { ConsentOption, FeatureValues, Item, Order };
 export const VERSION = '0.1.0';
 export const SUBJECT_COOKIE = '_prb_subject';
 export const SESSION_COOKIE = '_prb_s';
@@ -210,5 +211,32 @@ export function createEdge(opts: EdgeOptions) {
     return new Response(body, { status: res.status, statusText: res.statusText, headers });
   }
 
-  return { handleRequest };
+  /** Post events for the visitor the request's subject cookie names; false when it names none. */
+  async function post(request: Request, events: object[]): Promise<boolean> {
+    const jar = cookies(request);
+    const subject = jar.get(SUBJECT_COOKIE);
+    if (!validSubject(subject)) return false;
+    const res = await f(`${core}/e`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ site: opts.site, subject, events, consent: visitorConsent(jar, opts.consent) === true }),
+    });
+    if (!res.ok) throw new Error(`Pratibimba events failed: ${res.status}`);
+    return true;
+  }
+
+  return {
+    handleRequest,
+    /** Post a goal (e.g. `signup`) for this request's visitor from edge code. */
+    track: (request: Request, name: string, o: { slot?: string; decisionId?: string } = {}) =>
+      post(request, [{ id: crypto.randomUUID(), name, slot: o.slot, decision_id: o.decisionId }]),
+    /** Post `add_to_cart` with the item for this request's visitor. Its price is not revenue. */
+    addToCart: async (request: Request, item: Item) => post(request, [addToCartEvent(item)]),
+    /**
+     * Post `purchase` with the order for this request's visitor. Core stores one row per
+     * `order_id` and shares the value among the decisions in each slot's window. Throws a
+     * TypeError for a malformed order.
+     */
+    purchase: async (request: Request, order: Order) => post(request, [purchaseEvent(order)]),
+  };
 }

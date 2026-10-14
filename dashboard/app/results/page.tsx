@@ -10,6 +10,11 @@ import { api, type Results } from '@/lib/api';
 import { ago, compact, int, pp } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
+function money(i: { estimate: number } | null | undefined, currency = 'USD') {
+  if (!i) return '—';
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(i.estimate);
+}
+
 function View() {
   const site = useParam('site')!;
   const q = useQuery({ queryKey: ['results', site], queryFn: () => api.get<Results>(`/sites/${site}/results`), refetchInterval: 30_000 });
@@ -44,6 +49,13 @@ function View() {
                   <span className="text-xs text-muted tabular">{int(s.treated.n)} policy · {int(s.holdout.n)} holdout</span>
                 </div>
                 <div className="mb-3"><LiftPill lift={s.lift} /></div>
+                {(s.treated.revenue ?? 0) + (s.holdout.revenue ?? 0) > 0 && (
+                  <p className="mb-3 text-xs text-ink-2 tabular" data-testid={`revenue-${s.key}`}>
+                    Revenue per visitor {money(s.treated.revenue_per_visitor, r.currency)} vs {money(s.holdout.revenue_per_visitor, r.currency)} holdout
+                    {s.revenue_lift && <> · lift {money(s.revenue_lift, r.currency)} ({money({ estimate: s.revenue_lift.lo }, r.currency)} to {money({ estimate: s.revenue_lift.hi }, r.currency)})</>}
+                    {s.goal === 'revenue' && <> · optimising revenue</>}
+                  </p>
+                )}
                 <LiftCurve curve={curves[s.key] ?? []} series={series} height={160} />
               </Card>
             );

@@ -139,6 +139,29 @@ for (const { r, d } of ok) {
 console.log(`\n== Reconciliation (log vs Core, per decision): ${JSON.stringify(recon)}`);
 console.log(`log: exposures accepted ${ok.filter((x) => took(x.r.exposure)).length}, clicks accepted ${ok.filter((x) => took(x.r.click)).length}; Core: exposed ${ok.filter((x) => x.d.exposed_at).length}, converted ${ok.filter((x) => x.d.outcome === 1).length}`);
 
+// ---- revenue (F1): every order in the log against the revenue Core credited, decision by decision.
+// Expected under last touch: an order's value goes to the subject's latest exposed hero decision
+// whose window contains the order. A retried order (same order_id) must count once.
+const orders = visits.filter((r) => r.order && r.order.sent?.[0]?.status === 303);
+if (orders.length) {
+  const bySubject = {};
+  for (const x of ok) if (x.d.exposed_at) (bySubject[x.r.subject] ??= []).push(x);
+  const expected = {};
+  let unattributed = 0;
+  for (const r of orders) {
+    const at = r.order.sent[0].at;
+    const touches = (bySubject[r.subject] ?? []).filter((x) => x.d.created_at <= at && at <= x.d.window_closes_at).sort((a, b) => a.d.created_at.localeCompare(b.d.created_at));
+    const last = touches.at(-1);
+    if (!last) { unattributed++; continue; }
+    expected[last.r.decision] = (expected[last.r.decision] ?? 0) + r.order.value;
+  }
+  const mism = ok.filter((x) => Math.round(100 * (expected[x.r.decision] ?? 0)) !== Math.round(100 * (x.d.revenue ?? 0)));
+  const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+  console.log(`\n== Revenue (log vs Core): ${orders.length} orders (${orders.filter((r) => r.order.sent.length > 1).length} sent twice), INR ${sum(orders.map((r) => r.order.value))}; ${unattributed} with no touch in the window`);
+  console.log(`expected credited INR ${sum(Object.values(expected))}; Core credited INR ${sum(ok.map((x) => x.d.revenue ?? 0))}; decisions that differ: ${mism.length}`);
+  for (const x of mism.slice(0, 5)) console.log(`  ${x.r.decision}: expected ${expected[x.r.decision] ?? 0}, Core ${x.d.revenue ?? 0}`);
+}
+
 // ---- results page, recomputed from the log
 if (process.argv.includes('--results')) {
   const res = await api('/sites/shop/results');
@@ -151,6 +174,10 @@ if (process.argv.includes('--results')) {
   };
   console.log('\n== Results page vs log (Core minus the pre-run snapshot)');
   const line = (name, core, preC, m) => console.log(`  ${name.padEnd(14)} Core n=${core.n - (preC?.n ?? 0)} conv=${core.conversions - (preC?.conversions ?? 0)} credit=${(core.credit - (preC?.credit ?? 0)).toFixed(2)} | log n=${m.n} conv=${m.conversions} clicks=${m.clicks_in_log}`);
+  const money = (name, core, preC, xs) => console.log(`  ${name.padEnd(14)} Core revenue=${(core.revenue - (preC?.revenue ?? 0)).toFixed(2)} rpv=${JSON.stringify(core.revenue_per_visitor)} | log revenue=${xs.reduce((a, x) => a + (x.d.revenue ?? 0), 0).toFixed(2)}`);
+  const closed = ok.filter((x) => x.d.exposed_at && x.d.window_closes_at < new Date().toISOString());
+  money('holdout', hero.holdout, preHero?.holdout, closed.filter((x) => x.d.in_holdout));
+  money('treated', hero.treated, preHero?.treated, closed.filter((x) => !x.d.in_holdout));
   line('holdout', hero.holdout, preHero?.holdout, mine((x) => x.d.in_holdout));
   line('treated', hero.treated, preHero?.treated, mine((x) => !x.d.in_holdout));
   for (const v of hero.variants) line(v.key, v.counts, preHero?.variants.find((p) => p.key === v.key)?.counts, mine((x) => !x.d.in_holdout && x.d.variant === v.key));

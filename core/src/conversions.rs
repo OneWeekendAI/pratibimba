@@ -107,6 +107,15 @@ pub struct Conversion<'a> {
     pub decision_id: Option<Uuid>,
     /// When the platform says it happened; capped at the site's clock.
     pub occurred_at: Option<DateTime<Utc>>,
+    /// The order's value in the currency's major unit and its upper-case ISO 4217 code (F1).
+    pub value: Option<(f64, String)>,
+}
+
+/// Stripe amounts are in the currency's smallest unit, except for its zero-decimal currencies
+/// (stripe.com/docs/currencies#zero-decimal).
+pub fn major_units(amount: i64, currency: &str) -> f64 {
+    const ZERO_DECIMAL: [&str; 16] = ["bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf"];
+    if ZERO_DECIMAL.contains(&currency.to_ascii_lowercase().as_str()) { amount as f64 } else { amount as f64 / 100.0 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,8 +137,8 @@ pub async fn record(pool: &PgPool, c: &Conversion<'_>) -> anyhow::Result<Recorde
     let r = sqlx::query(
         "WITH clock AS (SELECT COALESCE(sim_now, now()) AS at FROM sites WHERE id = $2),
               ins AS (
-                 INSERT INTO events (id, site_id, subject, name, decision_id, received_at, source, external_id, occurred_at)
-                 SELECT $1, $2, $3, $4, $5, clock.at, $6, $7, LEAST(COALESCE($8, clock.at), clock.at) FROM clock
+                 INSERT INTO events (id, site_id, subject, name, decision_id, received_at, source, external_id, occurred_at, value, currency)
+                 SELECT $1, $2, $3, $4, $5, clock.at, $6, $7, LEAST(COALESCE($8, clock.at), clock.at), $9::int8 / 10000.0, $10 FROM clock
                  ON CONFLICT (id) DO NOTHING
                  RETURNING id)
          INSERT INTO pending_events (event_id) SELECT id FROM ins",
@@ -142,6 +151,8 @@ pub async fn record(pool: &PgPool, c: &Conversion<'_>) -> anyhow::Result<Recorde
     .bind(c.source.as_str())
     .bind(c.external_id)
     .bind(c.occurred_at)
+    .bind(c.value.as_ref().map(|v| crate::commerce::units(v.0)))
+    .bind(c.value.as_ref().map(|v| v.1.clone()))
     .execute(&mut *tx)
     .await?;
     sqlx::query("SELECT pg_notify($1, '')").bind(crate::http::events::CHANNEL).execute(&mut *tx).await?;

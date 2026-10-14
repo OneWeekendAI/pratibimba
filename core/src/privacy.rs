@@ -610,6 +610,7 @@ mod tests {
             variant: rescore.then(|| "gift".to_string()),
             features: rescore.then(|| json!({})),
             score: rescore.then_some(0.5),
+            ..Default::default()
         }
     }
 
