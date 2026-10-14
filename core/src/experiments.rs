@@ -111,14 +111,18 @@ pub async fn create(pool: &PgPool, n: New) -> Result<Value, ApiError> {
     let mut tx = pool.begin().await?;
     let now = site_clock(&mut tx, &n.site).await?;
     // The slot row lock serialises two creates racing for the same window.
-    let slot: Option<(i64, String)> = sqlx::query_as("SELECT id, metric FROM slots WHERE site_id = $1 AND key = $2 FOR UPDATE")
+    let slot: Option<(i64, String, String)> = sqlx::query_as("SELECT id, metric, kind FROM slots WHERE site_id = $1 AND key = $2 FOR UPDATE")
         .bind(&n.site)
         .bind(&n.slot)
         .fetch_optional(&mut *tx)
         .await?;
-    let Some((slot_id, slot_metric)) = slot else {
+    let Some((slot_id, slot_metric, kind)) = slot else {
         return Err(ApiError::NotFound(format!("unknown slot {:?} on site {:?}", n.slot, n.site)));
     };
+    // An experiment assigns one arm; a sorted slot serves an order (see `crate::sorted`).
+    if kind == crate::sorted::KIND {
+        return Err(ApiError::BadRequest(format!("slot {:?} is sorted: an experiment cannot assign an order", n.slot)));
+    }
     let metric = n.metric.unwrap_or_else(|| slot_metric.clone());
     if metric != slot_metric {
         return Err(ApiError::BadRequest(format!(

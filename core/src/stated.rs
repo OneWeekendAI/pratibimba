@@ -409,7 +409,13 @@ pub fn validate_slot(slot: &crate::site_file::SlotSpec) -> anyhow::Result<()> {
             return Ok(());
         }
         Some("picker") => {}
-        Some(other) => bail!("slot {k:?}: kind {other:?} must be \"swap\" or \"picker\""),
+        Some(crate::sorted::KIND) => {
+            if slot.picker.is_some() {
+                bail!("slot {k:?}: only a kind \"picker\" slot takes picker options");
+            }
+            return Ok(());
+        }
+        Some(other) => bail!("slot {k:?}: kind {other:?} must be \"swap\", \"picker\" or \"sorted\""),
     }
     if slot.in_session {
         bail!("slot {k:?}: a picker cannot be in_session; the visitor is using it");

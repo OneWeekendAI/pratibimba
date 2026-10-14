@@ -458,10 +458,11 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
     // Credited decisions are already settled (their record is final); `learn_pending` brings them
     // back once, at the same close, for their lesson.
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(Uuid, i64, i64, Value, bool, bool, bool, f64, Option<f64>)> = sqlx::query_as(&scoped(
+    let rows: Vec<(Uuid, i64, i64, Value, bool, bool, bool, f64, Option<f64>, bool)> = sqlx::query_as(&scoped(
         "SELECT d.id, d.slot_id, d.variant_id, d.features, d.exposed_at IS NOT NULL, d.in_holdout,
                 d.learn_pending, coalesce(d.credit, 1),
-                CASE WHEN s.goal = 'revenue' THEN least(coalesce(d.revenue, 0) / s.revenue_cap, 1)::float8 END
+                CASE WHEN s.goal = 'revenue' THEN least(coalesce(d.revenue, 0) / s.revenue_cap, 1)::float8 END,
+                d.ranking IS NOT NULL
            FROM decisions d JOIN slots s ON s.id = d.slot_id JOIN sites t ON t.id = d.site_id
           WHERE (d.settled_at IS NULL OR d.learn_pending) AND {scope}
             AND d.created_at + make_interval(secs => s.attribution_window_secs
@@ -480,8 +481,19 @@ async fn settle_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Opti
     let mut local = Stats::default();
     // A revenue-goal slot (`revenue` is Some) learns each decision's credited revenue over its
     // cap, converted or not; any other slot learns the conversion credit, as before.
-    for (id, slot, variant, features, exposed, held, pending, credit, revenue) in &rows {
-        if *pending {
+    for (id, slot, variant, features, exposed, held, pending, credit, revenue, sorted) in &rows {
+        // A sorted decision learns its whole order at once, by the cascade (see `crate::sorted`).
+        if *sorted && (*pending || *exposed) {
+            if *pending {
+                sqlx::query("UPDATE decisions SET learn_pending = false WHERE id = $1").bind(id).execute(&mut *tx).await?;
+            } else {
+                sqlx::query("UPDATE decisions SET outcome = 0, settled_at = $2 WHERE id = $1").bind(id).bind(now).execute(&mut *tx).await?;
+                local.settled_negative += 1;
+            }
+            if !*held {
+                crate::sorted::learn(&mut tx, *id, *slot, features, revenue.unwrap_or(if *pending { *credit } else { 1.0 })).await?;
+            }
+        } else if *pending {
             sqlx::query("UPDATE decisions SET learn_pending = false WHERE id = $1").bind(id).execute(&mut *tx).await?;
             learn(&mut tx, *slot, *variant, features, revenue.unwrap_or(*credit)).await?;
         } else if *exposed {

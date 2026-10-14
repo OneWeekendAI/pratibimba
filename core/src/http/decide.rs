@@ -117,7 +117,20 @@ pub struct DecideResponse {
     pub variant: String,
     /// HTML to swap in; `null` means keep the page's own content (the baseline).
     pub payload: Option<String>,
+    /// A sorted slot's items, best first (see [`crate::sorted`]); absent for any other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<Vec<String>>,
     pub explanation: Value,
+}
+
+/// Attach a sorted decision's order (as keys) to its response and its explanation.
+fn with_order(mut resp: DecideResponse, ranking: Option<&[i64]>, arms: &[ArmRow]) -> DecideResponse {
+    if let Some(ranking) = ranking {
+        let keys: Vec<String> = ranking.iter().filter_map(|id| arms.iter().find(|a| a.0 == *id).map(|a| a.1.clone())).collect();
+        resp.explanation["order"] = json!(keys);
+        resp.order = Some(keys);
+    }
+    resp
 }
 
 /// The header the edge Worker presents its token in (see [`crate::edge::Edge::token_matches`]).
@@ -223,7 +236,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        (SELECT p.salt FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day >= day.d ORDER BY p.day LIMIT 1) AS salt,
        EXISTS (SELECT 1 FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day < day.d) AS stale_salts,
        (SELECT v FROM subj) AS subject,
-       s.id AS slot_id, s.cold_start_exposures,
+       s.id AS slot_id, s.cold_start_exposures, s.sorted AS sorted_spec, r.ranking AS st_ranking,
        a.arm_ids, a.arm_keys, a.arm_payloads, a.arm_baselines, a.arm_shares,
        (SELECT jsonb_agg(jsonb_build_array(v.id, v.key, g.id, g.name, g.predicate, g.status) ORDER BY g.id, v.id)
           FROM variants v JOIN segments g ON g.id = v.audience_id
@@ -258,7 +271,8 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        WHERE slot_id = s.id AND starts_at <= t.at AND t.at < least(stops_at, coalesce(stopped_at, 'infinity'))
        ORDER BY starts_at LIMIT 1) x ON true
   LEFT JOIN LATERAL (
-      SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start, experiment_id, allocation, created_at
+      SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start, experiment_id, allocation, created_at,
+             ranking
         FROM decisions
        WHERE slot_id = s.id AND subject = (SELECT v FROM subj)
          AND created_at > t.at - make_interval(secs => s.decision_ttl_secs::float8) AND created_at <= t.at
@@ -296,6 +310,10 @@ struct SlotSnapshot {
     declared: std::collections::BTreeMap<String, bool>,
     experiment: Option<experiments::Running>,
     sticky: Option<StickyRow>,
+    /// A sorted slot's `{visible, order}` (see [`crate::sorted`]).
+    sorted: Option<Value>,
+    /// The sticky decision's served order, when the slot is sorted.
+    sticky_ranking: Option<Vec<i64>>,
     model: Option<(i64, Value)>,
     /// `(exposures so far, served per arm)` while the slot is in cold start, else `None`.
     cold: Option<(i64, Vec<(i64, i64)>)>,
@@ -395,6 +413,8 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                 declared,
                 experiment,
                 sticky,
+                sorted: row.try_get("sorted_spec")?,
+                sticky_ranking: row.try_get("st_ranking")?,
                 model,
                 cold,
             })
@@ -554,7 +574,13 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     };
     let mut arms = slot.arms;
     // The kill switch: a paused site serves only the page's own content.
-    if paused {
+    // A sorted slot's items, by key in the declared default order.
+    let sorted_order: Option<Vec<String>> = slot
+        .sorted
+        .as_ref()
+        .map(|v| v["order"].as_array().map(|a| a.iter().filter_map(|k| k.as_str().map(String::from)).collect()).unwrap_or_default());
+    // The kill switch: a sorted slot keeps every item and serves the default order.
+    if paused && sorted_order.is_none() {
         arms.retain(|a| a.3);
         if arms.is_empty() {
             return Err(ApiError::Conflict(format!("site {:?} is paused", req.site)));
@@ -576,7 +602,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let declared = crate::features::values(&slot.declared, &ctx.features, identified)?;
     let key_of = |id: i64| arms.iter().find(|a| a.0 == id).map(|a| (a.1.clone(), a.2.clone()));
     // A running experiment overlays the bandit (see `crate::experiments`); the kill switch wins.
-    let experiment = if paused { None } else { slot.experiment };
+    let experiment = if paused || sorted_order.is_some() { None } else { slot.experiment };
     let experiment_id = experiment.as_ref().map(|e| e.id);
 
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
@@ -584,12 +610,20 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
         // A visitor who has stated something new since gets a fresh decision, and so does one
         // decided before an experiment started or stopped.
         let same_statement = stated::from_features(&features) == said_now;
-        if let (true, true, Some((key, payload))) = (same_statement, exp_id == experiment_id, key_of(variant_id)) {
+        // A sorted decision reuses its order only while every item in it is still served.
+        let order_ok = match (&sorted_order, &slot.sticky_ranking) {
+            (None, _) => true,
+            (Some(_), Some(r)) => r.iter().all(|id| key_of(*id).is_some()),
+            (Some(_), None) => false,
+        };
+        if let (true, true, true, Some((key, payload))) = (order_ok, same_statement, exp_id == experiment_id, key_of(variant_id)) {
             let auds = auds.unwrap_or_else(|| json!([]));
             let rec = record(id, variant_id, &features, &scores, seed as u64, &policy, version, held, &auds, &cold, exp_id, &allocation, created);
             let alloc = Allocation { kind: &allocation, experiment: experiment.as_ref() };
             let made = Made { subject: req.subject.clone(), at, record: rec };
-            return Ok((response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc), made));
+            let resp = response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc);
+            let ranking = if sorted_order.is_some() { slot.sticky_ranking.as_deref() } else { None };
+            return Ok((with_order(resp, ranking, &arms), made));
         }
     }
 
@@ -643,11 +677,18 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
         }
         _ => None,
     };
-    let cold = if held || assigned.is_some() { None } else { cold_start(cold_until, slot.cold, &ids, seed) };
-    let chosen = match (held, baseline, assigned, &cold) {
-        (true, Some(b), _, _) => b,
-        (_, _, Some(arm), _) => arm,
-        (_, _, _, Some((arm, _))) => *arm,
+    // A sorted slot: the order is the scores, best first; held out or paused, the default order.
+    let ranking: Option<Vec<i64>> = sorted_order.as_ref().map(|order| {
+        let keyed: Vec<(i64, String)> = arms.iter().map(|a| (a.0, a.1.clone())).collect();
+        let default = crate::sorted::default_order(order, &keyed, &ids);
+        if held || paused { default } else { crate::sorted::rank(&scores, &default) }
+    });
+    let cold = if held || assigned.is_some() || ranking.is_some() { None } else { cold_start(cold_until, slot.cold, &ids, seed) };
+    let chosen = match (&ranking, held, baseline, assigned, &cold) {
+        (Some(r), ..) => r[0],
+        (_, true, Some(b), _, _) => b,
+        (_, _, _, Some(arm), _) => arm,
+        (_, _, _, _, Some((arm, _))) => *arm,
         _ => picked,
     };
     let allocation = if assigned.is_some() { "experiment" } else { "bandit" };
@@ -671,8 +712,8 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
         "WITH gone AS (SELECT EXISTS (SELECT 1 FROM erasures WHERE site_id = $2 AND subject_hash = $20) AS g),
               ins AS (
              INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences, cold_start,
-                                    experiment_id, allocation)
-             SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17, $18, $19 FROM gone WHERE NOT gone.g RETURNING 1),
+                                    experiment_id, allocation, ranking)
+             SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17, $18, $19, $21 FROM gone WHERE NOT gone.g RETURNING 1),
               hooks AS (
              INSERT INTO webhook_deliveries (subscription_id, event, idempotency_key, payload)
              SELECT id, 'decision', $14, $15 FROM webhook_subscriptions WHERE site_id = $2 AND 'decision' = ANY(events) AND EXISTS (SELECT 1 FROM ins))
@@ -698,6 +739,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     .bind(experiment_id)
     .bind(allocation)
     .bind(privacy::subject_hash(&req.site, raw))
+    .bind(&ranking)
     .fetch_one(&mut *tx)
     .await?;
     if erased {
@@ -707,7 +749,8 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let rec = record(id, chosen, &features, &scores_json, seed, policy, version, in_holdout, &audiences, &cold, experiment_id, allocation, at);
     let made = Made { subject: req.subject.clone(), at, record: rec };
     let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
-    Ok((response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc), made))
+    let resp = response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc);
+    Ok((with_order(resp, ranking.as_deref(), &arms), made))
 }
 
 /// Who chose the treated arm, for the explanation.
@@ -762,6 +805,7 @@ fn response(
         slot: slot.to_string(),
         variant,
         payload,
+        order: None,
         explanation: json!({
             "policy": policy,
             "policy_version": version,

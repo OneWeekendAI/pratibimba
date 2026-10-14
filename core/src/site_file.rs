@@ -83,12 +83,18 @@ pub struct SlotSpec {
     /// decision counts as a full success. Pick about the 95th percentile of an order.
     #[serde(default)]
     pub revenue_cap: Option<f64>,
+    /// A `kind: "sorted"` slot's options (see [`crate::sorted`]); refused on any other kind.
+    #[serde(default)]
+    pub sorted: Option<crate::sorted::SortedSpec>,
     pub variants: Vec<VariantSpec>,
 }
 
 impl SlotSpec {
     pub fn is_picker(&self) -> bool {
         self.kind.as_deref() == Some("picker")
+    }
+    pub fn is_sorted(&self) -> bool {
+        self.kind.as_deref() == Some(crate::sorted::KIND)
     }
 }
 
@@ -168,8 +174,9 @@ impl SiteFile {
             check_attribution(&format!("slot {k:?}"), slot.attribution.as_deref())?;
             check_goal(&format!("slot {k:?}"), slot.goal.as_deref(), slot.revenue_cap)?;
             crate::stated::validate_slot(slot)?;
+            crate::sorted::validate_slot(slot)?;
             let baselines = slot.variants.iter().filter(|v| v.baseline).count();
-            if baselines != 1 {
+            if baselines != 1 && !slot.is_sorted() {
                 bail!("slot {k:?}: exactly one variant must be marked baseline (found {baselines})");
             }
             let mut keys = std::collections::HashSet::new();
@@ -179,7 +186,7 @@ impl SiteFile {
                 }
                 match (v.baseline, &v.html) {
                     (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
-                    (false, None) if !slot.is_picker() => bail!("slot {k:?}: variant {:?} needs html", v.key),
+                    (false, None) if !slot.is_picker() && !slot.is_sorted() => bail!("slot {k:?}: variant {:?} needs html", v.key),
                     _ => {}
                 }
             }
@@ -270,13 +277,13 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
             "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures, attribution,
-                                goal, revenue_cap)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                goal, revenue_cap, sorted)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
                  attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
                  kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker,
                  cold_start_exposures = EXCLUDED.cold_start_exposures, attribution = EXCLUDED.attribution,
-                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap
+                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap, sorted = EXCLUDED.sorted
              RETURNING id",
         )
         .bind(&file.site)
@@ -292,6 +299,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(&slot.attribution)
         .bind(slot.goal.as_deref().unwrap_or("conversion"))
         .bind(slot.revenue_cap)
+        .bind(crate::sorted::stored(slot))
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;
@@ -305,7 +313,9 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         // Clear the baseline flag first so moving it between variants never trips the
         // one-baseline index halfway through.
         sqlx::query("UPDATE variants SET is_baseline = false WHERE slot_id = $1").bind(slot_id).execute(&mut *tx).await?;
-        for v in &slot.variants {
+        for (i, v) in slot.variants.iter().enumerate() {
+            // A sorted slot's first item stands as its baseline: the head of the default order.
+            let baseline = v.baseline || (slot.is_sorted() && i == 0);
             sqlx::query(
                 "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at, approved_model_version)
                  VALUES ($1, $2, $3, $4, 'approved', $5, now(), (SELECT version FROM models WHERE slot_id = $1))
@@ -317,7 +327,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             .bind(slot_id)
             .bind(&v.key)
             .bind(&v.html)
-            .bind(v.baseline)
+            .bind(baseline)
             .bind(APPROVER)
             .execute(&mut *tx)
             .await?;
