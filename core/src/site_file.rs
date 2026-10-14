@@ -45,6 +45,10 @@ pub struct SiteFile {
     /// Omitted: keep the current value.
     #[serde(default)]
     pub currency: Option<String>,
+    /// Visitor history as learner features ([`crate::history`]). Omitted: keep the current
+    /// block; `enabled: false` turns it off.
+    #[serde(default)]
+    pub history: Option<crate::history::Spec>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -142,6 +146,9 @@ impl SiteFile {
         }
         if let Some(f) = &self.features {
             crate::features::validate(f)?;
+        }
+        if let Some(h) = &self.history {
+            h.validate()?;
         }
         check_attribution("site", self.attribution.as_deref())?;
         if let Some(c) = &self.currency {
@@ -263,6 +270,10 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(file.currency.as_deref().and_then(crate::commerce::currency))
         .execute(&mut *tx)
         .await?;
+    if let Some(h) = &file.history {
+        let v = h.enabled.then(|| serde_json::to_value(h)).transpose()?;
+        sqlx::query("UPDATE sites SET history = $2 WHERE id = $1").bind(&file.site).bind(v).execute(&mut *tx).await?;
+    }
     if let Some(features) = &file.features {
         sqlx::query("DELETE FROM site_features WHERE site_id = $1").bind(&file.site).execute(&mut *tx).await?;
         for f in features {

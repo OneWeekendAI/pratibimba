@@ -40,8 +40,9 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 pub const MODES: [&str; 3] = ["cookieless", "consent_aware", "full"];
 /// The optional fields `fields_allowed` may name. `tz_offset` covers the visitor's clock in every
-/// form: the decide context's offset and named zone (`tz`), and the event batch's offset; `rescore` covers a rescore event's variant, features and score.
-pub const FIELDS: [&str; 9] = ["returning", "mobile", "from_ad", "stated", "tz_offset", "slot", "decision_id", "picks", "rescore"];
+/// form: the decide context's offset and named zone (`tz`), and the event batch's offset; `rescore` covers a rescore event's variant, features and score;
+/// `history` lets decide read the visitor's own stored history ([`crate::history`]).
+pub const FIELDS: [&str; 10] = ["returning", "mobile", "from_ad", "stated", "tz_offset", "slot", "decision_id", "picks", "rescore", "history"];
 /// The prefix of the token an erased subject's decisions are filed under.
 pub const ERASED: &str = "erased:";
 /// The prefix of a cookieless pseudonym.

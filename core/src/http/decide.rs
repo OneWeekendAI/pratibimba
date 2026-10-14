@@ -219,10 +219,22 @@ type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>
 /// Nothing here is cached: each read is the database's state at this statement, so an approval,
 /// a retirement, a pause, a model update, a new experiment or a privacy-mode change applies to the
 /// very next decide, as it did when these were separate statements.
-const SNAPSHOT: &str = "
+///
+/// The visitor's history ([`crate::history`]) is one more column of the same statement, read only
+/// for an identified request on a site that admits `history` and uses it (a `history:` block, or
+/// an approved variant of this slot gated on a history rule).
+static SNAPSHOT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let needed = format!(
+        "t.history IS NOT NULL OR EXISTS (SELECT 1 FROM variants v JOIN segments g ON g.id = v.audience_id
+                                            WHERE v.slot_id = s.id AND v.status = 'approved' AND g.predicate ?| array['{}'])",
+        crate::history::KEYS.join("','")
+    );
+    SNAPSHOT_SQL.replace("__HISTORY__", &crate::history::sql(&needed))
+});
+const SNAPSHOT_SQL: &str = "
 WITH t AS (
     SELECT privacy_mode, fields_allowed, COALESCE(sim_now, now()) AS at, holdout_fraction, paused_at IS NOT NULL AS paused,
-           night_start_hour, night_end_hour
+           night_start_hour, night_end_hour, currency, history
       FROM sites WHERE id = $1),
 day AS (SELECT (at AT TIME ZONE 'UTC')::date AS d FROM t),
 subj AS (
@@ -249,6 +261,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
                      ORDER BY slot_id, received_at DESC) p)
        END AS picks,
        (SELECT jsonb_object_agg(f.key, f.pii) FROM site_features f WHERE f.site_id = $1) AS declared,
+       t.history AS history_spec, __HISTORY__ AS visitor_history,
        x.id AS exp_id, x.name AS exp_name, x.arms AS exp_arms,
        r.id AS st_id, r.variant_id AS st_variant, r.features AS st_features, r.scores AS st_scores, r.seed AS st_seed,
        r.policy_version AS st_version, r.in_holdout AS st_held, r.policy AS st_policy, r.audiences AS st_audiences,
@@ -308,6 +321,10 @@ struct SlotSnapshot {
     site_keys: Vec<String>,
     picks: Vec<Vec<String>>,
     declared: std::collections::BTreeMap<String, bool>,
+    /// The site's `history:` block (disabled when absent).
+    history_spec: crate::history::Spec,
+    /// This visitor's history facts, when the request may read them and the site uses them.
+    history: Option<crate::history::Facts>,
     experiment: Option<experiments::Running>,
     sticky: Option<StickyRow>,
     /// A sorted slot's `{visible, order}` (see [`crate::sorted`]).
@@ -321,7 +338,7 @@ struct SlotSnapshot {
 
 async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified_subject: &str, pseudonym: Option<&str>) -> Result<Option<Snapshot>, ApiError> {
     use sqlx::Row;
-    let Some(row) = sqlx::query(SNAPSHOT)
+    let Some(row) = sqlx::query(SNAPSHOT.as_str())
         .bind(&req.site)
         .bind(&req.slot)
         .bind(identified_subject)
@@ -403,8 +420,12 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                     Some((n, served))
                 }
             };
+            let history_spec = crate::history::Spec::parse(row.try_get::<Option<Value>, _>("history_spec")?.as_ref());
+            let history = row.try_get::<Option<Value>, _>("visitor_history")?.and_then(|v| crate::history::Facts::from_row(&v, &history_spec));
             Some(SlotSnapshot {
                 id,
+                history_spec,
+                history,
                 cold_until: row.try_get("cold_start_exposures")?,
                 arms,
                 gates,
@@ -591,7 +612,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     }
     // Promoted audiences gate their variants: a visitor outside the audience never gets them.
     let night = crate::insights::localtime::NightWindow { start: night_start as u8, end: night_end as u8 };
-    let audiences = gate_by_audience(slot.gates, &ctx, at, night, &mut arms);
+    let audiences = gate_by_audience(slot.gates, &ctx, at, night, slot.history.as_ref(), &mut arms);
     if arms.is_empty() {
         return Err(ApiError::Conflict(format!("no variant of slot {:?} is open to this visitor's audiences", req.slot)));
     }
@@ -599,7 +620,12 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let site_keys = slot.site_keys;
     let said = stated::resolve_with(&site_keys, &ctx.stated, slot.picks)?;
     let said_now = stated::from_features(&stated::with_stated(json!({}), &site_keys, &said));
-    let declared = crate::features::values(&slot.declared, &ctx.features, identified)?;
+    let mut declared = crate::features::values(&slot.declared, &ctx.features, identified)?;
+    // History features join the declared ones (same prefix): only with facts, so a request that may
+    // not read history carries none of these dimensions.
+    if let (true, Some(h)) = (slot.history_spec.enabled, &slot.history) {
+        declared.extend(h.values(&slot.history_spec));
+    }
     let key_of = |id: i64| arms.iter().find(|a| a.0 == id).map(|a| (a.1.clone(), a.2.clone()));
     // A running experiment overlays the bandit (see `crate::experiments`); the kill switch wins.
     let experiment = if paused || sorted_order.is_some() { None } else { slot.experiment };
@@ -840,6 +866,7 @@ fn gate_by_audience(
     ctx: &Ctx,
     at: chrono::DateTime<chrono::Utc>,
     night: crate::insights::localtime::NightWindow,
+    history: Option<&crate::history::Facts>,
     arms: &mut Vec<ArmRow>,
 ) -> Value {
     use crate::insights::{localtime::LocalTime, segments};
@@ -853,7 +880,7 @@ fn gate_by_audience(
         if out.last().and_then(|o| o["id"].as_i64()) != Some(gid) {
             let matched = status == "audience"
                 && segments::Predicate::parse(&predicate)
-                    .is_ok_and(|p| (ctx.tz_offset.is_some() || !p.uses_local_time()) && p.matches(&visit));
+                    .is_ok_and(|p| (ctx.tz_offset.is_some() || !p.uses_local_time()) && p.matches_with(&visit, history));
             out.push(json!({ "id": gid, "name": name, "matched": matched, "variants": [] }));
         }
         let entry = out.last_mut().expect("pushed above");

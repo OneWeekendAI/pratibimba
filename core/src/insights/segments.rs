@@ -56,6 +56,8 @@ pub fn ctx_bits(features: &Value) -> u8 {
 pub struct Predicate {
     bools: BTreeMap<String, bool>,
     hours: Option<(u8, u8)>,
+    /// History conditions (F3), by key order; see [`crate::history`].
+    history: Vec<crate::history::Cond>,
 }
 
 impl Predicate {
@@ -64,7 +66,7 @@ impl Predicate {
         if obj.is_empty() {
             return Err("a predicate needs at least one condition".into());
         }
-        let mut p = Predicate { bools: BTreeMap::new(), hours: None };
+        let mut p = Predicate { bools: BTreeMap::new(), hours: None, history: vec![] };
         for (k, val) in obj {
             if DEMOGRAPHIC.contains(&k.as_str()) {
                 return Err(format!("{k:?} is a demographic attribute; segments use behaviour and situation only"));
@@ -76,20 +78,32 @@ impl Predicate {
                     (Some(f), Some(t)) => p.hours = Some((f, t)),
                     _ => return Err("hour_local is [from, to], both 0-23".into()),
                 }
+            } else if crate::history::KEYS.contains(&k.as_str()) {
+                p.history.push(crate::history::Cond::parse(k, val)?);
             } else if BOOL_FEATURES.contains(&k.as_str()) {
                 p.bools.insert(k.clone(), val.as_bool().ok_or_else(|| format!("{k} takes true or false"))?);
             } else {
-                return Err(format!("unknown feature {k:?}; allowed: {}, hour_local", BOOL_FEATURES.join(", ")));
+                return Err(format!("unknown feature {k:?}; allowed: {}, hour_local, {}", BOOL_FEATURES.join(", "), crate::history::KEYS.join(", ")));
             }
         }
         Ok(p)
     }
 
     pub fn from_bools(conds: &[(&str, bool)]) -> Predicate {
-        Predicate { bools: conds.iter().map(|(k, v)| (k.to_string(), *v)).collect(), hours: None }
+        Predicate { bools: conds.iter().map(|(k, v)| (k.to_string(), *v)).collect(), hours: None, history: vec![] }
     }
 
+    /// Whether the visit matches. A history condition has no facts here, so it matches nothing:
+    /// see [`Predicate::matches_with`].
     pub fn matches(&self, v: &Visit) -> bool {
+        self.matches_with(v, None)
+    }
+
+    /// [`Predicate::matches`] with the visitor's history facts, when decide has them.
+    pub fn matches_with(&self, v: &Visit, history: Option<&crate::history::Facts>) -> bool {
+        if !self.history.iter().all(|c| c.matches(history)) {
+            return false;
+        }
         if let Some((f, t)) = self.hours {
             let h = v.local.hour_local;
             let inside = if f <= t { h >= f && h <= t } else { h >= f || h <= t };
@@ -108,6 +122,9 @@ impl Predicate {
         if let Some((f, t)) = self.hours {
             m.insert("hour_local".into(), serde_json::json!([f, t]));
         }
+        for c in &self.history {
+            m.insert(c.key().into(), c.to_json());
+        }
         Value::Object(m)
     }
 
@@ -123,7 +140,12 @@ impl Predicate {
     }
 
     pub fn len(&self) -> usize {
-        self.bools.len() + self.hours.is_some() as usize
+        self.bools.len() + self.hours.is_some() as usize + self.history.len()
+    }
+
+    /// True when the predicate reads the visitor's history (F3).
+    pub fn uses_history(&self) -> bool {
+        !self.history.is_empty()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -154,6 +176,7 @@ impl Predicate {
         if let Some((f, t)) = self.hours {
             parts.push(format!("{f:02}:00-{:02}:59 local", t));
         }
+        parts.extend(self.history.iter().map(|c| c.describe()));
         let mut s = parts.join(", ");
         if let Some(c) = s.get(0..1) {
             s = c.to_uppercase() + &s[1..];

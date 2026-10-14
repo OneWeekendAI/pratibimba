@@ -301,3 +301,49 @@ async fn an_erase_that_commits_while_decide_waits_is_honoured() {
     assert!(matches!(got, Err(pratibimba::http::ApiError::Gone(_))), "{:?}", got.map(|d| d.variant));
     assert_eq!(n, 0, "no decision for an erased subject");
 }
+
+/// A full-mode decide that reads the visitor's history (F3) for both the learner (a `history:`
+/// block) and a gate (an audience on "last order 30+ days ago") still makes four round trips:
+/// the history is a column of the one snapshot statement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_warm_decide_that_reads_history_makes_four_round_trips() {
+    let db = FreshDb::new().await;
+    pratibimba::db::migrate(&db.pool).await.unwrap();
+    let file = json!({
+        "site": "demo", "origin": "http://localhost:5173", "privacy_mode": "full",
+        "history": { "views": [ { "key": "filters", "category": "filters", "days": 30 } ] },
+        "slots": [ { "key": "hero", "selector": "#hero",
+                     "variants": [ { "key": "baseline", "baseline": true }, { "key": "gift", "html": "<h1>Back</h1>" } ] } ]
+    });
+    pratibimba::site_file::apply(&db.pool, &file_from(file)).await.unwrap();
+    set_holdout(&db.pool, 0.0).await;
+    let admin = admin_app(&db.pool);
+    let aud = api_post(&admin, "/api/sites/demo/segments", json!({ "predicate": { "days_since_last_purchase": { "gte": 30 } }, "actor": "owner" })).await.json()["id"]
+        .as_i64()
+        .unwrap();
+    api_post(&admin, &format!("/api/segments/{aud}/promote"), json!({ "actor": "owner" })).await;
+    let gift = variant_id(&db.pool, "gift").await;
+    let r = api_post(&admin, &format!("/api/variants/{gift}/audience"), json!({ "audience": aud, "actor": "owner" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    sqlx::query(
+        "INSERT INTO events (id, site_id, subject, name, received_at, order_id, value, currency, items) VALUES
+           (gen_random_uuid(), 'demo', 'fresh', 'purchase', now() - interval '41 days', 'o1', 600, 'USD', NULL),
+           (gen_random_uuid(), 'demo', 'fresh', 'click', now() - interval '1 day', NULL, NULL, NULL, '[{\"id\": \"f\", \"category\": \"filters\"}]')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (port, trips, pings) = counting_proxy().await;
+    let state = AppState::with_seed(proxied_pool(&db, port).await, 7);
+    for s in ["warm-1", "warm-2"] {
+        decide(&state, &req("hero", s, json!({}))).await.unwrap();
+    }
+    let fresh = trips_of(&state, &trips, &pings, req("hero", "fresh", json!({}))).await;
+    let d: (Value, Value) = sqlx::query_as("SELECT features, audiences FROM decisions WHERE subject = 'fresh'").fetch_one(&db.pool).await.unwrap();
+    db.drop().await;
+    // The fixture really read history, for the learner and for the gate.
+    assert_eq!(d.0["feature:history.viewed.filters"], json!(1.0), "{}", d.0);
+    assert_eq!(d.1[0]["matched"], json!(true), "{}", d.1);
+    assert!(fresh.0 <= 4, "a warm decide that reads history made {} statement round trips; the budget is 4", fresh.0);
+    assert!(fresh.1 <= 1, "{} pings; only the one on hand-back is allowed", fresh.1);
+}

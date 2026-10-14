@@ -12,6 +12,7 @@ pub mod explain;
 pub mod features;
 pub mod guard;
 pub mod hash;
+pub mod history;
 pub mod mcp;
 pub mod plugins;
 pub mod privacy;
