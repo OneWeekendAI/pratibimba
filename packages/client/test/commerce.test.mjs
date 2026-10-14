@@ -55,6 +55,17 @@ test('malformed_orders_throw_and_send_nothing', async () => {
   ];
   for (const o of bad) assert.throws(() => p.w.prb.purchase(o), p.w.TypeError, JSON.stringify(o));
   assert.throws(() => p.w.prb.addToCart({ price: 1 }), p.w.TypeError);
+  // Core caps an item id at 256 bytes of UTF-8; 129 accented letters are 258 bytes.
+  assert.throws(() => p.w.prb.addToCart({ id: 'x'.repeat(257) }), p.w.TypeError);
+  assert.throws(() => p.w.prb.addToCart({ id: '\u00e9'.repeat(129) }), p.w.TypeError);
   await sleep(5);
   assert.equal(p.events().filter((e) => e.name === 'purchase' || e.name === 'add_to_cart').length, 0);
+});
+
+test('an_item_id_of_256_bytes_is_sent', async () => {
+  const p = load();
+  await sleep(10);
+  p.w.prb.addToCart({ id: 'x'.repeat(256) });
+  await sleep(5);
+  assert.equal(p.events().filter((e) => e.name === 'add_to_cart').length, 1);
 });

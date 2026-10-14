@@ -54,5 +54,8 @@ test('malformed_orders_reject_and_send_nothing', async () => {
   ];
   for (const o of bad) await assert.rejects(prb.purchase(o), TypeError, JSON.stringify(o));
   await assert.rejects(prb.addToCart({ price: 1 } as any), TypeError);
+  // Core caps an item id at 256 bytes of UTF-8; 129 accented letters are 258 bytes.
+  await assert.rejects(prb.addToCart({ id: 'x'.repeat(257) }), TypeError);
+  await assert.rejects(prb.addToCart({ id: '\u00e9'.repeat(129) }), TypeError);
   assert.equal(calls.length, 0);
 });

@@ -96,6 +96,7 @@ let s = 20261006;
 const rand = () => ((s = (s * 1103515245 + 12345) % 2147483648) / 2147483648);
 const truth = { hero: { baseline: 0.08, gift: 0.2, free_ship: 0.005 }, banner: { plain: 0.04, ten_off: 0.05 } };
 const uuid = () => crypto.randomUUID();
+const exposedHero = []; // raw subjects, in order: Core stores them pseudonymised
 async function visit(i) {
   const subject = `v-${i.toString(36)}-${Math.floor(rand() * 1e9).toString(36)}`;
   const ctx = { returning: rand() < 0.35, mobile: rand() < 0.55, from_ad: rand() < 0.2 };
@@ -104,6 +105,7 @@ async function visit(i) {
   for (const d of decisions) {
     if (rand() < 0.04) continue; // a few never render: decided, not exposed
     events.push({ id: uuid(), name: 'exposure', slot: d.slot, decision_id: d.decision_id });
+    if (d.slot === 'hero') exposedHero.push(subject);
     if (rand() < truth[d.slot][d.variant]) events.push({ id: uuid(), name: 'click', slot: d.slot, decision_id: d.decision_id });
   }
   if (events.length) await call('/e', { site: 'shop', subject, events });
@@ -197,5 +199,25 @@ await tool('propose_variant', {
   html: '<section class="hero">\n  <h1>Gift sets, wrapped and ready</h1>\n  <p>Three roasts, a tasting card and a note in your words.</p>\n  <a href="#gifts">Build a gift box</a>\n</section>',
   note: 'Same headline and copy as gift; only the call to action changes.',
 });
+// F1: two orders from visitors whose hero decision is exposed and its window still open (the
+// newest 3% above), so the worker credits them and the results card has a revenue line.
+// The last visits are the newest decisions, which backdate() kept two minutes ago.
+const buyers = exposedHero.slice(-2);
+for (const [i, subject] of buyers.entries()) {
+  await call('/e', { site: 'shop', subject, events: [{ id: uuid(), name: 'purchase', order_id: `seed-order-${i}`, value: 40 + 9.5 * i, currency: 'USD' }] });
+}
+await until('the worker to credit the seeded orders', () =>
+  Number(psql("SELECT coalesce(sum(d.revenue), 0) FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE s.key = 'hero'", DB)) === 89.5);
+// Results count closed windows only: move the two buyers' decisions (and their events) an hour back.
+psql(
+  `UPDATE events e SET received_at = e.received_at - interval '1 hour' WHERE e.decision_id IN (SELECT id FROM decisions WHERE revenue > 0) OR e.name = 'purchase';
+   UPDATE decisions SET created_at = created_at - interval '1 hour' WHERE revenue > 0;`,
+  DB,
+);
+await until('the results to show the seeded revenue on hero', () =>
+  fetch(`${CORE}/api/sites/shop/results`, { headers: H }).then((r) => r.json()).then((r) => {
+    const hero = r.results.slots.find((x) => x.key === 'hero');
+    return Math.round(100 * ((hero?.treated.revenue ?? 0) + (hero?.holdout.revenue ?? 0))) === 8950;
+  }, () => false));
 ready = true;
 console.log('stack ready');

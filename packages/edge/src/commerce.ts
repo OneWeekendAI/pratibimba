@@ -39,7 +39,8 @@ function checkItems(items: unknown): Item[] | undefined {
   if (items === undefined) return undefined;
   if (!Array.isArray(items)) bad('items must be an array of {id, price?, quantity?}');
   for (const it of items) {
-    if (!it || typeof it.id !== 'string' || !it.id) bad('each item needs a string id');
+    // Core counts bytes (UTF-8), so a 200-character id of accented letters can be too long.
+    if (!it || typeof it.id !== 'string' || !it.id || new TextEncoder().encode(it.id).length > 256) bad('each item needs a string id (1-256 bytes)');
     if (it.price !== undefined && !(typeof it.price === 'number' && Number.isFinite(it.price) && it.price >= 0)) bad('item price must be a number >= 0');
     if (it.quantity !== undefined && !(Number.isInteger(it.quantity) && it.quantity >= 1)) bad('item quantity must be a whole number >= 1');
   }

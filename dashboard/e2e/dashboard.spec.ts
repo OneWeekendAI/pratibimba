@@ -139,6 +139,18 @@ test('results_headline_matches_the_api', async ({ page }) => {
   await expect(page.getByTestId('headline')).toContainText(`${pp(r.results.lift.lo)} to ${pp(r.results.lift.hi)}`);
 });
 
+test('results_card_shows_revenue_per_visitor', async ({ page }) => {
+  // The stack seeds two hero orders (USD 40 + 49.50); the line shows each arm's revenue per visitor.
+  await signIn(page);
+  await page.goto('/app/results/?site=shop');
+  const r = await api('/sites/shop/results');
+  const hero = r.results.slots.find((s: any) => s.key === 'hero');
+  expect(hero.treated.revenue + hero.holdout.revenue).toBeCloseTo(89.5, 2);
+  const usd = (x: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(x);
+  const line = page.getByTestId('revenue-hero');
+  await expect(line).toContainText(`Revenue per visitor ${usd(hero.treated.revenue_per_visitor.estimate)} vs ${usd(hero.holdout.revenue_per_visitor.estimate)} holdout`);
+});
+
 test('learnings_feed_lists_the_rollback', async ({ page }) => {
   await signIn(page);
   await page.goto('/app/results/?site=shop');
