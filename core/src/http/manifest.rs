@@ -49,6 +49,10 @@ pub struct ManifestSlot {
     pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picker: Option<crate::stated::PickerSpec>,
+    /// A sorted slot's `{visible}` (see [`crate::sorted`]); its `variants` are its items, in the
+    /// declared default order. Set by [`crate::adapt::enrich`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sorted: Option<serde_json::Value>,
     /// `true` when the SDK may re-score this slot on the device.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub in_session: Option<bool>,
@@ -83,7 +87,7 @@ pub async fn load(pool: &sqlx::PgPool, site: &str) -> Result<Manifest, ApiError>
     let mut slots: Vec<ManifestSlot> = vec![];
     for (key, selector, metric, ttl_secs, vkey, baseline) in rows {
         if slots.last().map(|s| s.key != key).unwrap_or(true) {
-            slots.push(ManifestSlot { key, selector, metric, ttl_secs, variants: vec![], kind: None, picker: None, in_session: None });
+            slots.push(ManifestSlot { key, selector, metric, ttl_secs, variants: vec![], kind: None, picker: None, sorted: None, in_session: None });
         }
         slots.last_mut().unwrap().variants.push(ManifestVariant { key: vkey, baseline, payload: None, weights: None });
     }

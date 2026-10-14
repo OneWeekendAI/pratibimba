@@ -199,3 +199,35 @@ async fn a_held_out_or_unexposed_decision_teaches_nothing(pool: PgPool) {
         assert_eq!(bias(&pool, k).await, 0.0, "{k} learned");
     }
 }
+
+/// F2b: the manifest marks a sorted slot, with its `visible`, and lists its items in the declared
+/// default order (re-listed in reverse, so the variant ids disagree with it).
+#[sqlx::test(migrations = false)]
+async fn the_manifest_marks_a_sorted_slot_and_lists_its_items_in_the_declared_order(pool: PgPool) {
+    setup(&pool, &ITEMS, Some(3)).await;
+    pratibimba::site_file::apply(&pool, &file_from(sorted_file(&["d", "c", "b", "a"], Some(2)))).await.unwrap();
+    let m = get(&app(&pool), "/manifest/demo").await.json();
+    let s = &m["slots"][0];
+    assert_eq!(s["kind"], "sorted", "{m}");
+    assert_eq!(s["sorted"], json!({ "visible": 2 }), "{m}");
+    let keys: Vec<&str> = s["variants"].as_array().unwrap().iter().map(|v| v["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["d", "c", "b", "a"]);
+}
+
+/// The shop example's site file applies, and its product grid is a sorted slot whose items are
+/// the shop's product slugs in the page's order.
+#[sqlx::test(migrations = false)]
+async fn the_shop_example_declares_its_product_grid_as_a_sorted_slot(pool: PgPool) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/shop");
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("site.json")).unwrap()).unwrap();
+    pratibimba::db::migrate(&pool).await.unwrap();
+    pratibimba::site_file::apply(&pool, &serde_json::from_value(file).unwrap()).await.unwrap();
+    let products = std::fs::read_to_string(dir.join("lib/products.ts")).unwrap();
+    let slugs: Vec<&str> = products.split("slug: '").skip(1).map(|s| &s[..s.find('\'').unwrap()]).collect();
+    assert!(slugs.len() >= 2, "{slugs:?}");
+    let m = get(&app(&pool), "/manifest/shop").await.json();
+    let grid = m["slots"].as_array().unwrap().iter().find(|s| s["key"] == "grid").expect("a grid slot");
+    assert_eq!(grid["kind"], "sorted");
+    let keys: Vec<&str> = grid["variants"].as_array().unwrap().iter().map(|v| v["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, slugs);
+}

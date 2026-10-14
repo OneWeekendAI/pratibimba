@@ -20,6 +20,8 @@ export interface Decision {
   variant: string;
   /** HTML to render; `null` means the page's own content (the baseline). */
   payload: string | null;
+  /** A sorted slot's item keys, best first (F2b); absent for any other kind. */
+  order?: string[];
   explanation: {
     policy: string;
     policy_version: number;

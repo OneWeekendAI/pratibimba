@@ -4,7 +4,7 @@
 // Every <Slot> in one render shares one `/decide/batch` call: slots ask for their decision,
 // and the batch goes out once the render has visited them all (the next macrotask).
 
-import { createElement, cache, type ReactNode } from 'react';
+import { Children, createElement, cache, isValidElement, type ReactNode } from 'react';
 import { PrbBeacon } from './beacon.ts';
 import { decideBatch, isDecision, type Ctx, type Decision, type Fetch } from './core.ts';
 import { CTX_HEADER, SUBJECT_HEADER, decodeCtx } from './context.ts';
@@ -47,6 +47,52 @@ export interface SlotProps {
   variants?: Record<string, ReactNode>;
   /** The baseline: what the page shows when no variant replaces it. */
   children?: ReactNode;
+}
+
+export interface SortedProps {
+  /** The sorted slot's key, as declared in the site file. */
+  id: string;
+  /**
+   * The items, in the page's own (default) order, each with a React `key` equal to its item
+   * key in the site file. Children without a key render where they stand.
+   */
+  children?: ReactNode;
+}
+
+/**
+ * The children in the decided order, each keyed child wrapped in a `display: contents` element
+ * marked `data-prb-item`. Keyed children move, in order, to where the first one stood; one the
+ * order leaves out (gated for this visitor) follows them in page order. Returns the keys of the
+ * ordered items as rendered.
+ */
+export function arrange(children: ReactNode, order: string[] | undefined): { nodes: ReactNode[]; shown: string[] } {
+  const all: ReactNode[] = [];
+  Children.forEach(children, (c) => all.push(c));
+  const keyOf = (c: ReactNode) => (isValidElement(c) && c.key != null ? String(c.key) : null);
+  const items = all.filter((c) => keyOf(c) !== null);
+  const byKey = new Map<string, ReactNode>();
+  for (const c of items) if (!byKey.has(keyOf(c)!)) byKey.set(keyOf(c)!, c);
+  const placed: ReactNode[] = [];
+  const shown: string[] = [];
+  for (const k of order ?? []) {
+    const c = byKey.get(k);
+    if (c !== undefined && !placed.includes(c)) {
+      placed.push(c);
+      shown.push(k);
+    }
+  }
+  for (const c of items) if (!placed.includes(c)) placed.push(c);
+  const wrap = (c: ReactNode) => createElement('div', { key: keyOf(c)!, 'data-prb-item': keyOf(c)!, style: { display: 'contents' } }, c);
+  const nodes: ReactNode[] = [];
+  let done = false;
+  for (const c of all) {
+    if (keyOf(c) === null) nodes.push(c);
+    else if (!done) {
+      nodes.push(...placed.map(wrap));
+      done = true;
+    }
+  }
+  return { nodes, shown };
 }
 
 type Pending = { slot: string; resolve: (d: Decision | null) => void };
@@ -154,5 +200,27 @@ export function createSlot(config: SlotConfig) {
     );
   }
 
-  return { Slot, decide, visitor };
+  /** A sorted slot (F2b): its keyed children in the order Core decided for this visitor. */
+  async function Sorted({ id, children }: SortedProps) {
+    const d = await decide(id);
+    if (!d) return createElement('div', { 'data-prb-slot': id, style: { display: 'contents' } }, ...arrange(children, undefined).nodes);
+    const v = await visitor();
+    const { nodes, shown } = arrange(children, d.order);
+    return createElement(
+      'div',
+      { 'data-prb-slot': id, 'data-prb-variant': d.variant, 'data-prb-decision': d.decision_id, style: { display: 'contents' } },
+      ...nodes,
+      createElement(PrbBeacon, {
+        site: config.site,
+        slot: id,
+        decision: d.decision_id,
+        subject: v!.subject,
+        consent: v!.ctx.consent === true,
+        eventsPath: config.eventsPath ?? '/_prb/e',
+        items: shown,
+      }),
+    );
+  }
+
+  return { Slot, Sorted, decide, visitor };
 }

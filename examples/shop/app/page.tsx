@@ -18,13 +18,17 @@ export default function Home() {
         <Hero />
       </prb.Slot>
       <div className="grid">
-        {products.map((p) => (
-          <a key={p.slug} className="card" href={`/p/${p.slug}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-            <h2>{p.name}</h2>
-            <p>{p.blurb}</p>
-            <span className="price">₹{p.price}</span>
-          </a>
-        ))}
+        {/* A sorted slot: Pratibimba learns which order of these cards gets clicked. Each
+            card's key is its item key in site.json; a click on a card reports that card. */}
+        <prb.Sorted id="grid">
+          {products.map((p) => (
+            <a key={p.slug} className="card" href={`/p/${p.slug}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+              <h2>{p.name}</h2>
+              <p>{p.blurb}</p>
+              <span className="price">₹{p.price}</span>
+            </a>
+          ))}
+        </prb.Sorted>
       </div>
     </>
   );

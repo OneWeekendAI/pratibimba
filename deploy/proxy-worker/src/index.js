@@ -18,6 +18,7 @@
 //   (the salt never leaves Core), so the first decide of a visitor's day goes to Core and the
 //   Worker remembers the pseudonym Core reports, hashed, in the PoP's cache, until midnight UTC;
 // - the last minute before midnight UTC (the pseudonym changes at midnight);
+// - a sorted slot (F2b: it is not in the snapshot; Core makes the order),
 // - a site with a picker (Core reads each visitor's latest picks), a simulated clock, an
 //   experiment that started or ended since the snapshot, or anything Core would refuse;
 // - a visitor Core reported erased.
@@ -393,6 +394,9 @@ export function createWorker(deps = {}) {
     const snap = got.snap;
     if (snap.format !== FORMAT) return fallback('snapshot-format', snap);
     for (const s of slots) if (snap.slots[s] && snap.slots[s].picker_keys.length > 0) return fallback('picker', snap);
+    // F2b: a sorted slot serves an order the kernel cannot make; Core leaves it out of the
+    // snapshot (so it is an unknown slot), and this guards a snapshot that carries one anyway.
+    for (const s of slots) if (snap.slots[s] && snap.slots[s].kind === 'sorted') return fallback('sorted', snap);
     const erased = await erasedP;
     if (erased === true) {
       console.log(JSON.stringify({ msg: 'edge refused erased subject', site: body.site, colo: request.cf?.colo }));

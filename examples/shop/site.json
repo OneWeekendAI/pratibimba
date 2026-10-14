@@ -17,6 +17,23 @@
           "html": "<p class=\"promo\">Add any two bags and the grinder ships free.</p>"
         }
       ]
+    },
+    {
+      "key": "grid",
+      "selector": "[data-prb-slot=grid]",
+      "kind": "sorted",
+      "metric": "click",
+      "sorted": {
+        "visible": 2
+      },
+      "variants": [
+        {
+          "key": "monday-espresso"
+        },
+        {
+          "key": "estate-filter"
+        }
+      ]
     }
   ]
 }

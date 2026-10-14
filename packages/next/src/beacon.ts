@@ -14,15 +14,18 @@ export interface BeaconProps {
   eventsPath: string;
   /** The consent the server decided with; events carry the same, so Core stores one subject. */
   consent?: boolean;
+  /** A sorted slot's item keys as rendered: the exposure carries them, and a click inside an
+   * element marked `data-prb-item` names that item (the signal Core's cascade learns from). */
+  items?: string[];
 }
 
 const reported = new Set<string>();
 
-function send(p: BeaconProps, name: string) {
+function send(p: BeaconProps, name: string, items?: string[]) {
   const body = JSON.stringify({
     site: p.site,
     subject: p.subject,
-    events: [{ id: crypto.randomUUID(), name, slot: p.slot, decision_id: p.decision }],
+    events: [{ id: crypto.randomUUID(), name, slot: p.slot, decision_id: p.decision, ...(items?.length ? { items: items.slice(0, 100).map((id) => ({ id })) } : {}) }],
     // The browser's offset, so insights put this visit at its local hour.
     tz_offset: -new Date().getTimezoneOffset(),
     consent: p.consent === true,
@@ -36,11 +39,14 @@ export function PrbBeacon(p: BeaconProps) {
     // Strict Mode runs effects twice in development; one exposure per decision per page.
     if (!reported.has(p.decision)) {
       reported.add(p.decision);
-      send(p, 'exposure');
+      send(p, 'exposure', p.items);
     }
     const el = document.querySelector(`[data-prb-decision="${p.decision}"]`);
     if (!el) return;
-    const onClick = () => send(p, 'click');
+    const onClick = (e: Event) => {
+      const item = p.items ? (e.target as Element | null)?.closest?.('[data-prb-item]') : null;
+      send(p, 'click', item && el.contains(item) ? [item.getAttribute('data-prb-item')!] : undefined);
+    };
     el.addEventListener('click', onClick);
     return () => el.removeEventListener('click', onClick);
   }, [p.decision]);

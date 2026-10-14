@@ -8,14 +8,15 @@
 //   export const { GET, POST } = prb.route;
 //   // any server component
 //   <prb.Slot id="hero" variants={{ gift: <GiftHero /> }}><Hero /></prb.Slot>
+//   <prb.Sorted id="grid">{products.map((p) => <Card key={p.slug} p={p} />)}</prb.Sorted>
 
 import { postEvents, type Ctx, type Decision, type Fetch } from './core.ts';
 import { createProxy, type ProxyOptions } from './proxy.ts';
 import { createRoute } from './route.ts';
-import { createSlot, type SlotConfig } from './slot.ts';
+import { createSlot, type SlotConfig, type SortedProps } from './slot.ts';
 import { addToCartEvent, purchaseEvent, type Item, type Order } from './commerce.ts';
 
-export type { Ctx, Decision, SlotConfig, ProxyOptions, Item, Order };
+export type { Ctx, Decision, SlotConfig, SortedProps, ProxyOptions, Item, Order };
 export { createProxy, createRoute, createSlot };
 export { encodeCtx, decodeCtx, contextFor, SUBJECT_COOKIE, SESSION_COOKIE, SDK_HEADER, VERSION } from './context.ts';
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone } from './timezone.ts';
@@ -25,9 +26,11 @@ export { MANIFEST_TTL_MS, type FeatureValues } from './features.ts';
 export interface PratibimbaConfig extends SlotConfig, ProxyOptions {}
 
 export function createPratibimba(config: PratibimbaConfig) {
-  const { Slot, decide, visitor } = createSlot(config);
+  const { Slot, Sorted, decide, visitor } = createSlot(config);
   return {
     Slot,
+    /** A sorted slot: keyed children rendered in the decided order (see `SortedProps`). */
+    Sorted,
     /** The decision for a slot in this request, for slots that are not a `<Slot>`. */
     decide,
     /** Post a goal (e.g. `purchase`) for this request's visitor from server code. */

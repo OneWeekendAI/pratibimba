@@ -36,16 +36,18 @@ struct SlotInfo {
     kind: String,
     in_session: bool,
     picker: Option<stated::PickerSpec>,
+    /// A sorted slot's stored `{visible, order}`.
+    sorted: Option<Value>,
 }
 
 async fn slots(pool: &PgPool, site: &str) -> Result<HashMap<String, SlotInfo>, ApiError> {
-    let rows: Vec<(String, i64, String, bool, Option<Value>)> =
-        sqlx::query_as("SELECT key, id, kind, in_session, picker FROM slots WHERE site_id = $1").bind(site).fetch_all(pool).await?;
+    let rows: Vec<(String, i64, String, bool, Option<Value>, Option<Value>)> =
+        sqlx::query_as("SELECT key, id, kind, in_session, picker, sorted FROM slots WHERE site_id = $1").bind(site).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(key, id, kind, in_session, picker)| {
+        .map(|(key, id, kind, in_session, picker, sorted)| {
             let picker = picker.and_then(|p| serde_json::from_value(p).ok());
-            (key, SlotInfo { id, kind, in_session, picker })
+            (key, SlotInfo { id, kind, in_session, picker, sorted })
         })
         .collect())
 }
@@ -212,6 +214,16 @@ pub async fn enrich(pool: &PgPool, manifest: &mut Manifest) -> Result<(), ApiErr
         if info.kind == "picker" {
             ms.kind = Some("picker".into());
             ms.picker = info.picker.clone();
+        }
+        // A sorted slot: its items in the declared default order (variant ids may disagree with
+        // it once the file re-lists them) and how many positions a visitor reads.
+        if info.kind == crate::sorted::KIND
+            && let Some(spec) = &info.sorted
+        {
+            ms.kind = Some(crate::sorted::KIND.into());
+            ms.sorted = Some(serde_json::json!({ "visible": spec["visible"] }));
+            let order: Vec<&str> = spec["order"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            ms.variants.sort_by_key(|v| order.iter().position(|k| *k == v.key).unwrap_or(usize::MAX));
         }
         // The kill switch reaches the device too: a paused site ships nothing to re-score with.
         if !info.in_session || paused {

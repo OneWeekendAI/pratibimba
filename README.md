@@ -141,7 +141,16 @@ export const proxy = prb.proxy;
 export const { GET, POST } = prb.route;
 // any server component
 <prb.Slot id="hero" variants={{ gift: <GiftHero /> }}><Hero /></prb.Slot>
+// a sorted slot (kind "sorted"): keyed children, rendered in the order Core decides
+<prb.Sorted id="grid">{products.map((p) => <Card key={p.slug} p={p} />)}</prb.Sorted>
 ```
+
+A **sorted slot** learns an order instead of a pick: its variants are item keys, and `/decide`
+adds `order`. `<prb.Sorted>` renders each keyed child in that order (wrapped in a
+`display: contents` element marked `data-prb-item`), its exposure lists the rendered order and a
+click on a card names that card. With the script tag, mark each card `data-prb-item="<key>"`
+directly inside the slot's element and the script moves them. The `@pratibimba/edge` rewriter
+does not reorder; the edge-decide Worker sends every sorted slot to Core.
 
 **Any other origin** (`@pratibimba/edge`) sits in front of it as an edge worker and rewrites
 `<!-- prb:slot="hero" -->...<!-- /prb:slot -->` regions as the HTML streams:

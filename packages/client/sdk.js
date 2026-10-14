@@ -256,16 +256,56 @@
     current[slot.key] = d;
     if (d.explanation && d.explanation.in_holdout === true) heldOut = true;
     if (d.explanation && d.explanation.in_holdout === false) notHeld = true;
+    var sorted = slot.kind === 'sorted' && Array.isArray(d.order);
+    var shown = [];
     each(slot, function (el) {
       if (!('prbOrig' in el)) el.prbOrig = el.innerHTML;
-      if (d.payload !== null && d.payload !== undefined) el.innerHTML = d.payload;
+      if (sorted) shown = reorder(el, d.order);
+      else if (d.payload !== null && d.payload !== undefined) el.innerHTML = d.payload;
       el.setAttribute('data-prb-done', '');
       el.setAttribute('data-prb-variant', d.variant);
       // Reads the slot's current decision: an on-device swap re-points it.
-      el.addEventListener('click', function () { send('click', slot.key, current[slot.key].decision_id); }, true);
+      el.addEventListener('click', function (e) {
+        var item = sorted ? itemOf(e.target, el) : null;
+        send('click', slot.key, current[slot.key].decision_id, item ? { items: [{ id: item }] } : null);
+      }, true);
       if (slot.kind === 'picker' && d.variant === 'picker' && slot.picker) renderPicker(slot, d, el);
     });
-    send('exposure', slot.key, d.decision_id);
+    send('exposure', slot.key, d.decision_id, sorted && shown.length ? { items: shown.slice(0, 100).map(function (k) { return { id: k }; }) } : null);
+  }
+
+  // --- a sorted slot (F2b) ------------------------------------------------------------------
+  // The page marks each item with data-prb-item="<key>". The decided items move, in order, to
+  // where the first item stood; an item the order leaves out (gated for this visitor) follows
+  // them in its page order: the page owns its cards. Other children keep their places.
+  // Returns the keys in the order they now stand, the ordered ones first.
+  function reorder(el, order) {
+    var items = [];
+    for (var i = 0; i < el.children.length; i++) {
+      if (el.children[i].hasAttribute('data-prb-item')) items.push(el.children[i]);
+    }
+    if (!items.length) return [];
+    var byKey = {};
+    items.forEach(function (c) { var k = c.getAttribute('data-prb-item'); if (!(k in byKey)) byKey[k] = c; });
+    var placed = [];
+    var keys = [];
+    order.forEach(function (k) {
+      if (byKey[k] && placed.indexOf(byKey[k]) < 0) { placed.push(byKey[k]); keys.push(k); }
+    });
+    items.forEach(function (c) { if (placed.indexOf(c) < 0) placed.push(c); });
+    var anchor = document.createComment('prb');
+    el.insertBefore(anchor, items[0]);
+    placed.forEach(function (c) { el.insertBefore(c, anchor); });
+    el.removeChild(anchor);
+    return keys;
+  }
+
+  // The item a click landed in, if any, inside the slot element `root`.
+  function itemOf(node, root) {
+    for (var n = node; n && n !== root; n = n.parentNode) {
+      if (n.nodeType === 1 && n.hasAttribute('data-prb-item')) return n.getAttribute('data-prb-item');
+    }
+    return null;
   }
 
   // --- the taste picker ---------------------------------------------------------------------
