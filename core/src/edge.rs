@@ -272,8 +272,12 @@ pub async fn content(pool: &PgPool, site: &str) -> Result<Option<Value>> {
         return Ok(None);
     };
     let mut settings = settings;
-    let simulated: bool = sqlx::query_scalar("SELECT sim_now IS NOT NULL FROM sites WHERE id = $1").bind(site).fetch_one(&mut *conn).await?;
+    let (simulated, history): (bool, Option<Value>) =
+        sqlx::query_as("SELECT sim_now IS NOT NULL, history FROM sites WHERE id = $1").bind(site).fetch_one(&mut *conn).await?;
     settings["simulated_clock"] = json!(simulated);
+    // F3: the site's `history:` block (null without one). The Worker reads no history, so it sends
+    // an identified request on such a site to Core (deploy/proxy-worker/src/index.js readsHistory).
+    settings["history"] = history.unwrap_or(Value::Null);
     let mut by_key = Map::new();
     for slot in slots {
         if let Some((_, mut s)) = crate::http::decide::shared_inputs(&mut conn, site, &slot).await.map_err(api_err)?

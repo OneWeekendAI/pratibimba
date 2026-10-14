@@ -128,6 +128,20 @@ async function siteOf(request) {
   }
 }
 
+// The history facts (core/src/history.rs KEYS) an audience rule may name.
+const HISTORY_KEYS = ['days_since_last_purchase', 'purchase_count', 'lifetime_value', 'cart_abandoned', 'viewed'];
+
+/** Whether Core would read an identified visitor's history for any of `slots`: the site admits
+ * `history` and has a `history:` block, or a variant of the slot is gated on a history rule
+ * (core/src/http/decide.rs, the `__HISTORY__` condition). The snapshot carries none of it. */
+function readsHistory(snap, slots) {
+  const allowed = snap.settings.fields_allowed;
+  if (Array.isArray(allowed) && !allowed.includes('history')) return false;
+  if (snap.settings.history) return true;
+  return slots.some((k) => (snap.slots[k]?.gates ?? []).some((g) =>
+    g.predicate && typeof g.predicate === 'object' && Object.keys(g.predicate).some((p) => HISTORY_KEYS.includes(p))));
+}
+
 /** Resolves to `work`'s value, or to `fallback` after `ms`. */
 async function within(work, ms, fallback) {
   let timer;
@@ -411,6 +425,8 @@ export function createWorker(deps = {}) {
       stored = await cached(await pseudonymKey(body.site, body.subject, t));
       if (!stored) return fallback('unseen-cookieless', snap);
     }
+    // F3: an identified request on a slot that reads visitor history needs Core's rows.
+    if (!stored && readsHistory(snap, slots)) return fallback('history', snap);
     const subject = stored || body.subject;
     const out = [];
     const made = [];

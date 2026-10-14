@@ -469,3 +469,18 @@ async fn decide_agrees_with_the_snapshot(pool: PgPool) {
         assert_eq!(d["explanation"]["experiment"].get("id").cloned().unwrap_or(Value::Null), snap["experiment"].get("id").cloned().unwrap_or(Value::Null));
     }
 }
+
+// ---- F3: the Worker must know when Core would read visitor history ----
+
+/// The site's `history:` block rides in the snapshot's settings (null without one), so the Worker
+/// sends an identified request to Core, which holds the visitor's rows, instead of deciding it
+/// with no history (deploy/proxy-worker/test/history.test.mjs).
+#[sqlx::test(migrations = false)]
+async fn snapshot_carries_the_history_block(pool: PgPool) {
+    let (_app, store) = published(&pool).await;
+    assert_eq!(store.last("demo").unwrap()["settings"]["history"], Value::Null);
+    let spec = json!({ "enabled": true, "ltv_edges": null, "cart_window_hours": null, "views": [] });
+    sqlx::query("UPDATE sites SET history = $1 WHERE id = 'demo'").bind(&spec).execute(&pool).await.unwrap();
+    pratibimba::edge::publish(&pool, &Edge::with_store(store.clone()), "demo").await.unwrap();
+    assert_eq!(pushed(&store)["settings"]["history"], spec);
+}
