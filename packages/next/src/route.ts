@@ -22,12 +22,22 @@ export function createRoute(opts: { core: string; fetch?: Fetch }) {
       return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
     }
     const f = opts.fetch ?? fetch;
-    const upstream = await f(`${opts.core.replace(/\/$/, '')}/${path}${url.search}`, {
+    const body = request.method === 'POST' ? await request.text() : undefined;
+    const send = () => f(`${opts.core.replace(/\/$/, '')}/${path}${url.search}`, {
       method: request.method,
       headers: request.method === 'POST' ? { 'content-type': 'application/json' } : {},
-      body: request.method === 'POST' ? await request.text() : undefined,
+      body,
       cache: 'no-store',
     });
+    // A transport failure (a reset keep-alive socket, a connect timeout) is not Core's answer. A
+    // reset can land after the upstream took the request, so only /e is retried, once, with the
+    // same bytes: Core ignores an event id it already has. Still unreachable is a 502, not a 500.
+    let upstream: Response;
+    try {
+      upstream = await send().catch((e) => (path === 'e' ? send() : Promise.reject(e)));
+    } catch {
+      return new Response(JSON.stringify({ error: 'upstream unreachable' }), { status: 502, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+    }
     const headers = new Headers();
     for (const h of FORWARDED_RESPONSE_HEADERS) {
       const v = upstream.headers.get(h);
