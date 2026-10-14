@@ -20,6 +20,11 @@
 // price-upfront's 20% beats 16%); mobile -> price-upfront; desktop evening -> tasting-notes.
 // The hero's metric is `click`, so a click is the conversion.
 //
+// GRID (F2): the product grid is the sorted slot `grid`. The visitor scans the cards in the
+// order the page rendered them and clicks the first card that passes its GRID_TRUTH draw (see
+// truth.mjs), or none. The exposure names the items the beacon names (the decision's order);
+// a click names its card. analyze-grid.mjs reconciles both against Core's per-item counts.
+//
 // ORDERS (F1): after a served hero, a visitor buys with probability BUY (more after a click),
 // through the store's own /checkout route (prb.purchase in @pratibimba/next): one product, 1-3
 // bags, INR. A RETRY share of orders is sent twice with the same order_id, which Core must count
@@ -34,7 +39,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { TRUTH_TABLE } from './truth.mjs';
+import { GRID_TRUTH, TRUTH_TABLE } from './truth.mjs';
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -61,6 +66,9 @@ const PLANS = {
   ec3: [{ name: 'steady', rate: 2.5, secs: 240 }],
   // F1 (2026-10-14): five minutes with orders, to reconcile revenue against Core.
   f1: [{ name: 'steady', rate: 2.5, secs: 300 }],
+  // F2 (2026-10-14): 45 minutes, so the first windows (1800 s) close and learning shows in the
+  // orders served in the last quarter hour. Run with --buy 0: the grid's metric is click.
+  f2: [{ name: 'steady', rate: 1.5, secs: 2700 }],
   // Only idle gaps: every render comes 4.5-9 s after the last one.
   sparse: [{ name: 'sparse', gap: [4.5, 9], secs: 300 }],
   full: [
@@ -116,8 +124,9 @@ function cookieOf(res, name) {
   return null;
 }
 
-async function postEvent(subject, v, decision, name, clock) {
-  const body = { site: 'shop', subject, events: [{ id: randomUUID(), name, slot: 'hero', decision_id: decision }], tz_offset: clock.offset, consent: v.consent === true };
+async function postEvent(subject, v, decision, name, clock, slot = 'hero', items) {
+  const ev = { id: randomUUID(), name, slot, decision_id: decision, ...(items?.length ? { items: items.map((id) => ({ id })) } : {}) };
+  const body = { site: 'shop', subject, events: [ev], tz_offset: clock.offset, consent: v.consent === true };
   try {
     const r = await fetch(`${BASE}/_prb/e`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => null);
@@ -189,6 +198,26 @@ async function visit(phase) {
         rec.order = { order_id: randomUUID(), slug: p.slug, quantity, value: p.price * quantity, currency: 'INR' };
         rec.order.sent = [await checkout(subject, v, rec.order)];
         if (rnd() < RETRY) rec.order.sent.push(await checkout(subject, v, rec.order));
+      }
+    }
+    const g = /data-prb-slot="grid" data-prb-variant="([^"]+)" data-prb-decision="([^"]+)"/.exec(html);
+    if (g) {
+      // What the beacon would report: its `items` prop (the decision's order) from the flight
+      // data, and the cards in page order (unplaced items trail the ordered ones).
+      const esc = g[2].replace(/-/g, '\\-');
+      const props = new RegExp(`decision\\\\":\\\\"${esc}\\\\"[^\\]]*?items\\\\":\\[([^\\]]*)\\]`).exec(html);
+      const shown = props ? [...props[1].matchAll(/([a-z0-9_-]+)\\"/g)].map((x) => x[1]) : [];
+      const start = html.indexOf(g[0]);
+      const rendered = [...html.slice(start).matchAll(/data-prb-item="([^"]+)"/g)].map((x) => x[1]).filter((k, j, a) => a.indexOf(k) === j);
+      rec.grid = { decision: g[2], top: g[1], shown, rendered };
+      rec.grid.exposure = await postEvent(subject, v, g[2], 'exposure', clock, 'grid', shown);
+      for (const k of rendered) {
+        if (rnd() < GRID_TRUTH[k](ctx)) {
+          rec.grid.clicked = k;
+          await sleep(300 + rnd() * 1500);
+          rec.grid.click = await postEvent(subject, v, g[2], 'click', clock, 'grid', [k]);
+          break;
+        }
       }
     }
     if (!v.returning && v.consent) returners.push({ subject, mobile: v.mobile, tz: v.tz, sendsTz: v.sendsTz, last: started });

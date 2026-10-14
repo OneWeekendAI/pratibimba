@@ -231,3 +231,32 @@ async fn the_shop_example_declares_its_product_grid_as_a_sorted_slot(pool: PgPoo
     let keys: Vec<&str> = grid["variants"].as_array().unwrap().iter().map(|v| v["key"].as_str().unwrap()).collect();
     assert_eq!(keys, slugs);
 }
+
+// Found in the F2 live run (2026-10-14): the decision detail told a sorted decision as a swap
+// ("We showed `estate-filter`"), with no order, and a held-out one as "saw the baseline".
+#[sqlx::test(migrations = false)]
+async fn explain_tells_a_sorted_decision_by_its_order(pool: PgPool) {
+    setup(&pool, &ITEMS, None).await;
+    set_holdout(&pool, 0.5).await;
+    let (app, admin) = (app(&pool), admin_app(&pool));
+    let (mut treated, mut held) = (false, false);
+    for i in 0..40 {
+        let d = decide_grid(&app, &format!("x{i}")).await;
+        let r = api_get(&admin, &format!("/api/decisions/{}", d["decision_id"].as_str().unwrap())).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+        let x = r.json();
+        let served = order(&d);
+        assert_eq!(x["order"], json!(served));
+        let s = x["sentence"].as_str().unwrap();
+        let listed = served.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ");
+        assert!(s.starts_with(&format!("We ordered {listed} for visitor")), "{s}");
+        if d["explanation"]["in_holdout"] == json!(true) {
+            held = true;
+            assert!(s.contains("saw the declared default order"), "{s}");
+        } else {
+            treated = true;
+            assert!(s.contains(&format!("scored `{}` first at", served[0])), "{s}");
+        }
+    }
+    assert!(treated && held);
+}

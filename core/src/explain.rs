@@ -49,6 +49,8 @@ pub struct Facts {
     pub share: Option<f64>,
     /// The experiment whose hash chose the arm, by name.
     pub experiment: Option<String>,
+    /// A sorted slot's served order (item keys, first shown first); `None` for any other kind.
+    pub order: Option<Vec<String>>,
 }
 
 fn short(subject: &str) -> String {
@@ -75,7 +77,11 @@ fn policy_name(policy: &str) -> String {
 }
 
 pub fn sentence(f: &Facts) -> String {
-    let mut out = format!("We showed `{}` to visitor `{}` on {}.", f.variant, short(&f.subject), f.at.format("%Y-%m-%d %H:%M UTC"));
+    let what = match &f.order {
+        Some(o) => format!("We ordered {} for visitor", o.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")),
+        None => format!("We showed `{}` to visitor", f.variant),
+    };
+    let mut out = format!("{what} `{}` on {}.", short(&f.subject), f.at.format("%Y-%m-%d %H:%M UTC"));
     out += &format!(
         " They were {}, on {}, {}.",
         if f.returning { "a returning visitor" } else { "a new visitor" },
@@ -88,8 +94,9 @@ pub fn sentence(f: &Facts) -> String {
     if f.in_holdout {
         let pick = f.policy_pick.as_deref().unwrap_or("?");
         let pick_score = f.scores.iter().find(|(k, _)| k == pick).map(|(_, s)| format!(" (it scored {s:.2})")).unwrap_or_default();
+        let (saw, would) = if f.order.is_some() { ("the declared default order", "put first") } else { ("the baseline", "shown") };
         out += &format!(
-            " They were in the holdout, so they saw the baseline whatever the policy thought; the {} v{} policy would have shown `{pick}`{pick_score}.",
+            " They were in the holdout, so they saw {saw} whatever the policy thought; the {} v{} policy would have {would} `{pick}`{pick_score}.",
             policy_name(&f.policy),
             f.version
         );
@@ -105,6 +112,13 @@ pub fn sentence(f: &Facts) -> String {
             );
         }
         match own {
+            Some(s) if f.order.is_some() && !others.is_empty() => out += &format!(
+                " The {} v{} policy scored `{}` first at {s:.2}, then {}; each item sits by its score.",
+                policy_name(&f.policy),
+                f.version,
+                f.variant,
+                others.join(", ")
+            ),
             Some(s) if !others.is_empty() => {
                 out += &format!(" The {} v{} policy scored it {s:.2} against {}.", policy_name(&f.policy), f.version, others.join(", "))
             }
@@ -199,6 +213,9 @@ pub struct Detail {
     /// `{exposures, until}` when cold start chose the arm (see [`crate::http::decide`]).
     pub cold_start: Option<Value>,
     pub scores: Vec<Score>,
+    /// A sorted slot's served order, item keys first-shown first; absent for other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<Vec<String>>,
     /// Re-running the policy on the stored version, seed and pool gives the stored scores.
     pub replay_matches: Option<bool>,
     pub counterfactual: Option<Counterfactual>,
@@ -244,6 +261,7 @@ struct Row {
     credit: Option<f64>,
     revenue: Option<f64>,
     experiment: Option<String>,
+    ranking: Option<Vec<i64>>,
 }
 
 /// Re-run the policy a decision stored: its pick and its scores, ascending id. What the replay
@@ -264,7 +282,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
                 d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start, d.credit,
                 d.revenue::float8 AS revenue,
-                CASE WHEN d.allocation = 'experiment' THEN e.name END AS experiment
+                CASE WHEN d.allocation = 'experiment' THEN e.name END AS experiment, d.ranking
            FROM decisions d JOIN slots s ON s.id = d.slot_id LEFT JOIN experiments e ON e.id = d.experiment_id WHERE d.id = $1",
     )
     .bind(id)
@@ -297,6 +315,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         credit,
         revenue,
         experiment,
+        ranking,
     }) = row
     else {
         return Ok(None);
@@ -305,6 +324,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         sqlx::query_as("SELECT id, key, payload, is_baseline FROM variants WHERE slot_id = $1 ORDER BY id").bind(slot_id).fetch_all(pool).await?;
     let key = |vid: i64| variants.iter().find(|v| v.0 == vid).map(|v| v.1.clone()).unwrap_or_else(|| format!("#{vid}"));
     let shown = variants.iter().find(|v| v.0 == variant_id).cloned().unwrap_or((variant_id, key(variant_id), None, false));
+    let order: Option<Vec<String>> = ranking.map(|r| r.into_iter().map(key).collect());
 
     let mut scores: Vec<Score> = stored
         .as_object()
@@ -420,6 +440,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         cold_start: cold_start.as_ref().and_then(|c| Some((c["exposures"].as_i64()?, c["until"].as_i64()?))),
         share,
         experiment,
+        order: order.clone(),
     };
     Ok(Some(Detail {
         id,
@@ -447,6 +468,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         audiences: audiences.unwrap_or_else(|| serde_json::json!([])),
         cold_start,
         scores,
+        order,
         replay_matches,
         counterfactual,
         timeline,
@@ -479,6 +501,7 @@ mod tests {
             cold_start: None,
             share: None,
             experiment: None,
+            order: None,
         }
     }
 
