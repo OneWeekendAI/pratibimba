@@ -200,6 +200,21 @@ When the user asks you to wire revenue into their app, use the SDK helpers, not 
 - A plugin marked `deanonymiser` sends visitor identity to a third party. Do not request one
   unless the user asked for that plugin by name, and tell them the dashboard will show a warning.
 
+## Audiences: you draft, a person promotes
+
+- `list_audiences` shows the site's segments and which variants each promoted audience gates.
+  `create_audience` drafts one; it gates nothing until a person promotes it in the dashboard.
+- Besides situation (`returning`, `mobile`, `from_ad`, local time), a predicate can read the
+  visitor's own history: `days_since_last_purchase: {gte: 30}` (last order 30+ days ago),
+  `purchase_count: {gte: 2}`, `lifetime_value: "high"` (`none`, `low`, `mid`, `high`),
+  `cart_abandoned: true`, `viewed: {item: "<id>", days: 14}` or `{category: "<name>", days: 30}`
+  (days at most 90).
+- History is known only for identified visitors (`full` mode, or `consent_aware` with consent,
+  and `fields_allowed` admitting `history`). Everyone else fails closed: tell the user a history
+  audience is empty on a cookieless site, and that edge decide carries no history.
+- A come-back offer is the typical pairing: a variant that names the lapse ("It's been a while")
+  gated on `days_since_last_purchase`, with the baseline kept for everyone else.
+
 ## Experiments: you read, the owner runs them
 
 - `list_experiments` shows the site's A/B experiments: arms and weights, start and stop,

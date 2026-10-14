@@ -21,6 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 use futures_util::stream::Stream;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -289,6 +290,23 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
             .bind(slot_id)
             .fetch_all(&state.pool)
             .await?;
+    // Which audience gates each variant, and the site's promoted audiences an owner can pick from.
+    let gates: HashMap<i64, i64> =
+        sqlx::query_as::<_, (i64, i64)>("SELECT id, audience_id FROM variants WHERE slot_id = $1 AND audience_id IS NOT NULL")
+            .bind(slot_id)
+            .fetch_all(&state.pool)
+            .await?
+            .into_iter()
+            .collect();
+    let audiences: Vec<Value> = sqlx::query_as::<_, (i64, String, Value)>(
+        "SELECT id, name, predicate FROM segments WHERE site_id = $1 AND status = 'audience' ORDER BY id",
+    )
+    .bind(&site)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|(id, name, predicate)| json!({ "id": id, "name": name, "predicate": predicate }))
+    .collect();
     let variants: Vec<Value> = sr
         .variants
         .iter()
@@ -305,6 +323,7 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
                 o.insert("pause_reason".into(), json!(reason));
                 o.insert("created_at".into(), json!(created));
             }
+            j.as_object_mut().unwrap().insert("audience".into(), json!(gates.get(&v.id)));
             j
         })
         .collect();
@@ -315,7 +334,7 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
         "attribution_window_secs": window, "decision_ttl_secs": ttl, "model_version": version,
         "treated": sr.treated, "holdout": sr.holdout, "lift": sr.lift, "champion": champion,
         "variants": variants, "curve": results::curve(&state.pool, slot_id, now).await?,
-        "audiences": [],
+        "audiences": audiences,
     })))
 }
 

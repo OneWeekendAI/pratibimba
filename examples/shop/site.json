@@ -37,6 +37,21 @@
           "key": "kaapi-decoction"
         }
       ]
+    },
+    {
+      "key": "comeback",
+      "selector": "[data-prb-slot=comeback]",
+      "metric": "add_to_cart",
+      "variants": [
+        {
+          "key": "plain",
+          "baseline": true
+        },
+        {
+          "key": "come_back",
+          "html": "<p class=\"promo\">It's been a while. Your next bag is 15% off with code WELCOME15.</p>"
+        }
+      ]
     }
   ]
 }

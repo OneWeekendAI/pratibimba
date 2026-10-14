@@ -194,6 +194,7 @@ const RULES = {
   'update_slot changes only a draft slot': /`update_slot` changes only a draft slot\./,
   'retire_variant only proposes and the variant keeps serving': /`retire_variant` only proposes\.[\s\S]*\*\*keeps serving\*\* until a person confirms/,
   'install_plugin only requests': /\*\*`install_plugin` only requests\.\*\* Nothing is installed until a person confirms/,
+  'history audiences fail closed for unidentified visitors': /`days_since_last_purchase: \{gte: 30\}`[\s\S]*History is known only for identified visitors[\s\S]*Everyone else fails closed/,
   'a de-anonymiser only when asked by name': /`deanonymiser`[\s\S]*Do not request one\s+unless the user asked for that plugin by name/,
 };
 for (const p of PACK) {

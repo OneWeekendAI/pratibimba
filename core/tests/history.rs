@@ -170,3 +170,38 @@ async fn a_history_audience_matches_nobody_in_cookieless_mode(pool: PgPool) {
     let d = decide(&pool, "hero", "asha", true).await;
     assert_eq!(matched(&d), json!(false), "{d}");
 }
+
+/// Two views of a 90-day window: one 89 days ago (inside) and one 91 days ago (outside).
+async fn old_and_recent_views(pool: &PgPool) {
+    event(pool, "dev", "click", 89.0, None, Some(json!([{ "id": "recent", "category": "filters" }]))).await;
+    event(pool, "dev", "click", 91.0, None, Some(json!([{ "id": "old", "category": "kettles" }]))).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_view_counts_inside_ninety_days_and_not_after(pool: PgPool) {
+    let views = json!({ "history": { "views": [
+        { "key": "recent", "item": "recent", "days": 90 }, { "key": "old", "item": "old", "days": 90 } ] } });
+    setup(&pool, "full", views).await;
+    old_and_recent_views(&pool).await;
+    let d = decide(&pool, "hero", "dev", false).await;
+    let f = history_features(&d);
+    assert_eq!(f["feature:history.viewed.recent"], json!(1.0), "89 days is inside 90: {d}");
+    assert_eq!(f["feature:history.viewed.old"], json!(0.0), "91 days is outside 90: {d}");
+}
+
+/// The history subquery itself reads no item event older than the longest view (90 days): the
+/// cutoff is a cost bound, so decide alone cannot see it (each view re-filters by its own days).
+#[sqlx::test(migrations = false)]
+async fn the_history_read_skips_item_events_older_than_ninety_days(pool: PgPool) {
+    setup(&pool, "full", block()).await;
+    old_and_recent_views(&pool).await;
+    let q = format!(
+        "WITH t AS (SELECT 'full'::text AS privacy_mode, NULL::text[] AS fields_allowed, 'USD'::text AS currency, now() AS at),
+              subj AS (SELECT 'dev'::text AS v)
+         SELECT {} FROM t",
+        pratibimba::history::sql("true").replace("$5::bool", "false").replace("$1", "'demo'")
+    );
+    let row: Value = sqlx::query_scalar(&q).fetch_one(&pool).await.unwrap();
+    let ids: Vec<&str> = row["touches"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["recent"], "{row}");
+}

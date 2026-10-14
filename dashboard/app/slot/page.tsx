@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { createColumnHelper, tableFeatures, useTable } from '@tanstack/react-table';
 import { Suspense, useMemo, useState } from 'react';
 import { LiftCurve, LiftPill } from '@/components/charts';
+import { Audiences } from '@/components/audiences';
 import { Preview } from '@/components/preview';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
@@ -137,7 +138,6 @@ function Workbench() {
   const s = q.data;
   const shown = s.variants.filter((v) => v.status !== 'draft' && v.status !== 'rejected');
   const series = s.variants.map((v, index) => ({ key: v.key, index })).filter((x) => s.curve.some((p) => p.variants[x.key]));
-  const live = s.variants.filter((v) => v.status === 'approved');
   return (
     <div className="grid gap-8 xl:grid-cols-[1fr_260px]">
       <div className="min-w-0 space-y-8">
@@ -164,16 +164,7 @@ function Workbench() {
       </div>
       <aside className="space-y-4 text-[13px]">
         <Card className="p-4">
-          <SectionTitle>Audiences</SectionTitle>
-          <p className="text-ink-2">No audiences gate this slot yet, so every approved variant is eligible for every visitor{live.some((v) => v.traffic_share !== null) ? ', within its planned share' : ''}.</p>
-          <ul className="mt-3 space-y-1.5 text-xs text-ink-2">
-            {live.map((v) => (
-              <li key={v.id}>
-                <span className="font-mono text-ink">{v.key}</span>: {v.traffic_share !== null ? `at most ${Math.round(v.traffic_share * 100)}% of visitors` : 'all visitors'}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-xs text-muted">Audiences arrive with the audience editor (Phase 1b).</p>
+          <Audiences site={site} slot={slot} variants={s.variants} audiences={s.audiences} />
         </Card>
         <Card className="space-y-1.5 p-4 text-xs text-ink-2">
           <SectionTitle>Slot</SectionTitle>

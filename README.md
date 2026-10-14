@@ -273,6 +273,10 @@ Core serves it at `/app` (a static Next.js export in `dashboard/`, pointed to by
 - **Slot workbench**: a card per variant with its share, its lift and, if auto-rollback paused
   it, why; the cumulative lift curve with its confidence band; and the last 500 decisions,
   filterable by variant and outcome.
+  Its *Audiences* panel shows which audience gates each live variant (pick one or "everyone"),
+  and adds a history audience in one line: last order at least N days ago, at least N orders,
+  a lifetime-value bucket, a left cart, or an item or category viewed in N days. A new one is
+  promoted at once, so it can gate a variant straight away.
 - **Decision detail**: one plain-English sentence on why this visitor saw this variant, then
   the features the bandit saw, every arm's score, whether replaying the stored seed
   reproduces them, a counterfactual (what the baseline or the policy would have shown), the
@@ -451,6 +455,41 @@ await prb.purchase(request, { order_id: 'ord_1042', value: 1098, currency: 'INR'
   zero-decimal currencies). For a goal a platform is authoritative for, a browser order is a hint
   and takes no revenue, so an order is never counted from both.
 
+## Visitor history
+
+A returning visitor's own stored orders and item events become a few facts at decide time:
+days since their last order, their order count, a lifetime-value bucket (`none` / `low` / `mid`
+/ `high`, in the site's currency, edges 100 and 1000 by default), whether they viewed an item or
+category in the last N days (at most 90), and whether they left a cart (an `add_to_cart` in the
+last 30 days, older than the cart window, with no order after it).
+
+**In an audience rule**, beside the situation conditions, with no other setup:
+
+```json
+{ "days_since_last_purchase": { "gte": 30 } }
+{ "purchase_count": { "gte": 2 }, "lifetime_value": "high" }
+{ "cart_abandoned": true }
+{ "viewed": { "category": "filters", "days": 30 } }
+```
+
+Create one with `POST /api/sites/:site/segments`, the MCP `create_audience` tool (a draft), or
+the slot workbench's Audiences panel, then gate a variant on it. `examples/shop` gates its
+`comeback` slot's offer on "last order 30+ days ago" (`node scripts/audiences.mjs`).
+
+**As learner features**, add a `history:` block to the site file. Its facts then reach the bandit
+as `feature:history.*` (and show in the decision's explanation):
+
+```json
+"history": { "ltv_edges": [100, 1000], "cart_window_hours": 24,
+             "views": [{ "key": "filters", "category": "filters", "days": 30 }] }
+```
+
+**Who has history.** Only an identified request: `full` mode, or `consent_aware` with consent,
+on a site whose `fields_allowed` admits `history`. A cookieless visitor has none, so a history
+audience matches nobody there (it fails closed), and rollups and discovery count it as matching
+nobody too. A decision made at the edge carries no history; leave edge decide off if you rely
+on it.
+
 ## Conversion webhooks
 
 For checkouts you control, the platform is the source of truth for a sale, not the browser.
@@ -615,6 +654,7 @@ raw tables away and calls every route. Hourly and daily rollups are partitioned 
 
 A predicate is a conjunction over `returning`, `mobile`, `from_ad`, `is_night_local`,
 `is_weekend_local`, `is_business_hours_local` (booleans) and `hour_local: [from, to]`.
+It may also read the visitor's history (see [Visitor history](#visitor-history)).
 Demographic names (`gender`, `age`, `income`, ...) and anything else are refused. Segment 0 is
 everyone. Discovery scores every one- and two-feature predicate over the last 28 days of
 rollups, keeps those whose conversion rate, or whose variant lift over the baseline, differs

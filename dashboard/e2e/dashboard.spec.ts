@@ -640,3 +640,27 @@ test('webhook_delete_asks_to_confirm', async ({ page }) => {
   await expect(card).toHaveCount(0);
   expect((await api('/sites/shop/webhooks')).subscriptions.some((s: any) => s.id === id)).toBe(false);
 });
+
+test('history_audience_is_written_and_gates_a_variant', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  // A fresh N each run, so a stack whose database outlives a run still gets a new audience.
+  const n = 31 + (Date.now() % 300);
+  const form = page.getByRole('form', { name: 'New audience' });
+  await form.getByLabel('Rule').selectOption('lapsed');
+  await form.getByLabel('N').fill(String(n));
+  await form.getByRole('button', { name: 'Add audience' }).click();
+  const pick = page.getByLabel('Audience for gift', { exact: true });
+  const option = pick.locator('option', { hasText: `last order days ago ${n}+` });
+  await expect(option).toHaveCount(1);
+  await expect(page.getByText('match identified visitors only')).toBeVisible();
+  await pick.selectOption({ label: (await option.textContent())! });
+  await expect.poll(async () => (await api('/sites/shop/slots/hero')).variants.find((v: any) => v.key === 'gift').audience).toEqual(expect.any(Number));
+  const s = await api('/sites/shop/slots/hero');
+  const aud = s.audiences.find((a: any) => a.id === s.variants.find((v: any) => v.key === 'gift').audience);
+  expect(aud.predicate).toEqual({ days_since_last_purchase: { gte: n } });
+  await page.reload();
+  await expect(page.getByLabel('Audience for gift', { exact: true })).toHaveValue(String(aud.id));
+  await page.getByLabel('Audience for gift', { exact: true }).selectOption('');
+  await expect.poll(async () => (await api('/sites/shop/slots/hero')).variants.find((v: any) => v.key === 'gift').audience).toBeNull();
+});

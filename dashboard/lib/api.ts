@@ -105,6 +105,8 @@ export interface VariantRow {
   status: 'draft' | 'approved' | 'paused' | 'rejected' | 'retired';
   is_baseline: boolean;
   traffic_share: number | null;
+  /** The audience that gates this variant, or null for everyone. */
+  audience?: number | null;
   counts: Counts;
   share: number;
   lift: Interval | null;
@@ -141,7 +143,13 @@ export interface SlotDetail {
   champion: string | null;
   variants: VariantRow[];
   curve: CurvePoint[];
-  audiences: unknown[];
+  audiences: AudienceRow[];
+}
+/** A promoted audience: a segment that can gate a variant. */
+export interface AudienceRow {
+  id: number;
+  name: string;
+  predicate: Record<string, unknown>;
 }
 export interface DecisionRow {
   id: string;

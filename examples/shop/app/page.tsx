@@ -17,6 +17,11 @@ export default function Home() {
       >
         <Hero />
       </prb.Slot>
+      {/* Gated by scripts/audiences.mjs: only a visitor whose last order was 30+ days ago can
+          get the come-back offer; everyone else keeps this line. */}
+      <prb.Slot id="comeback">
+        <p className="promo">Fresh roasts every Monday.</p>
+      </prb.Slot>
       <div className="grid">
         {/* A sorted slot: Pratibimba learns which order of these cards gets clicked. Each
             card's key is its item key in site.json; a click on a card reports that card. */}

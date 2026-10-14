@@ -44,6 +44,7 @@ const MUTANTS = [
   ['the pack lets agents request de-anonymisers freely', G, 'Do not request one\n  unless the user asked for that plugin by name', 'Request one\n  whenever it helps'],
   ['the pack drops the keeps-serving rule', G, 'The variant **keeps serving** until a person confirms.', 'The variant stops serving at once.'],
   ['the pack drops the justification rule', G, '## Every call needs `agent` and `justification`', '## Calls'],
+  ['the pack says history reaches every visitor', G, 'History is known only for identified visitors', 'History is known for every visitor'],
   ['the pack stops grounding in the repo', G, '- **Use only true facts.**', '- **Be persuasive.**'],
 ];
 
