@@ -542,3 +542,45 @@ async fn the_site_file_checks_goal_cap_and_currency(pool: PgPool) {
     assert_eq!((goal.as_str(), cur.as_str()), ("revenue", "EUR"));
     assert!(close(cap, 150.5));
 }
+
+/// Live (Seoul, F1 cohort): the exposure travels the edge queue while the purchase goes straight
+/// to Core, so the order was drained before its exposure landed and the revenue was lost (INR
+/// 58860 of 80127 credited). An order waits, bounded, while the subject has an unexposed decision
+/// in its window; one never shown is drained once the hold runs out.
+#[sqlx::test(migrations = false)]
+async fn an_order_that_arrives_before_its_exposure_waits_for_it(pool: PgPool) {
+    let app = setup(&pool).await;
+    let d: Uuid = decide(&app, "v1", true).await.json()["decision_id"].as_str().unwrap().parse().unwrap();
+    let u: Uuid = decide(&app, "v2", true).await.json()["decision_id"].as_str().unwrap().parse().unwrap();
+    send_events(&app, "v1", vec![purchase("ord-1", json!(1234.5), "INR")]).await;
+    send_events(&app, "v2", vec![purchase("ord-2", json!(10), "INR")]).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    event(&app, "v1", "exposure", Some(&d.to_string())).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    assert!(close(revenue(&pool, d).await.unwrap_or(0.0), 1234.5), "the order drained before its exposure lost its revenue");
+    // v2's decision is never shown: its order waits out the hold, then drains with no credit.
+    let pending = "SELECT count(*) FROM pending_events";
+    assert_eq!(count(&pool, pending).await, 1, "the unshown subject's order did not wait");
+    worker::run_once(&pool, Utc::now() + Duration::seconds(worker::ORPHAN_HOLD_SECS + 1)).await.unwrap();
+    assert_eq!(count(&pool, pending).await, 0, "the hold is not bounded");
+    assert_eq!(revenue(&pool, u).await, None);
+}
+
+/// The wait is only for a decision the event could credit. A click that names no decision does
+/// not wait for an unexposed decision in a slot measuring another goal (common: a slot decided
+/// but never rendered), and a click that names its exposed decision does not wait at all.
+#[sqlx::test(migrations = false)]
+async fn a_click_does_not_wait_for_an_unexposed_decision_it_cannot_credit(pool: PgPool) {
+    let footer = json!({ "key": "footer", "selector": "#footer", "metric": "signup", "decision_ttl_secs": 0,
+                         "variants": [ { "key": "plain", "baseline": true }, { "key": "bold", "html": "<b>Join</b>" } ] });
+    let hero = json!({ "key": "hero", "selector": "#hero", "metric": "click", "decision_ttl_secs": 0,
+                       "variants": [ { "key": "baseline", "baseline": true }, { "key": "gift", "html": "<h1>Gift sets</h1>" } ] });
+    let app = setup_with(&pool, json!({ "slots": [hero, footer] }), json!({})).await;
+    let d = touches(&app, &pool, "v1", 1).await[0];
+    let other = post(&app, "/decide", json!({ "site": "demo", "slot": "footer", "subject": "v1", "ctx": {} })).await;
+    assert!(other.json()["decision_id"].is_string(), "{:?}", other.json());
+    event(&app, "v1", "click", None).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    let outcome: Option<i16> = sqlx::query_scalar("SELECT outcome FROM decisions WHERE id = $1").bind(d).fetch_one(&pool).await.unwrap();
+    assert_eq!(outcome, Some(1), "the click waited for a decision in a slot that measures another goal");
+}

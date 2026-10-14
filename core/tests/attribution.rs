@@ -275,7 +275,10 @@ async fn linear_ignores_an_unexposed_decision(pool: PgPool) {
     sqlx::query("UPDATE decisions SET created_at = created_at - interval '1 minute'").execute(&pool).await.unwrap();
     let hidden: Uuid = decide(&app, "v", true).await.json()["decision_id"].as_str().unwrap().parse().unwrap();
     event(&app, "v", "click", None).await;
+    // The click waits for the hidden decision's exposure (it may be in the queue), then drains.
     worker::run_once(&pool, Utc::now()).await.unwrap();
+    assert_eq!(record(&pool, t[0]).await, (None, None), "the click did not wait for the unexposed decision");
+    worker::run_once(&pool, Utc::now() + chrono::Duration::seconds(worker::ORPHAN_HOLD_SECS + 1)).await.unwrap();
     assert_eq!(record(&pool, t[0]).await, (Some(1), Some(1.0)));
     assert_eq!(record(&pool, hidden).await, (None, None));
 }

@@ -57,8 +57,16 @@ pub const BATCH: i64 = 500;
 /// lost. It waits instead, up to this long (longer than the queue's whole retry schedule, see
 /// deploy/proxy-worker), and is then drained as before. The same for a goal event (a click) whose
 /// decision exists but is not exposed yet: its exposure may still be in the queue, and a click
-/// drained before it credits nothing (measured live in the EC3 cohort: 1 click in 53). Events
-/// that name no decision, exposures, and events for an exposed decision are never held.
+/// drained before it credits nothing (measured live in the EC3 cohort: 1 click in 53). And the
+/// same while the subject has an unexposed, unsettled decision whose window contains the event
+/// and which the event could credit: any slot for an order with revenue in the site's currency
+/// (revenue reaches every slot), a slot measuring this goal for an event that names no decision.
+/// A purchase goes straight to Core while the exposure it follows may still be in the queue, and
+/// drained first it credits nothing (F1 cohort, live: INR 58860 of 80127 credited). The rule is
+/// about arrival order, not the queue, so it holds for a self-hoster too (a server-side order can
+/// beat the browser's exposure beacon); its cost there is that such an event from a subject with a
+/// decision never shown waits out the hold. Exposures and `missed` are never held once their
+/// decision exists.
 pub const ORPHAN_HOLD_SECS: i64 = 1800;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -167,9 +175,19 @@ async fn drain_batch(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Optio
                 CASE WHEN e.currency = t.currency THEN (e.value * 10000)::int8 END
            FROM pending_events p JOIN live_events e ON e.id = p.event_id JOIN sites t ON t.id = e.site_id
           WHERE {scope}
-            AND (e.decision_id IS NULL OR e.received_at <= $3 - make_interval(secs => $4)
-                 OR EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.decision_id
-                               AND (d.exposed_at IS NOT NULL OR e.name IN ('exposure', 'missed'))))
+            AND (e.received_at <= $3 - make_interval(secs => $4)
+                 OR (e.name IN ('exposure', 'missed')
+                     AND (e.decision_id IS NULL OR EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.decision_id)))
+                 OR (e.name NOT IN ('exposure', 'missed')
+                     AND (e.decision_id IS NULL
+                          OR EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.decision_id AND d.exposed_at IS NOT NULL))
+                     AND NOT EXISTS (SELECT 1 FROM decisions d JOIN slots s ON s.id = d.slot_id
+                                      WHERE d.site_id = e.site_id AND d.subject = e.subject
+                                        AND d.exposed_at IS NULL AND d.settled_at IS NULL
+                                        AND (e.currency = t.currency OR (e.decision_id IS NULL AND s.metric = e.name))
+                                        AND d.created_at <= COALESCE(e.occurred_at, e.received_at)
+                                        AND d.created_at + make_interval(secs => s.attribution_window_secs)
+                                            >= COALESCE(e.occurred_at, e.received_at))))
           ORDER BY p.id LIMIT $1
           FOR UPDATE OF p SKIP LOCKED",
         2,
