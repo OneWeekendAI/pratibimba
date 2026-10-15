@@ -45,6 +45,26 @@ including refused ones, so write each line as if your reviewer will read it. The
 Follow these steps in order. Do not skip ahead to step 4 because the brief looks simple. A
 variant written without reading the evidence is a guess, and the reviewer can tell.
 
+### 0. Run `scan` first to find candidate slots
+
+When the user asks where to personalise, or wants a new slot, start here. Run:
+
+    npx @pratibimba/agent scan
+
+It reads the repo (JSX/TSX and plain HTML) and lists candidate slots, best first: hero
+headlines, calls to action, product lists, promo lines and returning-visitor spots. Each line
+gives `file:line`, the slot kind (`swap`, `copy` or `sorted`), a suggested key, audience and
+goal, and why. It also lists the slots the repo already has. It is a fixed set of rules, not
+a judgement: **scan points, you judge.** Open each candidate, drop the ones that make no
+sense (a thank-you heading is rarely worth a slot), and tell the user which few you would
+pick and why. Then go to step 1 for each one you keep.
+
+`scan` writes nothing. With `--write` it adds the candidates to `.pratibimba/slot-drafts.json`
+as drafts, and only there. **A draft in that file is not a slot and reaches no visitor.** A
+`swap` draft becomes a draft slot through `create_slot`; a `copy` or `sorted` draft is set up
+by the site owner. Either way a person approves its baseline before anyone sees it. Never
+copy drafts into the site file.
+
 ### 1. Read before you write
 
 Before you propose anything for a slot, make these calls in this session:

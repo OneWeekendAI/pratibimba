@@ -44,6 +44,26 @@ including refused ones, so write each line as if your reviewer will read it. The
 Follow these steps in order. Do not skip ahead to step 4 because the brief looks simple. A
 variant written without reading the evidence is a guess, and the reviewer can tell.
 
+### 0. Run `scan` first to find candidate slots
+
+When the user asks where to personalise, or wants a new slot, start here. Run:
+
+    npx @pratibimba/agent scan
+
+It reads the repo (JSX/TSX and plain HTML) and lists candidate slots, best first: hero
+headlines, calls to action, product lists, promo lines and returning-visitor spots. Each line
+gives `file:line`, the slot kind (`swap`, `copy` or `sorted`), a suggested key, audience and
+goal, and why. It also lists the slots the repo already has. It is a fixed set of rules, not
+a judgement: **scan points, you judge.** Open each candidate, drop the ones that make no
+sense (a thank-you heading is rarely worth a slot), and tell the user which few you would
+pick and why. Then go to step 1 for each one you keep.
+
+`scan` writes nothing. With `--write` it adds the candidates to `.pratibimba/slot-drafts.json`
+as drafts, and only there. **A draft in that file is not a slot and reaches no visitor.** A
+`swap` draft becomes a draft slot through `create_slot`; a `copy` or `sorted` draft is set up
+by the site owner. Either way a person approves its baseline before anyone sees it. Never
+copy drafts into the site file.
+
 ### 1. Read before you write
 
 Before you propose anything for a slot, make these calls in this session:
@@ -62,6 +82,11 @@ Before you propose anything for a slot, make these calls in this session:
    - If `lo` and `hi` straddle zero, or `lift` is null, there is **no evidence yet**. Say so.
      Do not call a variant "winning" because its estimate is a bit higher.
    - A few hundred decisions is not much. Report the sample size along with any claim.
+   - Each `counts` also has `conversion_rate` and `revenue_per_visitor` (with `lo` and `hi`),
+     and each variant a `revenue_lift` against the holdout, in the site's `currency`. Revenue
+     comes from purchase events, whatever the slot's metric. Read both: a variant can win clicks
+     and lose revenue. The slot's `goal` says which one the bandit optimises (`conversion` or
+     `revenue`). Few orders make a wide revenue interval: say so rather than call a winner.
 4. `list_variants` with `slot`. Read every variant, not only the approved ones. `rejected`
    variants show what a person refused, and the comment thread shows why. `paused` variants
    were stopped by auto-rollback because they were losing. Treat both as findings: do not
@@ -183,6 +208,19 @@ A person approves. You do not, and you cannot.
 - Never create, change or retire slots through the site file. Applying it is the owner's own
   act and skips the person who reviews your work.
 
+## Reporting carts and orders in code
+
+When the user asks you to wire revenue into their app, use the SDK helpers, not a bare `track`:
+
+- Next.js (server code): `await prb.addToCart({ id, price, quantity })` and
+  `await prb.purchase({ order_id, value, currency, items })`. Edge: the same with the `Request`
+  first. Browser script: `window.prb.addToCart(item)`, `window.prb.purchase(order)`.
+- Call `purchase` where the order is confirmed, with the store's real order id: Core counts one
+  order once, however often it is sent. `value` is the order total in major units (49.99), in the
+  site's currency.
+- If the store already sends a Stripe or signed conversion webhook for purchases, do not also
+  send `purchase` from the browser for that goal; the webhook is the authoritative one.
+
 ## Plugins: you request, a person installs
 
 - `list_plugins` shows the plugins built into Core (there is no way to add new code), whether
@@ -192,6 +230,21 @@ A person approves. You do not, and you cannot.
   on or active because you requested it.
 - A plugin marked `deanonymiser` sends visitor identity to a third party. Do not request one
   unless the user asked for that plugin by name, and tell them the dashboard will show a warning.
+
+## Audiences: you draft, a person promotes
+
+- `list_audiences` shows the site's segments and which variants each promoted audience gates.
+  `create_audience` drafts one; it gates nothing until a person promotes it in the dashboard.
+- Besides situation (`returning`, `mobile`, `from_ad`, local time), a predicate can read the
+  visitor's own history: `days_since_last_purchase: {gte: 30}` (last order 30+ days ago),
+  `purchase_count: {gte: 2}`, `lifetime_value: "high"` (`none`, `low`, `mid`, `high`),
+  `cart_abandoned: true`, `viewed: {item: "<id>", days: 14}` or `{category: "<name>", days: 30}`
+  (days at most 90).
+- History is known only for identified visitors (`full` mode, or `consent_aware` with consent,
+  and `fields_allowed` admitting `history`). Everyone else fails closed: tell the user a history
+  audience is empty on a cookieless site, and that edge decide carries no history.
+- A come-back offer is the typical pairing: a variant that names the lapse ("It's been a while")
+  gated on `days_since_last_purchase`, with the baseline kept for everyone else.
 
 ## Experiments: you read, the owner runs them
 

@@ -1,0 +1,11 @@
+{
+  "candidates": [],
+  "existing": [
+    {
+      "key": "hero",
+      "kind": "swap",
+      "file": "index.html",
+      "line": 13
+    }
+  ]
+}

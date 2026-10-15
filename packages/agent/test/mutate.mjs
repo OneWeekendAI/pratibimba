@@ -14,6 +14,7 @@ const pkg = join(dirname(fileURLToPath(import.meta.url)), '..');
 const S = 'src/install.mjs';
 const C = 'bin/cli.mjs';
 const G = 'pack/guide.md';
+const SC = 'src/scan.mjs';
 
 const MUTANTS = [
   ['an edited pack file is overwritten', S, "if (!force) return { action: 'kept'", "if (false) return { action: 'kept'"],
@@ -46,6 +47,27 @@ const MUTANTS = [
   ['the pack drops the justification rule', G, '## Every call needs `agent` and `justification`', '## Calls'],
   ['the pack says history reaches every visitor', G, 'History is known only for identified visitors', 'History is known for every visitor'],
   ['the pack stops grounding in the repo', G, '- **Use only true facts.**', '- **Be persuasive.**'],
+  ['the pack drops the scan-first step', G, '### 0. Run `scan` first', '### 0. Optionally scan'],
+  ['the pack says scan drafts are live', G, '**A draft in that file is not a slot and reaches no visitor.**', '**A draft in that file is live at once.**'],
+  // scan: each heuristic and each safety rule
+  ['scan offers elements inside an existing slot', SC, 'if (inside(el, f.covered) || inside(el, chosen)) continue;', 'if (inside(el, chosen)) continue;'],
+  ['scan ignores components rendered in a slot', SC, 'if (exported.some((n) => coveredNames.has(n)))', 'if (false)'],
+  ['scan offers containers holding a slot', SC, 'if (f.covered.some(([a]) => a > el.start && a < el.end)) continue;', ''],
+  ['scan offers nav links', SC, "a.name === 'nav' || ", ''],
+  ['scan ignores site.json selectors', SC, "site.find((s) => matches(s.selector, el))?.key", 'undefined'],
+  ['scan ignores prb:slot comments', SC, 'c.before === el.start', 'false'],
+  ['scan makes a dynamic hero a copy slot', SC, 'const copy = fields.headline !== undefined;', 'const copy = true;'],
+  ['scan misses mapped lists', SC, 'if (/key=/.test(body)', 'if (false && /key=/.test(body)'],
+  ['scan misses HTML card grids', SC, 'if (n >= 3 &&', 'if (n >= 30 &&'],
+  ['scan misses returning-visitor spots', SC, '(leaf && RETURNING_TEXT.test(lit))', 'false'],
+  ['scan calls a page wrapper a promo', SC, '(leaf && PROMO_TEXT.test(lit)', '(PROMO_TEXT.test(lit)'],
+  ['scan offers CTAs with dynamic words', SC, 'if (isAction(el, f) && literalOnly(el, f))', 'if (isAction(el, f))'],
+  ['scan ranks by file order, not by kind', SC, 'b.score - a.score || ', ''],
+  ['scan reuses an existing key', SC, 'while (taken.has(k))', 'while (false)'],
+  ['scan walks node_modules', SC, "if (!SKIP_DIRS.has(e.name))", 'if (true)'],
+  ['--write overwrites edited drafts', SC, 'if (have.has(c.key)) continue;', ''],
+  ['--write replaces an unparsable drafts file', SC, "if (e.code !== 'ENOENT') throw", 'if (false) throw'],
+  ['scan writes without --write', C, 'if (opts.write) {', 'if (true) {'],
 ];
 
 let survived = 0;
@@ -60,7 +82,7 @@ for (const [name, file, from, to] of MUTANTS) {
     continue;
   }
   await writeFile(path, text.replace(from, to));
-  const r = spawnSync(process.execPath, ['--test', 'test/install.test.mjs'], { cwd: dir, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, ['--test', 'test/install.test.mjs', 'test/scan.test.mjs'], { cwd: dir, encoding: 'utf8', env: { ...process.env, PRB_EXAMPLES: join(pkg, '..', '..', 'examples') } });
   const failed = (r.stdout.match(/^# fail (\d+)/m) ?? r.stdout.match(/ℹ fail (\d+)/))?.[1];
   if (r.status === 0) {
     console.log(`SURVIVED ${name}`);

@@ -1,0 +1,17 @@
+{
+  "candidates": [],
+  "existing": [
+    {
+      "key": "hero",
+      "kind": "swap",
+      "file": "app/page.tsx",
+      "line": 18
+    },
+    {
+      "key": "promo",
+      "kind": "swap",
+      "file": "app/page.tsx",
+      "line": 21
+    }
+  ]
+}

@@ -384,6 +384,14 @@ other servers alone. The token is never written to a file: the configs read it f
 `PRATIBIMBA_MCP_TOKEN` (`--token-env` picks another name), as `${VAR}` for Claude Code and
 `${env:VAR}` for Cursor.
 
+To find where slots could go, run `npx @pratibimba/agent scan` in the repo. It reads JSX/TSX
+and plain HTML with fixed rules (no model call) and lists candidates best first: hero
+headlines, calls to action, product lists, promo lines and returning-visitor spots, each with
+`file:line`, the slot kind (`swap`, `copy`, `sorted`), a suggested audience and goal, and why.
+Slots you already have are listed and never offered again. It writes nothing; `--write` adds
+the candidates to `.pratibimba/slot-drafts.json` as drafts (never to `site.json`), and `--json`
+prints JSON. The pack tells your agent to run it first and judge the list.
+
 It ships as an npm package rather than a `pratibimba agent` subcommand because it runs in your
 site's repo, where Node is already installed. The Core binary runs on a server next to
 Postgres.

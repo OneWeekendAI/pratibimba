@@ -195,6 +195,7 @@ const RULES = {
   'retire_variant only proposes and the variant keeps serving': /`retire_variant` only proposes\.[\s\S]*\*\*keeps serving\*\* until a person confirms/,
   'install_plugin only requests': /\*\*`install_plugin` only requests\.\*\* Nothing is installed until a person confirms/,
   'history audiences fail closed for unidentified visitors': /`days_since_last_purchase: \{gte: 30\}`[\s\S]*History is known only for identified visitors[\s\S]*Everyone else fails closed/,
+  'run scan first, and its drafts are not slots': /### 0\. Run `scan` first[\s\S]*\*\*scan points, you judge\.\*\*[\s\S]*\*\*A draft in that file is not a slot and reaches no visitor\.\*\*[\s\S]*### 1\. Read before you write/,
   'a de-anonymiser only when asked by name': /`deanonymiser`[\s\S]*Do not request one\s+unless the user asked for that plugin by name/,
 };
 for (const p of PACK) {
