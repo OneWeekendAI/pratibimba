@@ -241,7 +241,10 @@ export interface ApprovalCard {
     audit_id: number;
     tool: string;
   };
-  champion: { key: string; payload: string | null; is_baseline: boolean } | null;
+  champion: { key: string; payload: string | null; is_baseline: boolean; copy?: Record<string, string> | null } | null;
+  /** A copy slot (F4): its declared fields, and this draft's text by field. */
+  fields?: { name: string; max: number; required: boolean }[] | null;
+  copy?: Record<string, string> | null;
   checks: Check[];
   comments: { action: string; actor: string; comment: string | null; at: string }[];
 }

@@ -154,6 +154,7 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
             "list_sites",
             "list_slots",
             "list_variants",
+            "propose_copy",
             "propose_variant",
             "retire_variant",
             "simulate",

@@ -63,6 +63,37 @@ function Diff({ before, after }: { before: string | null; after: string }) {
 }
 
 /** Who wrote a draft over MCP, why, and where the tool call is recorded. */
+/** A copy slot's draft beside its champion, field by field, as plain text (F4). */
+function CopyFields({ card }: { card: ApprovalCard }) {
+  const own = card.champion?.is_baseline;
+  return (
+    <table className="w-full text-sm" data-testid="copy-fields">
+      <thead>
+        <tr className="text-left text-xs text-muted">
+          <th className="py-1 pr-3 font-normal">Field</th>
+          <th className="py-1 pr-3 font-normal">Champion <span className="font-mono">{card.champion?.key ?? '—'}</span></th>
+          <th className="py-1 font-normal">Draft <span className="font-mono">{card.key}</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {(card.fields ?? []).map((f) => {
+          const text = card.copy?.[f.name] ?? '';
+          return (
+            <tr key={f.name} className="border-t border-line align-top">
+              <td className="py-1.5 pr-3 font-mono text-xs">{f.name}</td>
+              <td className="py-1.5 pr-3 text-muted">{own ? 'the page’s own' : (card.champion?.copy?.[f.name] ?? '—')}</td>
+              <td className="py-1.5">
+                {text || <span className="text-muted">—</span>}
+                <span className="ml-2 text-xs text-muted">{[...text].length}/{f.max}</span>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 function AgentBadge({ agent }: { agent: NonNullable<ApprovalCard['agent']> }) {
   return (
     <div className="mb-4 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent-soft)]/50 px-3 py-2.5 text-[13px]" data-testid="agent-badge">
@@ -115,6 +146,7 @@ function DraftCard({ card, site, approver, max }: { card: ApprovalCard; site: st
         <span className="ml-auto text-xs text-muted">audience: everyone</span>
       </div>
       {card.agent && <AgentBadge agent={card.agent} />}
+      {card.fields ? <CopyFields card={card} /> : <>
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
           <div className="mb-1 text-xs text-muted">Current champion: <span className="font-mono">{card.champion?.key ?? '—'}</span></div>
@@ -129,6 +161,7 @@ function DraftCard({ card, site, approver, max }: { card: ApprovalCard; site: st
         <div className="mb-1 text-xs text-muted">What changed</div>
         <Diff before={card.champion?.is_baseline ? null : (card.champion?.payload ?? null)} after={card.html ?? ''} />
       </div>
+      </>}
       <div className="mt-4 grid grid-cols-1 gap-1.5 sm:grid-cols-2" data-testid="checks">
         {card.checks.map((c) => (
           <div key={c.name} className="flex items-start gap-2 text-[12.5px]">

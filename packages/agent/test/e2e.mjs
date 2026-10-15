@@ -90,7 +90,7 @@ try {
   const c = await connect('.mcp.json');
   const tools = (await c.listTools()).tools.map((t) => t.name).sort();
   assert.deepEqual(tools, ['create_audience', 'create_slot', 'explain_decision', 'fast_forward_visitor', 'get_results', 'get_site', 'install_plugin', 'list_audiences',
-    'list_decisions', 'list_experiments', 'list_plugins', 'list_sites', 'list_slots', 'list_variants', 'propose_variant', 'retire_variant', 'simulate', 'update_slot']);
+    'list_decisions', 'list_experiments', 'list_plugins', 'list_sites', 'list_slots', 'list_variants', 'propose_copy', 'propose_variant', 'retire_variant', 'simulate', 'update_slot']);
   const slots = (await c.callTool({ name: 'list_slots', arguments: { ...who, justification: 'Finding the hero slot.' } })).structuredContent.slots;
   assert.deepEqual(slots.map((s) => s.key).sort(), ['hero', 'promo']);
   step(`.mcp.json: ${tools.length} tools; slots ${slots.map((s) => `${s.key} (champion ${s.champion})`).join(', ')}`);

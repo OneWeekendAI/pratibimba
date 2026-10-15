@@ -215,6 +215,10 @@ pub async fn enrich(pool: &PgPool, manifest: &mut Manifest) -> Result<(), ApiErr
             ms.kind = Some("picker".into());
             ms.picker = info.picker.clone();
         }
+        // A copy slot (F4): the SDK writes its fields as text, never as HTML.
+        if info.kind == crate::copy::KIND {
+            ms.kind = Some(crate::copy::KIND.into());
+        }
         // A sorted slot: its items in the declared default order (variant ids may disagree with
         // it once the file re-lists them) and how many positions a visitor reads.
         if info.kind == crate::sorted::KIND

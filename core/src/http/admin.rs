@@ -422,12 +422,16 @@ async fn create_draft(
     if b.html.trim().is_empty() || b.html.len() > MAX_PAYLOAD {
         return Err(ApiError::BadRequest(format!("html must be 1 to {MAX_PAYLOAD} bytes")));
     }
-    let slot_id: i64 = sqlx::query_scalar("SELECT id FROM slots WHERE site_id = $1 AND key = $2")
+    let (slot_id, spec): (i64, Option<Value>) = sqlx::query_as("SELECT id, copy FROM slots WHERE site_id = $1 AND key = $2")
         .bind(&site)
         .bind(&slot)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("unknown slot {slot:?} on site {site:?}")))?;
+    // A copy slot's draft is its fields as a JSON object (F4), checked as an agent's would be.
+    if let Some(spec) = &spec {
+        crate::copy::check_stored(spec, Some(&b.html)).map_err(|e| ApiError::BadRequest(format!("copy slot: {e}")))?;
+    }
     let mut tx = state.pool.begin().await?;
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO variants (slot_id, key, payload, author, status) VALUES ($1, $2, $3, 'human', 'draft')
@@ -459,11 +463,11 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let (forbidden, facts): (Vec<String>, Option<String>) =
         sqlx::query_as("SELECT forbidden_claims, facts FROM sites WHERE id = $1").bind(&site).fetch_one(&state.pool).await?;
     #[allow(clippy::type_complexity)]
-    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>, bool)> = sqlx::query_as(
+    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>, bool, Option<Value>)> = sqlx::query_as(
         "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id,
                 CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
                      'on_behalf_of', c.on_behalf_of, 'token', k.name, 'call_id', c.call_id, 'at', c.created_at,
-                     'audit_id', c.id, 'tool', c.tool) END, v.is_baseline
+                     'audit_id', c.id, 'tool', c.tool) END, v.is_baseline, s.copy
            FROM variants v JOIN slots s ON s.id = v.slot_id
            LEFT JOIN mcp_calls c ON c.id = v.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
           WHERE s.site_id = $1 AND v.status = 'draft' ORDER BY v.created_at, v.id",
@@ -474,14 +478,15 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let now = Utc::now();
     let r = results::site(&state.pool, &site, now - Duration::days(7), now).await?.expect("site exists");
     let mut cards = vec![];
-    for (id, slot, key, payload, author, created, slot_id, agent, activates_slot) in drafts {
+    for (id, slot, key, payload, author, created, slot_id, agent, activates_slot, copy_spec) in drafts {
         let sr = r.slots.iter().find(|s| s.id == slot_id);
         let live: Vec<&results::VariantResult> = sr.map(|s| s.variants.iter().filter(|v| v.status == "approved").collect()).unwrap_or_default();
         let champ = live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline));
         let champion = match champ {
             Some(c) => {
                 let p: Option<String> = sqlx::query_scalar("SELECT payload FROM variants WHERE id = $1").bind(c.id).fetch_one(&state.pool).await?;
-                json!({ "key": c.key, "payload": p, "is_baseline": c.is_baseline })
+                let copy = copy_spec.as_ref().and_then(|_| crate::copy::parse(p.as_deref()));
+                json!({ "key": c.key, "payload": p, "is_baseline": c.is_baseline, "copy": copy })
             }
             None => Value::Null,
         };
@@ -494,7 +499,10 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
             "id": id, "slot": slot, "key": key, "html": payload, "author": author, "created_at": created, "agent": agent,
             // Approving a draft baseline turns on a slot an agent created.
             "activates_slot": activates_slot,
-            "champion": champion, "checks": checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() }),
+            // A copy slot (F4): its declared fields and this draft's text, parsed.
+            "fields": copy_spec.as_ref().map(|s| s["fields"].clone()),
+            "copy": copy_spec.as_ref().and_then(|_| crate::copy::parse(payload.as_deref())),
+            "champion": champion, "checks": checks::run(&if copy_spec.is_some() { crate::copy::plain(payload.as_deref()) } else { payload.clone().unwrap_or_default() }, &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() }),
             "comments": comments.into_iter().map(|(a, by, c, at)| json!({ "action": a, "actor": by, "comment": c, "at": at })).collect::<Vec<_>>(),
         }));
     }
@@ -559,14 +567,14 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
     }
     let mut tx = state.pool.begin().await?;
     #[allow(clippy::type_complexity)]
-    let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>, bool)> = sqlx::query_as(
-        "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims, v.author, t.facts, v.is_baseline FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
+    let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>, bool, Option<Value>)> = sqlx::query_as(
+        "SELECT v.slot_id, v.status, v.payload, t.forbidden_claims, v.author, t.facts, v.is_baseline, s.copy FROM variants v JOIN slots s ON s.id = v.slot_id JOIN sites t ON t.id = s.site_id
           WHERE v.id = $1 FOR UPDATE OF v",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((slot_id, status, payload, forbidden, author, facts, is_baseline)) = row else {
+    let Some((slot_id, status, payload, forbidden, author, facts, is_baseline, copy_spec)) = row else {
         return Err(ApiError::NotFound(format!("unknown variant {id}")));
     };
     if status != "draft" {
@@ -584,10 +592,17 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
     }
     // A draft baseline belongs to a slot an agent created (`create_slot`). It is the page's own
     // content, so there is no copy to check and no share to cap: approving it activates the slot.
+    // A copy draft must still fit the slot's fields as the site file now declares them.
+    if let (false, Some(spec)) = (is_baseline, &copy_spec)
+        && let Err(e) = crate::copy::check_stored(spec, payload.as_deref())
+    {
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": format!("the copy no longer fits this slot: {e}") }))).into_response());
+    }
     let report = if is_baseline {
         vec![]
     } else {
-        checks::run(payload.as_deref().unwrap_or(""), &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() })
+        let text = if copy_spec.is_some() { crate::copy::plain(payload.as_deref()) } else { payload.clone().unwrap_or_default() };
+        checks::run(&text, &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() })
     };
     let share = (!is_baseline).then_some(b.traffic_share);
     if checks::blocks(&report) {

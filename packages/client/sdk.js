@@ -261,6 +261,7 @@
     each(slot, function (el) {
       if (!('prbOrig' in el)) el.prbOrig = el.innerHTML;
       if (sorted) shown = reorder(el, d.order);
+      else if (d.copy && typeof d.copy === 'object') writeCopy(el, d.copy);
       else if (d.payload !== null && d.payload !== undefined) el.innerHTML = d.payload;
       el.setAttribute('data-prb-done', '');
       el.setAttribute('data-prb-variant', d.variant);
@@ -275,6 +276,16 @@
   }
 
   // --- a sorted slot (F2b) ------------------------------------------------------------------
+  // F4: a copy slot. The page marks each field with data-prb-field="<name>"; the SDK writes the
+  // decided text with textContent, never innerHTML, so a field cannot become markup. A field the
+  // variant leaves out keeps the page's own text.
+  function writeCopy(el, copy) {
+    Array.prototype.forEach.call(el.querySelectorAll('[data-prb-field]'), function (f) {
+      var v = copy[f.getAttribute('data-prb-field')];
+      if (typeof v === 'string') f.textContent = v;
+    });
+  }
+
   // The page marks each item with data-prb-item="<key>". The decided items move, in order, to
   // where the first item stood; an item the order leaves out (gated for this visitor) follows
   // them in its page order: the page owns its cards. Other children keep their places.

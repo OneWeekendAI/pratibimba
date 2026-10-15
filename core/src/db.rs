@@ -37,6 +37,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0200_commerce", include_str!("../migrations/0200_commerce.sql")),
     ("0210_sorted", include_str!("../migrations/0210_sorted.sql")),
     ("0220_history", include_str!("../migrations/0220_history.sql")),
+    ("0230_copy", include_str!("../migrations/0230_copy.sql")),
 ];
 
 /// Arbitrary constant: "prb" in ASCII.

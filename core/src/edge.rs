@@ -262,7 +262,7 @@ pub async fn content(pool: &PgPool, site: &str) -> Result<Option<Value>> {
     let mut conn = pool.acquire().await?;
     // The live slots: those with an approved arm, as in the manifest. A draft slot decides nothing.
     let slots: Vec<String> = sqlx::query_scalar(
-        "SELECT s.key FROM slots s WHERE s.site_id = $1 AND s.kind <> 'sorted' AND EXISTS (SELECT 1 FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved') ORDER BY s.key",
+        "SELECT s.key FROM slots s WHERE s.site_id = $1 AND s.kind NOT IN ('sorted', 'copy') AND EXISTS (SELECT 1 FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved') ORDER BY s.key",
     )
     .bind(site)
     .fetch_all(&mut *conn)

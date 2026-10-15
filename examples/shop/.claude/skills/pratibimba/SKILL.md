@@ -132,6 +132,12 @@ Call `propose_variant` once for each candidate, with `slot`, `key` and `html`:
 - `note`: written for the reviewer. Say what changes compared with the champion, which
   evidence led to it, which file implements it, and what you are unsure about.
 
+**Copy slots.** A slot whose `kind` is `copy` (`list_slots` shows its `copy_fields`) takes
+words, not HTML. Call `propose_copy` with `slot`, `key` and `copy`, a map from each field name to
+its text. Every required field must be filled; each value must fit its field's `max` in
+characters, be one line, and contain no `<` or `>`. `propose_variant` is refused on a copy slot.
+The reviewer sees your text beside the champion's, field by field.
+
 Then read the `checks` in the result:
 
 - If any check is `fail`, the draft **cannot be approved** as it is. Fix the problem and

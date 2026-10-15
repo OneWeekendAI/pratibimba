@@ -22,6 +22,8 @@ export interface Decision {
   payload: string | null;
   /** A sorted slot's item keys, best first (F2b); absent for any other kind. */
   order?: string[];
+  /** A copy slot's fields (F4): the variant's text, `null` for the baseline; absent for other kinds. */
+  copy?: Record<string, string> | null;
   explanation: {
     policy: string;
     policy_version: number;

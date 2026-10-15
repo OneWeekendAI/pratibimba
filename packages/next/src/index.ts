@@ -13,11 +13,11 @@
 import { postEvents, type Ctx, type Decision, type Fetch } from './core.ts';
 import { createProxy, type ProxyOptions } from './proxy.ts';
 import { createRoute } from './route.ts';
-import { createSlot, type SlotConfig, type SortedProps } from './slot.ts';
+import { createSlot, copyText, type SlotConfig, type SortedProps, type CopyProps } from './slot.ts';
 import { addToCartEvent, purchaseEvent, type Item, type Order } from './commerce.ts';
 
-export type { Ctx, Decision, SlotConfig, SortedProps, ProxyOptions, Item, Order };
-export { createProxy, createRoute, createSlot };
+export type { Ctx, Decision, SlotConfig, SortedProps, CopyProps, ProxyOptions, Item, Order };
+export { createProxy, createRoute, createSlot, copyText };
 export { encodeCtx, decodeCtx, contextFor, SUBJECT_COOKIE, SESSION_COOKIE, SDK_HEADER, VERSION } from './context.ts';
 export { TZ_COOKIE, GEO_TZ_HEADERS, validTimeZone, visitorTimeZone } from './timezone.ts';
 export { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
@@ -26,11 +26,13 @@ export { MANIFEST_TTL_MS, type FeatureValues } from './features.ts';
 export interface PratibimbaConfig extends SlotConfig, ProxyOptions {}
 
 export function createPratibimba(config: PratibimbaConfig) {
-  const { Slot, Sorted, decide, visitor } = createSlot(config);
+  const { Slot, Sorted, Copy, decide, visitor } = createSlot(config);
   return {
     Slot,
     /** A sorted slot: keyed children rendered in the decided order (see `SortedProps`). */
     Sorted,
+    /** A copy slot: `<prb.Copy id fallback>{(t) => <h1>{t.headline}</h1>}</prb.Copy>` (see `CopyProps`). */
+    Copy,
     /** The decision for a slot in this request, for slots that are not a `<Slot>`. */
     decide,
     /** Post a goal (e.g. `purchase`) for this request's visitor from server code. */

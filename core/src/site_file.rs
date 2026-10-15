@@ -90,12 +90,18 @@ pub struct SlotSpec {
     /// A `kind: "sorted"` slot's options (see [`crate::sorted`]); refused on any other kind.
     #[serde(default)]
     pub sorted: Option<crate::sorted::SortedSpec>,
+    /// A `kind: "copy"` slot's fields (see [`crate::copy`]); refused on any other kind.
+    #[serde(default)]
+    pub copy: Option<crate::copy::CopySpec>,
     pub variants: Vec<VariantSpec>,
 }
 
 impl SlotSpec {
     pub fn is_picker(&self) -> bool {
         self.kind.as_deref() == Some("picker")
+    }
+    pub fn is_copy(&self) -> bool {
+        self.kind.as_deref() == Some(crate::copy::KIND)
     }
     pub fn is_sorted(&self) -> bool {
         self.kind.as_deref() == Some(crate::sorted::KIND)
@@ -110,6 +116,9 @@ pub struct VariantSpec {
     pub baseline: bool,
     /// HTML fragment swapped into the slot. The baseline has none: it is the page's own content.
     pub html: Option<String>,
+    /// A copy slot's fields (see [`crate::copy`]), instead of html.
+    #[serde(default)]
+    pub copy: Option<crate::copy::Text>,
 }
 
 fn default_metric() -> String {
@@ -182,6 +191,7 @@ impl SiteFile {
             check_goal(&format!("slot {k:?}"), slot.goal.as_deref(), slot.revenue_cap)?;
             crate::stated::validate_slot(slot)?;
             crate::sorted::validate_slot(slot)?;
+            crate::copy::validate_slot(slot)?;
             let baselines = slot.variants.iter().filter(|v| v.baseline).count();
             if baselines != 1 && !slot.is_sorted() {
                 bail!("slot {k:?}: exactly one variant must be marked baseline (found {baselines})");
@@ -193,7 +203,7 @@ impl SiteFile {
                 }
                 match (v.baseline, &v.html) {
                     (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
-                    (false, None) if !slot.is_picker() && !slot.is_sorted() => bail!("slot {k:?}: variant {:?} needs html", v.key),
+                    (false, None) if !slot.is_picker() && !slot.is_sorted() && !slot.is_copy() => bail!("slot {k:?}: variant {:?} needs html", v.key),
                     _ => {}
                 }
             }
@@ -288,13 +298,13 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
             "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures, attribution,
-                                goal, revenue_cap, sorted)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                goal, revenue_cap, sorted, copy)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
                  attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
                  kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker,
                  cold_start_exposures = EXCLUDED.cold_start_exposures, attribution = EXCLUDED.attribution,
-                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap, sorted = EXCLUDED.sorted
+                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap, sorted = EXCLUDED.sorted, copy = EXCLUDED.copy
              RETURNING id",
         )
         .bind(&file.site)
@@ -311,6 +321,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(slot.goal.as_deref().unwrap_or("conversion"))
         .bind(slot.revenue_cap)
         .bind(crate::sorted::stored(slot))
+        .bind(crate::copy::stored(slot))
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;
@@ -337,7 +348,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             )
             .bind(slot_id)
             .bind(&v.key)
-            .bind(&v.html)
+            .bind(v.copy.as_ref().map(crate::copy::payload).or_else(|| v.html.clone()))
             .bind(baseline)
             .bind(APPROVER)
             .execute(&mut *tx)

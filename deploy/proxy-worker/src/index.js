@@ -411,6 +411,8 @@ export function createWorker(deps = {}) {
     // F2b: a sorted slot serves an order the kernel cannot make; Core leaves it out of the
     // snapshot (so it is an unknown slot), and this guards a snapshot that carries one anyway.
     for (const s of slots) if (snap.slots[s] && snap.slots[s].kind === 'sorted') return fallback('sorted', snap);
+    // F4: a copy slot's fields come back as `copy`, which the kernel does not build; same guard.
+    for (const s of slots) if (snap.slots[s] && snap.slots[s].kind === 'copy') return fallback('copy', snap);
     const erased = await erasedP;
     if (erased === true) {
       console.log(JSON.stringify({ msg: 'edge refused erased subject', site: body.site, colo: request.cf?.colo }));

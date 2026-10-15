@@ -155,6 +155,7 @@ pub async fn handler(State(state): State<Arc<AppState>>, headers: HeaderMap, bod
 const INSTRUCTIONS: &str = "Pratibimba personalises page slots with a bandit over approved variants. \
 This token sees one site. Read slots, variants, results and decision explanations freely. \
 propose_variant submits a DRAFT: a person approves it in the dashboard; you cannot. \
+On a copy slot (kind copy) use propose_copy instead: plain-text fields within each field's max, no HTML. \
 create_slot makes a DRAFT slot (live only once a person approves its baseline); update_slot edits only draft slots. \
 retire_variant PROPOSES a retirement; the variant keeps serving until a person confirms. \
 install_plugin REQUESTS a plugin; nothing is installed until a person confirms. \
@@ -164,7 +165,7 @@ recorded and shown to the reviewer. Reviewer comments come back on list_variants
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 18] = [
+const TOOLS: [&str; 19] = [
     "list_sites",
     "get_site",
     "list_slots",
@@ -173,6 +174,7 @@ const TOOLS: [&str; 18] = [
     "list_decisions",
     "explain_decision",
     "propose_variant",
+    "propose_copy",
     "simulate",
     "fast_forward_visitor",
     "list_audiences",
@@ -221,6 +223,11 @@ fn catalogue() -> Vec<Value> {
                      "html": { "type": "string", "description": "The HTML fragment that replaces the slot's content. No scripts or event handlers." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "html"]),
+        tool("propose_copy", "Submit new text for a copy slot (kind copy): one value per declared field, each within its max length, plain text with no < or > and no newlines; every required field filled. Lands as a DRAFT like propose_variant; list_slots shows the fields.",
+             json!({ "slot": slot, "key": { "type": "string", "description": "A new lowercase slug for the variant (a-z, 0-9, - and _)." },
+                     "copy": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Field name to text, e.g. {\"headline\": \"...\"}." },
+                     "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
+             &["slot", "key", "copy"]),
         tool("create_slot", "Declare a new swap slot. It lands as a DRAFT: its baseline (the page's own content) is a draft, so the slot is in no manifest and decides nothing until a person approves that baseline in the dashboard, which activates it. Then propose variants for it with propose_variant.",
              json!({ "key": { "type": "string", "description": "A new lowercase slug for the slot (a-z, 0-9, - and _), e.g. \"promo\"." },
                      "selector": { "type": "string", "description": "The CSS selector of the element the slot replaces, e.g. \"#promo\"." },
@@ -431,6 +438,15 @@ struct Proposal {
     slot: String,
     key: String,
     html: String,
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CopyProposal {
+    slot: String,
+    key: String,
+    copy: crate::copy::Text,
     note: Option<String>,
 }
 
@@ -801,7 +817,12 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
         }
         "propose_variant" => {
             let p: Proposal = parse(args)?;
-            propose(pool, site, p, call_row, agent).await
+            propose(pool, site, p, call_row, agent, false).await
+        }
+        "propose_copy" => {
+            let p: CopyProposal = parse(args)?;
+            let html = crate::copy::payload(&p.copy);
+            propose(pool, site, Proposal { slot: p.slot, key: p.key, html, note: p.note }, call_row, agent, true).await
         }
         "simulate" => simulate(pool, site, parse(args)?).await,
         "list_audiences" => {
@@ -851,15 +872,20 @@ async fn get_site(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
 
 async fn list_slots(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
     let r = results::site(pool, site, results::ALL_TIME, Utc::now()).await?.ok_or_else(|| ApiError::NotFound(format!("unknown site {site:?}")))?;
-    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, selector FROM slots WHERE site_id = $1").bind(site).fetch_all(pool).await?;
+    let rows: Vec<(i64, String, String, Option<Value>)> =
+        sqlx::query_as("SELECT id, selector, kind, copy FROM slots WHERE site_id = $1").bind(site).fetch_all(pool).await?;
     let slots: Vec<Value> = r
         .slots
         .iter()
         .map(|s| {
             let by = |st: &str| s.variants.iter().filter(|v| v.status == st).count();
+            let row = rows.iter().find(|r| r.0 == s.id);
             json!({
                 "key": s.key, "metric": s.metric,
-                "selector": rows.iter().find(|(id, _)| *id == s.id).map(|(_, sel)| sel.clone()),
+                "selector": row.map(|r| r.1.clone()),
+                "kind": row.map(|r| r.2.clone()),
+                // A copy slot's fields (F4): propose_copy text must fit these.
+                "copy_fields": row.and_then(|r| r.3.as_ref()).map(|c| c["fields"].clone()),
                 "champion": admin::champion(&s.variants).map(|v| v.key.clone()),
                 "variants": { "approved": by("approved"), "draft": by("draft"), "paused": by("paused"), "rejected": by("rejected"), "retired": by("retired") },
             })
@@ -915,14 +941,27 @@ async fn list_variants(pool: &PgPool, site: &str, slot: &str) -> Result<Value, A
     Ok(json!({ "slot": slot, "variants": variants }))
 }
 
-async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &str) -> Result<Value, ApiError> {
+async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &str, as_copy: bool) -> Result<Value, ApiError> {
     if !crate::site_file::is_slug(&p.key) {
         return Err(ApiError::BadRequest("key must be a lowercase slug (a-z, 0-9, - and _)".into()));
     }
     if p.html.trim().is_empty() || p.html.len() > admin::MAX_PAYLOAD {
         return Err(ApiError::BadRequest(format!("html must be 1 to {} bytes", admin::MAX_PAYLOAD)));
     }
-    let slot_id = slot_id(pool, site, &p.slot).await?;
+    let (slot_id, spec): (i64, Option<Value>) = sqlx::query_as("SELECT id, copy FROM slots WHERE site_id = $1 AND key = $2")
+        .bind(site)
+        .bind(&p.slot)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("unknown slot {:?} on site {site:?}", p.slot)))?;
+    // A copy slot takes only propose_copy's fields, checked against the slot's own; html never.
+    let is_copy = spec.is_some();
+    match (&spec, as_copy) {
+        (Some(_), false) => return Err(ApiError::BadRequest(format!("slot {:?} is a copy slot: use propose_copy with its fields, not html", p.slot))),
+        (None, true) => return Err(ApiError::BadRequest(format!("slot {:?} is not a copy slot; use propose_variant", p.slot))),
+        (Some(spec), true) => crate::copy::check_stored(spec, Some(&p.html)).map_err(ApiError::BadRequest)?,
+        (None, false) => {}
+    }
     let mut tx = pool.begin().await?;
     // The status is a literal: nothing an agent sends can make this row anything but a draft.
     let id: Option<i64> = sqlx::query_scalar(
@@ -949,7 +988,8 @@ async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &
     tx.commit().await?;
     let (forbidden, facts): (Vec<String>, Option<String>) =
         sqlx::query_as("SELECT forbidden_claims, facts FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
-    let report = checks::run(&p.html, &checks::Context { forbidden_claims: &forbidden, author: "agent", facts: facts.as_deref() });
+    let text = if is_copy { crate::copy::plain(Some(&p.html)) } else { p.html.clone() };
+    let report = checks::run(&text, &checks::Context { forbidden_claims: &forbidden, author: "agent", facts: facts.as_deref() });
     Ok(json!({
         "id": id, "slot": p.slot, "key": p.key, "status": "draft", "checks": report,
         "next": if checks::blocks(&report) {

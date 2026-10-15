@@ -59,6 +59,30 @@ export interface SortedProps {
   children?: ReactNode;
 }
 
+export interface CopyProps<F extends string = string> {
+  /** The copy slot's key, as declared in the site file (`kind: "copy"`). */
+  id: string;
+  /** The page's own text for every field: the baseline, and the value of any field a variant leaves out. */
+  fallback: Record<F, string>;
+  /**
+   * Renders the text. Each value is a plain string; render it as a React text child (escaped),
+   * never as HTML.
+   */
+  children: (text: Record<F, string>) => ReactNode;
+}
+
+/**
+ * The text a copy decision shows: the page's own for each field, overridden by the decided
+ * variant's string fields. Non-string values (none come from Core) are ignored.
+ */
+export function copyText<F extends string>(fallback: Record<F, string>, copy: unknown): Record<F, string> {
+  const out = { ...fallback };
+  if (copy && typeof copy === 'object') {
+    for (const [k, v] of Object.entries(copy as Record<string, unknown>)) if (typeof v === 'string' && k in out) (out as Record<string, string>)[k] = v;
+  }
+  return out;
+}
+
 /**
  * The children in the decided order, each keyed child wrapped in a `display: contents` element
  * marked `data-prb-item`. Keyed children move, in order, to where the first one stood; one the
@@ -222,5 +246,25 @@ export function createSlot(config: SlotConfig) {
     );
   }
 
-  return { Slot, Sorted, decide, visitor };
+  /** A copy slot (F4): `children` gets the decided text, field by field, as plain strings. */
+  async function Copy<F extends string>({ id, fallback, children }: CopyProps<F>) {
+    const d = await decide(id);
+    if (!d) return createElement('div', { 'data-prb-slot': id, style: { display: 'contents' } }, children({ ...fallback }));
+    const v = await visitor();
+    return createElement(
+      'div',
+      { 'data-prb-slot': id, 'data-prb-variant': d.variant, 'data-prb-decision': d.decision_id, style: { display: 'contents' } },
+      children(copyText(fallback, d.copy)),
+      createElement(PrbBeacon, {
+        site: config.site,
+        slot: id,
+        decision: d.decision_id,
+        subject: v!.subject,
+        consent: v!.ctx.consent === true,
+        eventsPath: config.eventsPath ?? '/_prb/e',
+      }),
+    );
+  }
+
+  return { Slot, Sorted, Copy, decide, visitor };
 }

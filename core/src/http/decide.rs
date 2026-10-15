@@ -120,7 +120,19 @@ pub struct DecideResponse {
     /// A sorted slot's items, best first (see [`crate::sorted`]); absent for any other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<Vec<String>>,
+    /// A copy slot's fields (see [`crate::copy`]): the chosen variant's text, `null` for the
+    /// baseline. Its `payload` is then always `null`, so an older SDK keeps the page's own copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<Value>,
     pub explanation: Value,
+}
+
+/// A copy decision carries its fields as `copy`, never as a payload.
+fn with_copy(mut resp: DecideResponse, is_copy: bool) -> DecideResponse {
+    if is_copy {
+        resp.copy = Some(crate::copy::parse(resp.payload.take().as_deref()).unwrap_or(Value::Null));
+    }
+    resp
 }
 
 /// Attach a sorted decision's order (as keys) to its response and its explanation.
@@ -248,7 +260,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        (SELECT p.salt FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day >= day.d ORDER BY p.day LIMIT 1) AS salt,
        EXISTS (SELECT 1 FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day < day.d) AS stale_salts,
        (SELECT v FROM subj) AS subject,
-       s.id AS slot_id, s.cold_start_exposures, s.sorted AS sorted_spec, r.ranking AS st_ranking,
+       s.id AS slot_id, s.cold_start_exposures, s.sorted AS sorted_spec, s.copy IS NOT NULL AS is_copy, r.ranking AS st_ranking,
        a.arm_ids, a.arm_keys, a.arm_payloads, a.arm_baselines, a.arm_shares,
        (SELECT jsonb_agg(jsonb_build_array(v.id, v.key, g.id, g.name, g.predicate, g.status) ORDER BY g.id, v.id)
           FROM variants v JOIN segments g ON g.id = v.audience_id
@@ -329,6 +341,8 @@ struct SlotSnapshot {
     sticky: Option<StickyRow>,
     /// A sorted slot's `{visible, order}` (see [`crate::sorted`]).
     sorted: Option<Value>,
+    /// A copy slot (see [`crate::copy`]).
+    is_copy: bool,
     /// The sticky decision's served order, when the slot is sorted.
     sticky_ranking: Option<Vec<i64>>,
     model: Option<(i64, Value)>,
@@ -435,6 +449,7 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                 experiment,
                 sticky,
                 sorted: row.try_get("sorted_spec")?,
+                is_copy: row.try_get("is_copy")?,
                 sticky_ranking: row.try_get("st_ranking")?,
                 model,
                 cold,
@@ -593,6 +608,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
         tz_offset: zone.map(|z| crate::insights::localtime::zone_offset(z, at)).or(req.ctx.tz_offset),
         ..req.ctx.clone()
     };
+    let is_copy = slot.is_copy;
     let mut arms = slot.arms;
     // The kill switch: a paused site serves only the page's own content.
     // A sorted slot's items, by key in the declared default order.
@@ -649,7 +665,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
             let made = Made { subject: req.subject.clone(), at, record: rec };
             let resp = response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc);
             let ranking = if sorted_order.is_some() { slot.sticky_ranking.as_deref() } else { None };
-            return Ok((with_order(resp, ranking, &arms), made));
+            return Ok((with_copy(with_order(resp, ranking, &arms), is_copy), made));
         }
     }
 
@@ -776,7 +792,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let made = Made { subject: req.subject.clone(), at, record: rec };
     let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
     let resp = response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc);
-    Ok((with_order(resp, ranking.as_deref(), &arms), made))
+    Ok((with_copy(with_order(resp, ranking.as_deref(), &arms), is_copy), made))
 }
 
 /// Who chose the treated arm, for the explanation.
@@ -832,6 +848,7 @@ fn response(
         variant,
         payload,
         order: None,
+        copy: None,
         explanation: json!({
             "policy": policy,
             "policy_version": version,

@@ -143,6 +143,10 @@ export const { GET, POST } = prb.route;
 <prb.Slot id="hero" variants={{ gift: <GiftHero /> }}><Hero /></prb.Slot>
 // a sorted slot (kind "sorted"): keyed children, rendered in the order Core decides
 <prb.Sorted id="grid">{products.map((p) => <Card key={p.slug} p={p} />)}</prb.Sorted>
+// a copy slot (kind "copy"): plain-text fields, rendered as text over the page's own
+<prb.Copy id="hero_copy" fallback={{ headline: 'Roasted on Monday', cta_label: 'Shop' }}>
+  {(t) => <><h1>{t.headline}</h1><a href="/shop">{t.cta_label}</a></>}
+</prb.Copy>
 ```
 
 A **sorted slot** learns an order instead of a pick: its variants are item keys, and `/decide`
@@ -151,6 +155,14 @@ adds `order`. `<prb.Sorted>` renders each keyed child in that order (wrapped in 
 click on a card names that card. With the script tag, mark each card `data-prb-item="<key>"`
 directly inside the slot's element and the script moves them. The `@pratibimba/edge` rewriter
 does not reorder; the edge-decide Worker sends every sorted slot to Core.
+
+A **copy slot** declares `copy.fields` (each a `name`, a `max` length in characters and whether
+it is `required`), and its variants carry `copy` (field to text) instead of `html`. Text with
+`<`, `>` or a newline, an undeclared field, a blank required field or one over its max is refused
+by the site file, by `propose_copy`, by a dashboard draft and again at approval. `/decide`
+returns the fields as `copy` with a `null` payload. With the script tag, mark each field
+`data-prb-field="<name>"` inside the slot's element and the script sets its `textContent`. The
+edge-decide Worker sends copy slots to Core.
 
 **Any other origin** (`@pratibimba/edge`) sits in front of it as an edge worker and rewrites
 `<!-- prb:slot="hero" -->...<!-- /prb:slot -->` regions as the HTML streams:
@@ -317,6 +329,7 @@ claude mcp add --transport http pratibimba https://core.example.com/mcp \
 | `get_results` | Per-slot and per-variant results with lift against the holdout. |
 | `list_decisions`, `explain_decision` | Recent decisions, and why one visitor saw what they saw. |
 | `propose_variant` | Submits a variant as a **draft**, with an optional note to the reviewer. Returns the constraint checks. |
+| `propose_copy` | For a copy slot (`kind: "copy"`): submits plain-text fields (e.g. `headline`, `cta_label`), each within its declared max length, as a **draft**. No HTML. |
 | `create_slot`, `update_slot` | Declares a swap slot whose baseline is a **draft**: it is in no manifest and decides nothing until a person approves that baseline (which activates the slot). `update_slot` edits only such draft slots. |
 | `retire_variant` | **Proposes** retiring a live variant. It keeps serving until a person confirms (`POST /api/retire-requests/:id/confirm {actor}`) or declines (`.../decline {actor, comment}`); open proposals are in the approvals API, and the answer on `list_variants`. |
 | `list_plugins` | The compiled-in plugin catalogue as the site has it: kind, `deanonymiser`, install, the agent's latest request and its answer, and the site's warnings. |

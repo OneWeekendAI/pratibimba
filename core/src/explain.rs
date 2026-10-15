@@ -187,6 +187,9 @@ pub struct Detail {
     pub subject: String,
     pub variant: String,
     pub payload: Option<String>,
+    /// A copy slot's shown fields, parsed (F4); `None` for any other kind or the baseline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy: Option<serde_json::Value>,
     pub is_baseline: bool,
     pub created_at: DateTime<Utc>,
     pub exposed_at: Option<DateTime<Utc>>,
@@ -442,8 +445,11 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         experiment,
         order: order.clone(),
     };
+    let is_copy: bool = sqlx::query_scalar("SELECT copy IS NOT NULL FROM slots WHERE id = $1").bind(slot_id).fetch_one(pool).await?;
+    let copy = if is_copy { crate::copy::parse(shown.2.as_deref()) } else { None };
     Ok(Some(Detail {
         id,
+        copy,
         site,
         slot,
         metric,
