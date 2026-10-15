@@ -123,6 +123,14 @@ test('a React page: hero, grid, promo, returning and CTA are each found, ranked,
   assert.ok(!r.candidates.some((c) => c.line === 22), 'a link with dynamic words is not a copy slot');
 });
 
+test('a long hero headline gets a copy max the server accepts (500 at most)', async () => {
+  const long = 'Hand-poured candles '.repeat(20).trim();
+  const dir = await fixture({ 'app/page.tsx': PAGE.replace('<h1>Hand-poured candles</h1>', `<h1>${long}</h1>`) });
+  const hero = (await scan({ dir })).candidates.find((c) => c.kind === 'copy' && c.fields.some((f) => f.name === 'headline'));
+  assert.ok(long.length * 1.5 > 500);
+  assert.equal(hero.fields.find((f) => f.name === 'headline').max, 500);
+});
+
 test('a hero with dynamic words is a swap slot, not a copy slot', async () => {
   const dir = await fixture({ 'app/page.tsx': PAGE.replace('<h1>Hand-poured candles</h1>', '<h1>{title}</h1>') });
   const r = await scan({ dir });
@@ -214,6 +222,31 @@ test('--write adds drafts to .pratibimba/slot-drafts.json, never to site.json, a
   const again = JSON.parse(await readFile(join(dir, DRAFTS_PATH), 'utf8'));
   assert.equal(again.drafts[0].audience, 'edited by a person');
   assert.equal(again.drafts.length, 5);
+});
+
+test('--write gives each draft the exact create_slot arguments for its kind', async () => {
+  const dir = await fixture({ 'app/page.tsx': PAGE });
+  await run(process.execPath, [CLI, 'scan', '--dir', dir, '--write']);
+  const { drafts, note } = JSON.parse(await readFile(join(dir, DRAFTS_PATH), 'utf8'));
+  assert.deepEqual(new Set(drafts.map((d) => d.kind)), new Set(['swap', 'copy', 'sorted']));
+  for (const d of drafts) {
+    const a = d.create_slot;
+    assert.deepEqual([a.key, a.selector, a.metric, a.kind], [d.key, d.selector, d.metric, d.kind], d.key);
+    if (d.kind === 'copy') {
+      // The server's copy spec refuses unknown keys, so the baseline text must not travel.
+      assert.deepEqual(a.copy, { fields: d.fields.map(({ name, max, required }) => ({ name, max, required })) });
+      assert.ok(a.copy.fields.every((f) => f.max >= 1 && f.max <= 500));
+    } else assert.equal(a.copy, undefined, d.key);
+    if (d.kind === 'sorted') {
+      assert.equal(a.items, undefined, 'scan cannot know the item keys; it must not invent them');
+      assert.match(d.needs, /items/);
+    } else {
+      assert.equal(a.items, undefined, d.key);
+      assert.equal(d.needs, undefined, d.key);
+    }
+  }
+  assert.match(note, /every kind through create_slot/);
+  assert.doesNotMatch(note, /site owner/);
 });
 
 test('--write refuses a drafts file it cannot parse and leaves it alone', async () => {

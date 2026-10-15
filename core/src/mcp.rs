@@ -156,7 +156,7 @@ const INSTRUCTIONS: &str = "Pratibimba personalises page slots with a bandit ove
 This token sees one site. Read slots, variants, results and decision explanations freely. \
 propose_variant submits a DRAFT: a person approves it in the dashboard; you cannot. \
 On a copy slot (kind copy) use propose_copy instead: plain-text fields within each field's max, no HTML. \
-create_slot makes a DRAFT slot (live only once a person approves its baseline); update_slot edits only draft slots. \
+create_slot makes a DRAFT slot of kind swap, copy (with copy.fields) or sorted (with items, in the default order), live only once a person approves its baseline; update_slot edits only draft slots. \
 retire_variant PROPOSES a retirement; the variant keeps serving until a person confirms. \
 install_plugin REQUESTS a plugin; nothing is installed until a person confirms. \
 simulate and fast_forward_visitor run only in the site's sandbox, never on real traffic. \
@@ -228,9 +228,16 @@ fn catalogue() -> Vec<Value> {
                      "copy": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Field name to text, e.g. {\"headline\": \"...\"}." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "copy"]),
-        tool("create_slot", "Declare a new swap slot. It lands as a DRAFT: its baseline (the page's own content) is a draft, so the slot is in no manifest and decides nothing until a person approves that baseline in the dashboard, which activates it. Then propose variants for it with propose_variant.",
+        tool("create_slot", "Declare a new slot: swap (HTML variants, the default), copy (named plain-text fields with max lengths) or sorted (an order of items). It lands as a DRAFT: its baseline (the page's own content; a sorted slot's first item) is a draft, so the slot is in no manifest and decides nothing until a person approves that baseline in the dashboard, which activates it. The kind's options are checked as the site file checks them. Then propose variants (propose_variant, or propose_copy on a copy slot).",
              json!({ "key": { "type": "string", "description": "A new lowercase slug for the slot (a-z, 0-9, - and _), e.g. \"promo\"." },
                      "selector": { "type": "string", "description": "The CSS selector of the element the slot replaces, e.g. \"#promo\"." },
+                     "kind": { "type": "string", "enum": ["swap", "copy", "sorted"], "description": "Optional (default swap)." },
+                     "copy": { "type": "object", "description": "Required for kind copy, refused otherwise: {\"fields\": [{\"name\": \"headline\", \"max\": 60, \"required\": true}]}, 1-8 fields, each max 1-500.",
+                               "properties": { "fields": { "type": "array", "items": { "type": "object",
+                                   "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500 }, "required": { "type": "boolean" } },
+                                   "required": ["name", "max"] } } }, "required": ["fields"] },
+                     "items": { "type": "array", "items": { "type": "string" }, "description": "Required for kind sorted, refused otherwise: 2-50 unique item keys (slugs) in the default order; the first is the baseline." },
+                     "sorted": { "type": "object", "properties": { "visible": { "type": "integer", "minimum": 1 } }, "description": "Optional for kind sorted: how many positions a visitor reads (default 4)." },
                      "metric": { "type": "string", "description": "Optional: the event that counts as success (default \"click\")." },
                      "attribution_window_secs": { "type": "integer", "minimum": 1, "description": "Optional: how long after a decision a success still counts (default 1800)." },
                      "decision_ttl_secs": { "type": "integer", "minimum": 0, "description": "Optional: how long a visitor keeps the same decision (default 60)." },
@@ -468,12 +475,20 @@ struct FastForwardArgs {
     ctx: Option<crate::http::decide::Ctx>,
 }
 
-/// Exactly what an agent may set on a new slot: a swap slot, never a picker or an on-device one.
+/// Exactly what an agent may set on a new slot: a swap, copy or sorted slot, never a picker or
+/// an on-device one. The kind's own options are checked by the site file's own rules.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewSlot {
     key: String,
     selector: String,
+    kind: Option<String>,
+    /// A copy slot's fields, as the site file declares them.
+    copy: Option<crate::copy::CopySpec>,
+    /// A sorted slot's options (`visible`).
+    sorted: Option<crate::sorted::SortedSpec>,
+    /// A sorted slot's item keys, in the default order; the first is the head (its baseline).
+    items: Option<Vec<String>>,
     metric: Option<String>,
     attribution_window_secs: Option<i32>,
     decision_ttl_secs: Option<i32>,
@@ -537,10 +552,43 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     let ttl = a.decision_ttl_secs.unwrap_or_else(crate::site_file::default_ttl);
     let selector = a.selector.trim().to_string();
     check_slot_settings(&selector, &metric, window, ttl)?;
+    let kind = a.kind.unwrap_or_else(|| "swap".into());
+    if !["swap", crate::copy::KIND, crate::sorted::KIND].contains(&kind.as_str()) {
+        return Err(ApiError::BadRequest(format!("kind must be swap, copy or sorted (got {kind:?})")));
+    }
+    let sorted = kind == crate::sorted::KIND;
+    if a.items.is_some() && !sorted {
+        return Err(ApiError::BadRequest("only a kind \"sorted\" slot takes items".into()));
+    }
+    // The slot as the site file would declare it, so the site file's rules judge it: a sorted
+    // slot's items are its variants; any other kind has the one baseline.
+    let variants = match a.items {
+        Some(items) => items.into_iter().map(|key| crate::site_file::VariantSpec { key, baseline: false, html: None, copy: None }).collect(),
+        None if sorted => vec![],
+        None => vec![crate::site_file::VariantSpec { key: "baseline".into(), baseline: true, html: None, copy: None }],
+    };
+    let spec = crate::site_file::SlotSpec {
+        key: a.key.clone(),
+        selector: selector.clone(),
+        metric: metric.clone(),
+        attribution_window_secs: window,
+        decision_ttl_secs: ttl,
+        cold_start_exposures: crate::site_file::default_cold_start(),
+        kind: Some(kind.clone()),
+        in_session: false,
+        picker: None,
+        attribution: None,
+        goal: None,
+        revenue_cap: None,
+        sorted: a.sorted,
+        copy: a.copy,
+        variants,
+    };
+    crate::site_file::validate_slot(&spec).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let mut tx = pool.begin().await?;
     let slot_id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, created_by, mcp_call_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'swap', $7, $8) ON CONFLICT (site_id, key) DO NOTHING RETURNING id",
+        "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, sorted, copy, created_by, mcp_call_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (site_id, key) DO NOTHING RETURNING id",
     )
     .bind(site)
     .bind(&a.key)
@@ -548,6 +596,9 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     .bind(&metric)
     .bind(window)
     .bind(ttl)
+    .bind(&kind)
+    .bind(crate::sorted::stored(&spec))
+    .bind(crate::copy::stored(&spec))
     .bind(format!("mcp:{agent}"))
     .bind(call_row)
     .fetch_optional(&mut *tx)
@@ -560,15 +611,24 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
         .bind(slot_id)
         .execute(&mut *tx)
         .await?;
-    // The baseline is the page's own content. As a draft, it keeps the whole slot dark.
-    let baseline: i64 = sqlx::query_scalar(
-        "INSERT INTO variants (slot_id, key, payload, is_baseline, author, status, mcp_call_id)
-         VALUES ($1, 'baseline', NULL, true, 'agent', 'draft', $2) RETURNING id",
-    )
-    .bind(slot_id)
-    .bind(call_row)
-    .fetch_one(&mut *tx)
-    .await?;
+    // The baseline is the page's own content (a sorted slot's: the head of its default order).
+    // As a draft, it keeps the whole slot dark; a sorted slot's other items are drafts too.
+    let mut baseline = 0;
+    for (i, v) in spec.variants.iter().enumerate() {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO variants (slot_id, key, payload, is_baseline, author, status, mcp_call_id)
+             VALUES ($1, $2, NULL, $3, 'agent', 'draft', $4) RETURNING id",
+        )
+        .bind(slot_id)
+        .bind(&v.key)
+        .bind(i == 0)
+        .bind(call_row)
+        .fetch_one(&mut *tx)
+        .await?;
+        if i == 0 {
+            baseline = id;
+        }
+    }
     if let Some(note) = a.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment) VALUES ($1, 'comment', $2, $3)")
             .bind(baseline)
@@ -579,9 +639,13 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     }
     tx.commit().await?;
     Ok(json!({
-        "slot": a.key, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl,
+        "slot": a.key, "kind": kind, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl,
         "status": "draft", "baseline_id": baseline,
-        "next": "Draft slot saved. It reaches no visitor until a person approves its baseline in the dashboard. Propose variants for it with propose_variant.",
+        "next": match kind.as_str() {
+            "copy" => "Draft copy slot saved. It reaches no visitor until a person approves its baseline in the dashboard. Propose text for it with propose_copy.",
+            "sorted" => "Draft sorted slot saved, every item a draft. It reaches no visitor until a person approves its head item (and each other item) in the dashboard.",
+            _ => "Draft slot saved. It reaches no visitor until a person approves its baseline in the dashboard. Propose variants for it with propose_variant.",
+        },
     }))
 }
 

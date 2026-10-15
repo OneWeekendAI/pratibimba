@@ -18,7 +18,7 @@ coming. That is deliberate, and it is the most important fact in this file.
 
 ## The connection
 
-The tools come from the MCP server named `pratibimba` at `https://pratibimbaapi.meetdev.in/mcp`. Its token is read from
+The tools come from the MCP server named `pratibimba` at `http://localhost:8080/mcp`. Its token is read from
 the `PRATIBIMBA_MCP_TOKEN` environment variable.
 
 If the `pratibimba` tools are missing or every call fails with 401, stop and tell the user.
@@ -60,10 +60,11 @@ sense (a thank-you heading is rarely worth a slot), and tell the user which few 
 pick and why. Then go to step 1 for each one you keep.
 
 `scan` writes nothing. With `--write` it adds the candidates to `.pratibimba/slot-drafts.json`
-as drafts, and only there. **A draft in that file is not a slot and reaches no visitor.** A
-`swap` draft becomes a draft slot through `create_slot`; a `copy` or `sorted` draft is set up
-by the site owner. Either way a person approves its baseline before anyone sees it. Never
-copy drafts into the site file.
+as drafts, and only there. **A draft in that file is not a slot and reaches no visitor.**
+Every draft carries the exact `create_slot` arguments for its kind; pass them as they are
+(a `sorted` draft first needs its `items`, which scan cannot see). That makes a draft slot,
+and a person approves its baseline before anyone sees it. Never copy drafts into the site
+file.
 
 ### 1. Read before you write
 
@@ -194,7 +195,11 @@ A person approves. You do not, and you cannot.
 ## Slots and retirement: you propose, a person decides
 
 - **`create_slot` makes a draft slot.** Give it a new `key`, the `selector` of the element it
-  replaces and, if it is not `click`, the success `metric`. Its baseline (the page's own
+  replaces and, if it is not `click`, the success `metric`. Its `kind` is `swap` (the default:
+  HTML variants), `copy` (give `copy: {"fields": [{"name": "headline", "max": 60, "required":
+  true}]}`, 1-8 fields, each max 1-500; then use `propose_copy`) or `sorted` (give `items`, 2-50
+  item keys in the default order; the first is the head and the baseline). The server checks
+  these exactly as it checks the site file. Its baseline (the page's own
   content) starts as a draft, so the slot is in no manifest and reaches no visitor until a
   person approves that baseline in the dashboard. Then propose variants for it as usual. In
   the code, mark the element the same way as any other slot (see step 2).

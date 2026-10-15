@@ -6,8 +6,9 @@
 // variants, is the coding agent's job; this only points.
 //
 // Nothing is written unless `writeDrafts` is called (the CLI's --write). It writes
-// .pratibimba/slot-drafts.json, never the site file: a draft slot still goes through
-// `create_slot` (or the owner, for copy and sorted slots) and a person's approval.
+// .pratibimba/slot-drafts.json, never the site file. Each draft carries the exact `create_slot`
+// arguments for its kind (swap, copy or sorted); the slot still lands as a draft over MCP and a
+// person approves its baseline.
 
 import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { join, relative, sep, dirname } from 'node:path';
@@ -327,7 +328,7 @@ function matches(selector, el) {
   return false;
 }
 function copyFields(fields) {
-  return Object.entries(fields).map(([name, value]) => ({ name, max: Math.max(40, Math.ceil((value.length * 1.5) / 10) * 10), required: true, baseline: value }));
+  return Object.entries(fields).map(([name, value]) => ({ name, max: Math.min(500, Math.max(40, Math.ceil((value.length * 1.5) / 10) * 10)), required: true, baseline: value }));
 }
 function slug(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').split('_').slice(0, 3).join('_') || 'text';
@@ -394,6 +395,17 @@ export function formatText({ candidates, existing }) {
 }
 
 /**
+ * The MCP `create_slot` arguments for a candidate. A copy slot's fields go without their
+ * baseline text (the server's copy spec refuses unknown keys). A sorted slot's items are not
+ * guessed: scan cannot see the data the list is rendered from.
+ */
+export function createSlotArgs(c) {
+  const args = { key: c.key, selector: c.selector, metric: c.metric, kind: c.kind };
+  if (c.kind === 'copy') args.copy = { fields: c.fields.map(({ name, max, required }) => ({ name, max, required })) };
+  return args;
+}
+
+/**
  * Add candidates to .pratibimba/slot-drafts.json as drafts. A key already in the file is kept
  * as it is (the developer may have edited it). Returns `{ path, added, kept }`.
  */
@@ -411,12 +423,13 @@ export async function writeDrafts({ dir, candidates }) {
   for (const c of candidates) {
     if (have.has(c.key)) continue;
     const { rank, excerpt: _e, ...rest } = c;
-    doc.drafts.push({ status: 'draft', ...rest });
+    const needs = c.kind === 'sorted' ? 'items: add the item keys, in the default order, to create_slot.items before calling it' : undefined;
+    doc.drafts.push({ status: 'draft', ...rest, create_slot: createSlotArgs(c), ...(needs ? { needs } : {}) });
     have.add(c.key);
     added++;
   }
   doc = {
-    note: 'Slot drafts from `pratibimba-agent scan --write`. None of these is live: a swap slot becomes a draft slot through create_slot, copy and sorted slots through the site owner, and a person approves each baseline.',
+    note: 'Slot drafts from `pratibimba-agent scan --write`. None of these is live: every kind through create_slot (pass each draft\'s create_slot arguments, adding a sorted draft\'s items), which makes a draft slot, and a person approves each baseline.',
     drafts: doc.drafts,
   };
   await mkdir(dirname(path), { recursive: true });

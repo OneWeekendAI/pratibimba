@@ -171,42 +171,7 @@ impl SiteFile {
             }
         }
         for slot in &self.slots {
-            let k = &slot.key;
-            if !is_slug(k) {
-                bail!("slot {k:?}: key must be a lowercase slug");
-            }
-            if slot.selector.trim().is_empty() {
-                bail!("slot {k:?}: selector is empty");
-            }
-            if !is_event_name(&slot.metric) {
-                bail!("slot {k:?}: metric {:?} is not a valid event name", slot.metric);
-            }
-            if slot.attribution_window_secs <= 0 || slot.decision_ttl_secs < 0 {
-                bail!("slot {k:?}: attribution_window_secs must be > 0 and decision_ttl_secs >= 0");
-            }
-            if !(0..=MAX_COLD_START).contains(&slot.cold_start_exposures) {
-                bail!("slot {k:?}: cold_start_exposures must be between 0 and {MAX_COLD_START}");
-            }
-            check_attribution(&format!("slot {k:?}"), slot.attribution.as_deref())?;
-            check_goal(&format!("slot {k:?}"), slot.goal.as_deref(), slot.revenue_cap)?;
-            crate::stated::validate_slot(slot)?;
-            crate::sorted::validate_slot(slot)?;
-            crate::copy::validate_slot(slot)?;
-            let baselines = slot.variants.iter().filter(|v| v.baseline).count();
-            if baselines != 1 && !slot.is_sorted() {
-                bail!("slot {k:?}: exactly one variant must be marked baseline (found {baselines})");
-            }
-            let mut keys = std::collections::HashSet::new();
-            for v in &slot.variants {
-                if !is_slug(&v.key) || !keys.insert(&v.key) {
-                    bail!("slot {k:?}: variant key {:?} is invalid or repeated", v.key);
-                }
-                match (v.baseline, &v.html) {
-                    (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
-                    (false, None) if !slot.is_picker() && !slot.is_sorted() && !slot.is_copy() => bail!("slot {k:?}: variant {:?} needs html", v.key),
-                    _ => {}
-                }
-            }
+            validate_slot(slot)?;
         }
         crate::stated::validate_site(self)?;
         Ok(())
@@ -214,6 +179,48 @@ impl SiteFile {
 }
 
 pub const GOALS: [&str; 2] = ["conversion", "revenue"];
+
+/// One slot's rules, as the site file holds them. The MCP `create_slot` runs the same check on
+/// the slot an agent describes, so a draft slot can never be one the site file would refuse.
+pub fn validate_slot(slot: &SlotSpec) -> Result<()> {
+    let k = &slot.key;
+    if !is_slug(k) {
+        bail!("slot {k:?}: key must be a lowercase slug");
+    }
+    if slot.selector.trim().is_empty() {
+        bail!("slot {k:?}: selector is empty");
+    }
+    if !is_event_name(&slot.metric) {
+        bail!("slot {k:?}: metric {:?} is not a valid event name", slot.metric);
+    }
+    if slot.attribution_window_secs <= 0 || slot.decision_ttl_secs < 0 {
+        bail!("slot {k:?}: attribution_window_secs must be > 0 and decision_ttl_secs >= 0");
+    }
+    if !(0..=MAX_COLD_START).contains(&slot.cold_start_exposures) {
+        bail!("slot {k:?}: cold_start_exposures must be between 0 and {MAX_COLD_START}");
+    }
+    check_attribution(&format!("slot {k:?}"), slot.attribution.as_deref())?;
+    check_goal(&format!("slot {k:?}"), slot.goal.as_deref(), slot.revenue_cap)?;
+    crate::stated::validate_slot(slot)?;
+    crate::sorted::validate_slot(slot)?;
+    crate::copy::validate_slot(slot)?;
+    let baselines = slot.variants.iter().filter(|v| v.baseline).count();
+    if baselines != 1 && !slot.is_sorted() {
+        bail!("slot {k:?}: exactly one variant must be marked baseline (found {baselines})");
+    }
+    let mut keys = std::collections::HashSet::new();
+    for v in &slot.variants {
+        if !is_slug(&v.key) || !keys.insert(&v.key) {
+            bail!("slot {k:?}: variant key {:?} is invalid or repeated", v.key);
+        }
+        match (v.baseline, &v.html) {
+            (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
+            (false, None) if !slot.is_picker() && !slot.is_sorted() && !slot.is_copy() => bail!("slot {k:?}: variant {:?} needs html", v.key),
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 /// A slot's goal and revenue cap: the cap goes with `revenue` and only with it.
 pub fn check_goal(what: &str, goal: Option<&str>, cap: Option<f64>) -> Result<()> {

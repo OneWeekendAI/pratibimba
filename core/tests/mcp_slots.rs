@@ -379,3 +379,149 @@ async fn retire_variant_is_audited_with_its_justification(pool: PgPool) {
         sqlx::query_as("SELECT tool, outcome FROM mcp_calls WHERE id = $1").bind(r["audit"]["id"].as_i64().unwrap()).fetch_one(&pool).await.unwrap();
     assert_eq!((tool.as_str(), outcome.as_str()), ("retire_variant", "ok"));
 }
+
+// ---- create_slot kinds: copy (F4) and sorted (F2) -------------------------------------------
+
+fn headline_fields() -> Value {
+    json!({ "fields": [{ "name": "headline", "max": 40, "required": true }, { "name": "cta_label", "max": 20 }] })
+}
+
+async fn create(app: &Router, t: &str, args: Value) -> Value {
+    call(app, t, "create_slot", why(args)).await
+}
+
+async fn kind_cols(pool: &PgPool, key: &str) -> (String, Option<Value>, Option<Value>) {
+    sqlx::query_as("SELECT kind, copy, sorted FROM slots WHERE key = $1").bind(key).fetch_one(pool).await.unwrap()
+}
+
+async fn in_manifest(app: &Router, key: &str) -> bool {
+    let m = get(app, "/manifest/demo").await.json();
+    m["slots"].as_array().unwrap().iter().any(|s| s["key"] == key)
+}
+
+#[sqlx::test(migrations = false)]
+async fn create_slot_makes_a_draft_copy_slot_with_its_fields(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let r = data(&create(&app, &t, json!({ "key": "banner", "selector": "#banner", "kind": "copy", "copy": headline_fields() })).await);
+    assert_eq!((r["kind"].as_str(), r["status"].as_str()), (Some("copy"), Some("draft")), "{r}");
+    let (kind, copy, sorted) = kind_cols(&pool, "banner").await;
+    assert_eq!((kind.as_str(), sorted), ("copy", None));
+    assert_eq!(copy.unwrap(), json!({ "fields": [{ "name": "headline", "max": 40, "required": true }, { "name": "cta_label", "max": 20, "required": false }] }));
+    assert_eq!(baseline_of(&pool, "banner").await.1, "draft");
+    assert!(!in_manifest(&app, "banner").await);
+    // The declared fields are the ones propose_copy is held to.
+    let long = "x".repeat(41);
+    err_text(&call(&app, &t, "propose_copy", why(json!({ "slot": "banner", "key": "long", "copy": { "headline": long } }))).await);
+    data(&call(&app, &t, "propose_copy", why(json!({ "slot": "banner", "key": "short", "copy": { "headline": "Ship today" } }))).await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn approving_a_copy_slots_baseline_activates_it(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    data(&create(&app, &t, json!({ "key": "banner", "selector": "#banner", "kind": "copy", "copy": headline_fields() })).await);
+    let (id, _) = baseline_of(&pool, "banner").await;
+    assert_eq!(approve(&app, id).await.status, StatusCode::OK);
+    assert!(in_manifest(&app, "banner").await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn create_slot_makes_a_draft_sorted_slot_in_the_default_order(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let r = data(&create(&app, &t, json!({ "key": "grid", "selector": "#grid", "kind": "sorted", "items": ["tea", "mug", "pot"] })).await);
+    assert_eq!((r["kind"].as_str(), r["status"].as_str()), (Some("sorted"), Some("draft")), "{r}");
+    let (kind, copy, sorted) = kind_cols(&pool, "grid").await;
+    assert_eq!((kind.as_str(), copy), ("sorted", None));
+    assert_eq!(sorted.unwrap(), json!({ "visible": 3, "order": ["tea", "mug", "pot"] }));
+    let items: Vec<(String, bool, String)> = sqlx::query_as(
+        "SELECT v.key, v.is_baseline, v.status FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.key = 'grid' ORDER BY v.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let want: Vec<(String, bool, String)> =
+        [("tea", true), ("mug", false), ("pot", false)].iter().map(|(k, b)| (k.to_string(), *b, "draft".to_string())).collect();
+    assert_eq!(items, want, "the head of the default order is the baseline; every item is a draft");
+    assert!(!in_manifest(&app, "grid").await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn create_slot_keeps_a_sorted_slots_visible(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    data(&create(&app, &t, json!({ "key": "grid", "selector": "#grid", "kind": "sorted", "items": ["a", "b", "c"], "sorted": { "visible": 2 } })).await);
+    assert_eq!(kind_cols(&pool, "grid").await.2.unwrap()["visible"], 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn approving_a_sorted_slots_head_activates_it(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    data(&create(&app, &t, json!({ "key": "grid", "selector": "#grid", "kind": "sorted", "items": ["tea", "mug"] })).await);
+    let (id, _) = baseline_of(&pool, "grid").await;
+    let r = approve(&app, id).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert!(in_manifest(&app, "grid").await);
+}
+
+/// One refusal per rule, each shaped so only that rule can explain the error.
+async fn refused(args: Value, needle: &str, pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let mut a = json!({ "key": "promo", "selector": "#promo" });
+    a.as_object_mut().unwrap().extend(args.as_object().unwrap().clone());
+    let e = err_text(&create(&app, &t, a).await);
+    assert!(e.contains(needle), "wanted {needle:?} in {e:?}");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM slots WHERE key = 'promo'").fetch_one(&pool).await.unwrap();
+    assert_eq!(n, 0, "a refused slot is not stored");
+}
+
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_copy_slot_without_fields(pool: PgPool) {
+    refused(json!({ "kind": "copy" }), "needs copy.fields", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_copy_slot_with_no_fields(pool: PgPool) {
+    refused(json!({ "kind": "copy", "copy": { "fields": [] } }), "1-8 fields", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_copy_field_over_the_max_length(pool: PgPool) {
+    refused(json!({ "kind": "copy", "copy": { "fields": [{ "name": "headline", "max": 501 }] } }), "max must be 1 to 500", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_repeated_copy_field(pool: PgPool) {
+    let f = json!({ "name": "headline", "max": 40 });
+    refused(json!({ "kind": "copy", "copy": { "fields": [f, f] } }), "invalid or repeated", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_copy_fields_on_a_swap_slot(pool: PgPool) {
+    refused(json!({ "copy": headline_fields() }), "slot takes copy fields", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_sorted_slot_without_items(pool: PgPool) {
+    refused(json!({ "kind": "sorted" }), "needs 2-50 items", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_sorted_slot_with_one_item(pool: PgPool) {
+    refused(json!({ "kind": "sorted", "items": ["tea"] }), "needs 2-50 items", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_repeated_item(pool: PgPool) {
+    refused(json!({ "kind": "sorted", "items": ["tea", "tea"] }), "invalid or repeated", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_an_item_that_is_not_a_slug(pool: PgPool) {
+    refused(json!({ "kind": "sorted", "items": ["tea", "Big Mug"] }), "invalid or repeated", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_visible_beyond_the_items(pool: PgPool) {
+    refused(json!({ "kind": "sorted", "items": ["a", "b"], "sorted": { "visible": 3 } }), "sorted.visible", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_items_on_a_copy_slot(pool: PgPool) {
+    refused(json!({ "kind": "copy", "copy": headline_fields(), "items": ["a", "b"] }), "slot takes items", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_sorted_options_on_a_swap_slot(pool: PgPool) {
+    refused(json!({ "sorted": { "visible": 2 } }), "slot takes sorted options", pool).await;
+}
+#[sqlx::test(migrations = false)]
+async fn create_slot_refuses_a_picker_slot(pool: PgPool) {
+    refused(json!({ "kind": "picker" }), "kind must be swap, copy or sorted", pool).await;
+}

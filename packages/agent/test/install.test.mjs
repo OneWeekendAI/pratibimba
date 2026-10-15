@@ -196,6 +196,8 @@ const RULES = {
   'install_plugin only requests': /\*\*`install_plugin` only requests\.\*\* Nothing is installed until a person confirms/,
   'history audiences fail closed for unidentified visitors': /`days_since_last_purchase: \{gte: 30\}`[\s\S]*History is known only for identified visitors[\s\S]*Everyone else fails closed/,
   'run scan first, and its drafts are not slots': /### 0\. Run `scan` first[\s\S]*\*\*scan points, you judge\.\*\*[\s\S]*\*\*A draft in that file is not a slot and reaches no visitor\.\*\*[\s\S]*### 1\. Read before you write/,
+  'every scan draft goes through create_slot, kind and all': /Every draft carries the exact `create_slot` arguments for its kind[\s\S]*a `sorted` draft first needs its `items`/,
+  'create_slot takes copy fields and sorted items': /`create_slot` makes a draft slot\.[\s\S]*`copy` \(give `copy:[\s\S]*`sorted` \(give `items`/,
   'a de-anonymiser only when asked by name': /`deanonymiser`[\s\S]*Do not request one\s+unless the user asked for that plugin by name/,
 };
 for (const p of PACK) {
