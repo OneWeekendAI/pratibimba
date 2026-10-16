@@ -643,7 +643,8 @@ async fn update_slot_refuses_a_visible_beyond_the_items(pool: PgPool) {
     assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 3, "order": ["tea", "mug", "pot"] }));
 }
 
-/// New items arrive as drafts, dropped draft items go, and the new head is the baseline.
+/// New items arrive as drafts, dropped draft items are retired (kept for history), and the new
+/// head is the baseline.
 #[sqlx::test(migrations = false)]
 async fn update_slot_replaces_a_sorted_slots_items(pool: PgPool) {
     let (app, t) = setup(&pool).await;
@@ -652,7 +653,10 @@ async fn update_slot_replaces_a_sorted_slots_items(pool: PgPool) {
     assert_eq!(r["sorted"], json!({ "visible": 3, "order": ["pot", "cup", "tea"] }), "{r}");
     assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 3, "order": ["pot", "cup", "tea"] }));
     let draft = |k: &str, b: bool| (k.to_string(), b, "draft".to_string());
-    assert_eq!(grid_variants(&pool).await, vec![draft("cup", false), draft("pot", true), draft("tea", false)]);
+    assert_eq!(
+        grid_variants(&pool).await,
+        vec![draft("cup", false), ("mug".to_string(), false, "retired".to_string()), draft("pot", true), draft("tea", false)]
+    );
     // The slot is still dark: its new head is a draft baseline.
     assert!(!in_manifest(&app, "grid").await);
 }
@@ -710,4 +714,45 @@ async fn update_slot_refuses_relisting_a_rejected_item(pool: PgPool) {
     let e = err_text(&update(&app, &t, json!({ "slot": "grid", "items": ["tea", "mug"] })).await);
     assert!(e.contains("\"mug\" is rejected"), "{e}");
     assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 3, "order": ["tea", "mug", "pot"] }));
+}
+
+async fn grid_id(pool: &PgPool, key: &str) -> i64 {
+    sqlx::query_scalar("SELECT v.id FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.key = 'grid' AND v.key = $1")
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn trail(pool: &PgPool, id: i64) -> Vec<(String, String)> {
+    sqlx::query_as("SELECT action, actor FROM approvals WHERE variant_id = $1 ORDER BY id").bind(id).fetch_all(pool).await.unwrap()
+}
+
+/// Bug fix 2026-10-16: dropping an item keeps its row and its comment thread; the retirement is
+/// in the trail under the agent's name, as a confirmed retirement is.
+#[sqlx::test(migrations = false)]
+async fn a_dropped_item_keeps_its_comments(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let mug = grid_id(&pool, "mug").await;
+    let r = api_post(&app, &format!("/api/variants/{mug}/comment"), json!({ "actor": "Ritwik", "comment": "mugs sell in winter" })).await;
+    assert!(r.status.is_success(), "{}", r.text);
+    data(&update(&app, &t, json!({ "slot": "grid", "items": ["tea", "pot"] })).await);
+    assert_eq!(grid_id(&pool, "mug").await, mug, "the row is kept");
+    assert_eq!(trail(&pool, mug).await, vec![("comment".to_string(), "Ritwik".to_string()), ("retire".to_string(), "Claude Code".to_string())]);
+}
+
+/// A dropped item listed again comes back as a draft, its history intact.
+#[sqlx::test(migrations = false)]
+async fn a_dropped_item_listed_again_is_a_draft_again(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let mug = grid_id(&pool, "mug").await;
+    data(&update(&app, &t, json!({ "slot": "grid", "items": ["tea", "pot"] })).await);
+    let r = data(&update(&app, &t, json!({ "slot": "grid", "items": ["mug", "tea", "pot"] })).await);
+    assert_eq!(r["sorted"]["order"], json!(["mug", "tea", "pot"]), "{r}");
+    assert_eq!(grid_id(&pool, "mug").await, mug);
+    let draft = |k: &str, b: bool| (k.to_string(), b, "draft".to_string());
+    assert_eq!(grid_variants(&pool).await, vec![draft("mug", true), draft("pot", false), draft("tea", false)]);
+    assert_eq!(trail(&pool, mug).await.len(), 1, "one retire row, from the drop");
 }

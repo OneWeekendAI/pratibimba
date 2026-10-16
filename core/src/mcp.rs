@@ -718,7 +718,7 @@ async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, wh
         // fields that a variant would no longer fit are refused here, not discovered at approval.
         crate::site_file::validate_slot(&spec).map_err(|e| ApiError::BadRequest(format!("{e} (the slot's existing variants must still fit; nothing was changed)")))?;
         if let Some(items) = &u.items {
-            set_items(&mut tx, slot_id, items, call_row).await?;
+            set_items(&mut tx, slot_id, items, call_row, who.agent).await?;
         }
         sqlx::query("UPDATE slots SET selector = $2, metric = $3, attribution_window_secs = $4, decision_ttl_secs = $5, copy = $6, sorted = $7 WHERE id = $1")
             .bind(slot_id)
@@ -818,7 +818,8 @@ async fn kind_spec(
         });
         let (visible, order) = stored.unwrap_or((crate::sorted::DEFAULT_VISIBLE, vec![]));
         let items = items.unwrap_or(order);
-        if let Some((k, status)) = rows.iter().find(|r| items.contains(&r.0) && r.3 != "draft").map(|r| (&r.0, &r.3)) {
+        // A retired item on a draft slot was dropped from its items earlier; it may come back.
+        if let Some((k, status)) = rows.iter().find(|r| items.contains(&r.0) && r.3 != "draft" && r.3 != "retired").map(|r| (&r.0, &r.3)) {
             return Err(ApiError::Conflict(format!("item {k:?} is {status}; only a draft slot's draft items can be reordered or replaced")));
         }
         // Visible follows the items down when there are fewer of them, as create_slot clamps it.
@@ -857,15 +858,28 @@ async fn kind_spec(
     })
 }
 
-/// A draft sorted slot's new items: dropped items go (drafts that never served anyone), new
-/// ones arrive as drafts, and the head of the new order is the baseline.
-async fn set_items(tx: &mut sqlx::PgConnection, slot_id: i64, items: &[String], call_row: i64) -> Result<(), ApiError> {
-    sqlx::query("DELETE FROM variants WHERE slot_id = $1 AND status = 'draft' AND NOT (key = ANY($2))").bind(slot_id).bind(items).execute(&mut *tx).await?;
+/// A draft sorted slot's new items: dropped items are retired (kept with their comment thread,
+/// and the retirement is in the trail under the agent's name), new ones arrive as drafts, a
+/// retired item listed again is a draft again, and the head of the new order is the baseline.
+async fn set_items(tx: &mut sqlx::PgConnection, slot_id: i64, items: &[String], call_row: i64, agent: &str) -> Result<(), ApiError> {
+    let dropped: Vec<i64> = sqlx::query_scalar("UPDATE variants SET status = 'retired' WHERE slot_id = $1 AND status = 'draft' AND NOT (key = ANY($2)) RETURNING id")
+        .bind(slot_id)
+        .bind(items)
+        .fetch_all(&mut *tx)
+        .await?;
+    for id in dropped {
+        sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment) VALUES ($1, 'retire', $2, 'dropped from the sorted items by update_slot')")
+            .bind(id)
+            .bind(agent)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query("UPDATE variants SET is_baseline = false WHERE slot_id = $1").bind(slot_id).execute(&mut *tx).await?;
     for (i, key) in items.iter().enumerate() {
         sqlx::query(
             "INSERT INTO variants (slot_id, key, payload, is_baseline, author, status, mcp_call_id) VALUES ($1, $2, NULL, $3, 'agent', 'draft', $4)
-             ON CONFLICT (slot_id, key) DO UPDATE SET is_baseline = EXCLUDED.is_baseline",
+             ON CONFLICT (slot_id, key) DO UPDATE SET is_baseline = EXCLUDED.is_baseline,
+                 status = CASE WHEN variants.status = 'retired' THEN 'draft' ELSE variants.status END",
         )
         .bind(slot_id)
         .bind(key)
