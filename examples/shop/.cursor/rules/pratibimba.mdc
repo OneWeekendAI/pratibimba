@@ -52,13 +52,18 @@ When the user asks where to personalise, or wants a new slot, start here. Run:
 
     npx @pratibimba/agent scan
 
-It reads the repo (JSX/TSX and plain HTML) and lists candidate slots, best first: hero
+It reads the repo (JSX/TSX, Vue, Svelte, Astro and plain HTML) and lists candidate slots, best first: hero
 headlines, calls to action, product lists, promo lines and returning-visitor spots. Each line
 gives `file:line`, the slot kind (`swap`, `copy` or `sorted`), a suggested key, audience and
 goal, and why. It also lists the slots the repo already has. It is a fixed set of rules, not
 a judgement: **scan points, you judge.** Open each candidate, drop the ones that make no
 sense (a thank-you heading is rarely worth a slot), and tell the user which few you would
 pick and why. Then go to step 1 for each one you keep.
+
+For Vue, Svelte and Astro there is **no SDK component**: the mark scan suggests is the script
+tag's attributes (`data-prb-slot`, and `data-prb-field` or `data-prb-item` inside). The script
+acts on the markup the server sends, so it suits server-rendered pages (Astro, SvelteKit, Nuxt),
+not a page whose markup only a client-side mount creates.
 
 `scan` writes nothing. With `--write` it adds the candidates to `.pratibimba/slot-drafts.json`
 as drafts, and only there. **A draft in that file is not a slot and reaches no visitor.**

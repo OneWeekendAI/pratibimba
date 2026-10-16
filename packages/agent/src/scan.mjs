@@ -14,7 +14,7 @@ import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { join, relative, sep, dirname } from 'node:path';
 
 export const DRAFTS_PATH = '.pratibimba/slot-drafts.json';
-const EXTS = /\.(tsx|jsx|html?)$/;
+const EXTS = /\.(tsx|jsx|html?|vue|svelte|astro)$/;
 const SKIP_DIRS = new Set(['node_modules', '.next', '.git', 'dist', 'build', 'out', 'coverage', 'test', 'tests',
   '__tests__', 'e2e', 'test-results', '.pratibimba', '.claude', '.cursor', '.vercel', '.turbo']);
 const SKIP_FILES = /\.(test|spec|stories)\.[jt]sx?$/;
@@ -28,7 +28,10 @@ const KINDS = {
   cta: { score: 55 },
   headline: { score: 45 },
 };
-const HOME = /^(src\/)?(app\/page|pages\/index)\.[jt]sx$|^(public\/)?index\.html?$/;
+const HOME = /^(src\/)?(app\/page|pages\/index)\.[jt]sx$|^(public\/)?index\.html?$|^(src\/)?pages\/index\.(vue|astro)$|^src\/routes\/\+page\.svelte$/;
+// What renders a list from data, per format. JSX also needs keyed elements (below).
+const LOOPS = { jsx: /\.map\(/, astro: /\.map\(/, vue: /\sv-for\s*=/, svelte: /\{#each\b/ };
+const formatOf = (rel) => (/\.[jt]sx$/.test(rel) ? 'jsx' : /\.html?$/.test(rel) ? 'html' : rel.slice(rel.lastIndexOf('.') + 1));
 
 const HERO_TOKENS = /^(hero|jumbotron|masthead|splash)([-_].*)?$/i;
 const GRID_TOKENS = /^(grid|products?|product-list|cards|catalog(ue)?|items|listing|collection)([-_].*)?$/i;
@@ -48,7 +51,8 @@ export async function scan({ dir, limit } = {}) {
   for (const abs of files) {
     const rel = relative(dir, abs).split(sep).join('/');
     const text = await readFile(abs, 'utf8');
-    parsed.push({ rel, text, html: /\.html?$/.test(rel), ...parse(text) });
+    const fmt = formatOf(rel);
+    parsed.push({ rel, fmt, markup: fmt !== 'jsx', ...parse(text, fmt) });
   }
   const site = await readSite(dir);
 
@@ -60,8 +64,8 @@ export async function scan({ dir, limit } = {}) {
     for (const el of f.els) {
       const prb = /^prb\.(Slot|Sorted|Copy|Text)$/.exec(el.name);
       const dataKey = attr(el.attrs, 'data-prb-slot');
-      const commentKey = f.html ? f.comments.find((c) => c.before === el.start)?.key : undefined;
-      const siteKey = f.html ? site.find((s) => matches(s.selector, el))?.key : undefined;
+      const commentKey = f.markup ? f.comments.find((c) => c.before === el.start)?.key : undefined;
+      const siteKey = f.markup ? site.find((s) => matches(s.selector, el))?.key : undefined;
       const key = prb ? attr(el.attrs, 'id') : dataKey ?? commentKey ?? siteKey;
       if (!key) continue;
       const kind = prb ? { Slot: 'swap', Sorted: 'sorted', Copy: 'copy', Text: 'copy' }[prb[1]] : 'swap';
@@ -72,6 +76,8 @@ export async function scan({ dir, limit } = {}) {
   }
   for (const f of parsed) {
     const exported = [...f.text.matchAll(/export\s+(?:default\s+)?(?:function|const|class)\s+([A-Z]\w*)/g)].map((m) => m[1]);
+    // A Vue, Svelte or Astro component is named by its file.
+    if (f.fmt !== 'jsx' && f.fmt !== 'html') exported.push(/([^/]+)\.\w+$/.exec(f.rel)[1]);
     if (exported.some((n) => coveredNames.has(n))) f.covered.push([0, f.text.length]);
   }
   const takenKeys = new Set([...existing.map((e) => e.key), ...site.map((s) => s.key)]);
@@ -149,9 +155,11 @@ function classify(el, f) {
 
   // A sorted list: the innermost element that renders `.map(` of keyed elements, or (HTML) 3+
   // same-tag children that look like cards.
-  if (!f.html && isContainer && /\.map\(/.test(inner) && !kids.some((k) => k.closeStart !== undefined && CONTAINERS.has(k.name) && /\.map\(/.test(f.text.slice(k.openEnd, k.closeStart)))) {
-    const body = inner.slice(inner.indexOf('.map('));
-    if (/key=/.test(body) && /<[a-z]/.test(body)) {
+  const loop = LOOPS[f.fmt];
+  if (loop && isContainer && loop.test(inner) && !kids.some((k) => k.closeStart !== undefined && CONTAINERS.has(k.name) && loop.test(f.text.slice(k.openEnd, k.closeStart)))) {
+    const body = inner.slice(inner.search(loop));
+    // A Vue v-for sits on the repeated element itself; the others render elements after the loop.
+    if ((f.fmt !== 'jsx' || /key=/.test(body)) && (f.fmt === 'vue' || /<[a-z]/.test(body))) {
       const priced = /price|₹|\$|€|£/i.test(body);
       return {
         type: 'grid', kind: 'sorted', key: toks.find((t) => GRID_TOKENS.test(t))?.toLowerCase() ?? 'list',
@@ -160,7 +168,7 @@ function classify(el, f) {
       };
     }
   }
-  if (f.html && isContainer) {
+  if (f.markup && isContainer) {
     const direct = el.children.filter((k) => k.closeStart !== undefined);
     const byTag = {};
     for (const k of direct) byTag[k.name] = (byTag[k.name] ?? 0) + 1;
@@ -216,15 +224,8 @@ function classify(el, f) {
 
 // ---- parsing: a small tag scanner, enough for formatted JSX and HTML ----
 
-function parse(src) {
-  const comments = [];
-  // Blank out comments (keeping offsets and newlines), remembering `prb:slot` markers.
-  let text = src.replace(/<!--([\s\S]*?)-->/g, (m, body, at) => {
-    const k = /prb:slot\s*=\s*"([^"]+)"/.exec(body);
-    if (k) comments.push({ key: k[1], at: at + m.length });
-    return m.replace(/[^\n]/g, ' ');
-  });
-  text = text.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
+function parse(src, fmt) {
+  const { text, tags, comments } = tokenize(src, fmt);
   const lineStarts = [0];
   for (let i = 0; i < text.length; i++) if (text[i] === '\n') lineStarts.push(i + 1);
   const lineOf = (i) => {
@@ -232,28 +233,6 @@ function parse(src) {
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= i) lo = mid; else hi = mid - 1; }
     return lo + 1;
   };
-
-  const tags = [];
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '<') continue;
-    const close = text[i + 1] === '/';
-    const m = /^[A-Za-z][\w.:-]*/.exec(text.slice(i + (close ? 2 : 1), i + 80));
-    if (!m) continue;
-    let j = i + (close ? 2 : 1) + m[0].length, depth = 0, q = null;
-    for (; j < text.length; j++) {
-      const ch = text[j];
-      if (q) { if (ch === q) q = null; continue; }
-      if (ch === '"' || ch === "'" || ch === '`') q = ch;
-      else if (ch === '{') depth++;
-      else if (ch === '}') depth--;
-      else if (ch === '>' && depth <= 0) break;
-      else if (ch === '<' && depth <= 0 && !close) break; // not a tag after all (a generic, a comparison)
-    }
-    if (text[j] !== '>') continue;
-    const attrs = text.slice(i + 1 + m[0].length, j);
-    tags.push({ name: m[0], close, self: !close && /\/\s*$/.test(attrs), start: i, openEnd: j + 1, attrs });
-    i = j;
-  }
 
   // Match each opening tag to its closing tag with a stack per name; void HTML tags never close.
   const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
@@ -281,6 +260,203 @@ function parse(src) {
   // A prb:slot comment marks the next element.
   for (const c of comments) c.before = els.find((e) => e.start >= c.at)?.start;
   return { text, els, comments };
+}
+
+// ---- the tokenizer ----
+//
+// Two contexts. JS (a .tsx file, or an expression inside markup): strings, template literals,
+// comments and regexes are skipped, and `<` opens a JSX element only where an expression can
+// start, so `a < b` and `useState<string>()` are not tags. A JSX element that never closes was
+// a misreading (`<T,>(x) =>`, a type `<T>(x: T) => T`); it is rolled back and its `<` read as an
+// operator. Markup (HTML, a Vue template, Svelte, Astro): tags, text, comments, `{...}` (Svelte,
+// Astro) and `{{...}}` (Vue) expressions; <script> and <style> bodies and Astro's frontmatter are
+// code, blanked. Markup tags stay flat (HTML may omit end tags; parse() pairs them), JSX nests.
+
+const FORMATS = {
+  jsx: { js: true },
+  html: {},
+  vue: { mustache: true },
+  svelte: { braces: true },
+  astro: { braces: true, frontmatter: true },
+};
+const RAW = /^(script|style)$/i;
+// Words after which an expression starts (so a `<` or `/` there begins JSX or a regex).
+const OPS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
+
+function tokenize(src, fmt) {
+  const o = FORMATS[fmt];
+  const n = src.length;
+  const out = src.split('');
+  const blank = (a, b) => { for (let k = a; k < b; k++) if (out[k] !== '\n') out[k] = ' '; };
+  const tags = [];
+  const comments = [];
+  const isName = (c) => c !== undefined && /[A-Za-z]/.test(c);
+  const word = (c) => c !== undefined && (/[\w$]/.test(c) || c > '\x7f');
+  let i = 0;
+
+  function jsStr(q) {
+    let k = i + 1;
+    while (k < n && src[k] !== q && src[k] !== '\n') k += src[k] === '\\' ? 2 : 1;
+    i = Math.min(src[k] === q ? k + 1 : k, n);
+  }
+  function attrStr(q) {
+    const e = src.indexOf(q, i + 1);
+    i = e < 0 ? n : e + 1;
+  }
+  function template() {
+    i++;
+    while (i < n) {
+      if (src[i] === '\\') i += 2;
+      else if (src[i] === '`') { i++; return; }
+      else if (src[i] === '$' && src[i + 1] === '{') { i += 2; js('}'); i++; }
+      else i++;
+    }
+  }
+  function regex() {
+    let k = i + 1, cls = false;
+    for (; k < n; k++) {
+      const c = src[k];
+      if (c === '\\') { k++; continue; }
+      if (c === '\n') return false;
+      if (c === '[') cls = true;
+      else if (c === ']') cls = false;
+      else if (c === '/' && !cls) break;
+    }
+    if (k >= n) return false;
+    for (k++; k < n && /[a-z]/i.test(src[k]);) k++;
+    i = k;
+    return true;
+  }
+  // JS until `stop` ('}' or '}}') at depth 0, or the end. Leaves i on the stop.
+  function js(stop) {
+    let depth = 0, value = false;
+    while (i < n) {
+      const c = src[i];
+      if (stop && depth === 0 && src.startsWith(stop, i)) return;
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+      if (c === '/' && src[i + 1] === '/') { const e = src.indexOf('\n', i); const end = e < 0 ? n : e; blank(i, end); i = end; continue; }
+      if (c === '/' && src[i + 1] === '*') { const e = src.indexOf('*/', i + 2); const end = e < 0 ? n : e + 2; blank(i, end); i = end; continue; }
+      if (c === '"' || c === "'") { jsStr(c); value = true; continue; }
+      if (c === '`') { template(); value = true; continue; }
+      if (c === '/' && !value && regex()) { value = true; continue; }
+      if (c === '<' && !value && (isName(src[i + 1]) || src[i + 1] === '>') && jsx()) { value = true; continue; }
+      if (word(c)) {
+        let k = i;
+        while (k < n && word(src[k])) k++;
+        value = !OPS.has(src.slice(i, k));
+        i = k;
+        continue;
+      }
+      if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth = Math.max(0, depth - 1);
+      value = c === ')' || c === ']';
+      i++;
+    }
+  }
+  // A JSX element at i, strictly nested; on a misreading nothing it found is kept.
+  function jsx() {
+    const start = i, mark = tags.length;
+    if (element()) return true;
+    tags.length = mark;
+    i = start;
+    return false;
+  }
+  function element() {
+    if (src[i + 1] === '>') { i += 2; return children(''); }
+    const t = openTag(true);
+    if (!t) return false;
+    return t.self || children(t.name);
+  }
+  function children(name) {
+    while (i < n) {
+      const c = src[i];
+      if (c === '{') { i++; js('}'); if (i >= n) return false; i++; continue; }
+      if (c === '<' && src[i + 1] === '/') {
+        const m = /^\/([A-Za-z][\w.:-]*)?\s*>/.exec(src.slice(i + 1, i + 90));
+        if (!m || (m[1] ?? '') !== name) return false;
+        if (name) tags.push({ name, close: true, self: false, start: i, openEnd: i + 1 + m[0].length, attrs: '' });
+        i += 1 + m[0].length;
+        return true;
+      }
+      if (c === '<' && (src[i + 1] === '>' || isName(src[i + 1]))) { if (!element()) return false; continue; }
+      i++;
+    }
+    return false;
+  }
+  // An opening tag at i (strict: JSX). Returns the tag with i after its `>`, or null.
+  function openTag(strict) {
+    const s = i, mark = tags.length;
+    const m = /^[A-Za-z][\w.:-]*/.exec(src.slice(i + 1, i + 81));
+    if (!m) return null;
+    const k = i + 1 + m[0].length;
+    const t = { name: m[0], close: false, self: false, start: s };
+    tags.push(t);
+    i = k;
+    while (i < n) {
+      const c = src[i];
+      if (c === '"' || c === "'") { attrStr(c); continue; }
+      if (c === '{' && (strict || o.braces)) { i++; js('}'); if (i >= n) break; i++; continue; }
+      if (c === '>') {
+        t.attrs = src.slice(k, i);
+        t.self = /\/\s*$/.test(t.attrs);
+        t.openEnd = ++i;
+        return t;
+      }
+      if (c === '<') break; // not a tag after all
+      i++;
+    }
+    tags.length = mark;
+    i = s;
+    return null;
+  }
+  function markup() {
+    while (i < n) {
+      if (src.startsWith('<!--', i)) {
+        const e = src.indexOf('-->', i + 4);
+        const end = e < 0 ? n : e + 3;
+        const k = /prb:slot\s*=\s*"([^"]+)"/.exec(src.slice(i, end));
+        if (k) comments.push({ key: k[1], at: end });
+        blank(i, end);
+        i = end;
+      } else if (o.mustache && src.startsWith('{{', i)) {
+        i += 2; js('}}'); i += 2;
+      } else if (o.braces && src[i] === '{') {
+        i++;
+        if (/[#:/@]/.test(src[i] ?? '')) for (i++; word(src[i]);) i++; // {#each, {:else, {/if, {@html
+        js('}');
+        i++;
+      } else if (src[i] === '<' && src[i + 1] === '/' && isName(src[i + 2])) {
+        const e = src.indexOf('>', i);
+        if (e < 0) { i++; continue; }
+        tags.push({ name: /^[A-Za-z][\w.:-]*/.exec(src.slice(i + 2, i + 82))[0], close: true, self: false, start: i, openEnd: e + 1, attrs: '' });
+        i = e + 1;
+      } else if (src[i] === '<' && isName(src[i + 1])) {
+        const s = i;
+        const t = openTag(false);
+        if (!t) { i = s + 1; continue; }
+        if (RAW.test(t.name) && !t.self) {
+          const re = new RegExp(`</${t.name}\\s*>`, 'ig');
+          re.lastIndex = i;
+          const end = re.exec(src)?.index ?? n;
+          blank(i, end);
+          i = end;
+        }
+      } else i++;
+    }
+  }
+
+  if (o.js) js(null);
+  else {
+    const fm = o.frontmatter && /^\s*---\r?\n/.exec(src);
+    if (fm) {
+      const e = src.indexOf('\n---', fm[0].length - 1);
+      i = e < 0 ? n : e + 4;
+      blank(0, i);
+    }
+    markup();
+  }
+  tags.sort((a, b) => a.start - b.start);
+  return { text: out.join(''), tags, comments };
 }
 
 function attr(attrs, name) {
@@ -345,7 +521,15 @@ function excerpt(el, f) {
   return line.length > 100 ? `${line.slice(0, 97)}...` : line;
 }
 function mark(c, key, id, file) {
-  if (/\.html?$/.test(file)) return id ? `selector #${id} (already unique)` : `add data-prb-slot="${key}" to the element`;
+  if (!/\.[jt]sx$/.test(file)) {
+    // The script tag's markup: there is no Vue, Svelte or Astro component, and the script acts
+    // on the markup the server sends (a client-only mount is not there yet when it runs).
+    let m = id ? `selector #${id} (already unique)` : `add data-prb-slot="${key}" to the element`;
+    if (c.kind === 'copy') m += `; inside it, put each field's words in an element marked data-prb-field="<name>" (${c.fields.map((x) => x.name).join(', ')})`;
+    if (c.kind === 'sorted') m += '; mark each repeated item, directly inside it, data-prb-item="<its key>"';
+    if (!/\.html?$/.test(file)) m += '; this is the script tag\'s markup (no component exists for this framework), and it acts on server-rendered markup only';
+    return m;
+  }
   if (c.kind === 'sorted') return `wrap the mapped items in <prb.Sorted id="${key}">, each with its item key`;
   if (c.kind === 'copy') return `render the words through <prb.Copy id="${key}" fallback={...}>`;
   return `wrap it in <prb.Slot id="${key}">; the current markup is the baseline`;

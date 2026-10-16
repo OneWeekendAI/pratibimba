@@ -1,0 +1,90 @@
+{
+  "candidates": [
+    {
+      "rank": 1,
+      "file": "src/routes/+page.svelte",
+      "line": 10,
+      "kind": "copy",
+      "key": "hero",
+      "selector": "[data-prb-slot=hero]",
+      "fields": [
+        {
+          "name": "headline",
+          "max": 40,
+          "required": true,
+          "baseline": "Hand-poured candles"
+        },
+        {
+          "name": "cta_label",
+          "max": 40,
+          "required": true,
+          "baseline": "Shop candles"
+        }
+      ],
+      "metric": "click",
+      "audience": "everyone first; then new vs returning visitors",
+      "goal": "conversion",
+      "why": "the first thing a visitor reads, with static words: a copy slot lets an agent test headline, subhead and button label as plain text",
+      "excerpt": "<section class=\"hero\">",
+      "mark": "add data-prb-slot=\"hero\" to the element; inside it, put each field's words in an element marked data-prb-field=\"<name>\" (headline, cta_label); this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    },
+    {
+      "rank": 2,
+      "file": "src/routes/+page.svelte",
+      "line": 19,
+      "kind": "sorted",
+      "key": "products",
+      "selector": "[data-prb-slot=products]",
+      "metric": "click",
+      "audience": "everyone; the order is learned from visitor features",
+      "goal": "revenue",
+      "why": "a list rendered from data with prices: a sorted slot learns which order gets clicked, with each item's key as its id",
+      "excerpt": "<div class=\"products\">",
+      "mark": "add data-prb-slot=\"products\" to the element; mark each repeated item, directly inside it, data-prb-item=\"<its key>\"; this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    },
+    {
+      "rank": 3,
+      "file": "src/routes/+page.svelte",
+      "line": 16,
+      "kind": "swap",
+      "key": "promo",
+      "selector": "[data-prb-slot=promo]",
+      "metric": "click",
+      "audience": "everyone",
+      "goal": "revenue",
+      "why": "an offer line: an offer moves order value, so judge its variants on revenue, not clicks",
+      "excerpt": "<p class=\"banner\">Free shipping this week only</p>",
+      "mark": "add data-prb-slot=\"promo\" to the element; this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    },
+    {
+      "rank": 4,
+      "file": "src/routes/+page.svelte",
+      "line": 27,
+      "kind": "copy",
+      "key": "get_started_cta",
+      "selector": "[data-prb-slot=get_started_cta]",
+      "fields": [
+        {
+          "name": "cta_label",
+          "max": 40,
+          "required": true,
+          "baseline": "Get started"
+        }
+      ],
+      "metric": "click",
+      "audience": "everyone",
+      "goal": "conversion",
+      "why": "a call to action (\"Get started\"): a copy slot tests the button's words without touching its behaviour",
+      "excerpt": "<button on:click={() => (n = n<3 ? n + 1 : 0)}>Get started</button>",
+      "mark": "add data-prb-slot=\"get_started_cta\" to the element; inside it, put each field's words in an element marked data-prb-field=\"<name>\" (cta_label); this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    }
+  ],
+  "existing": [
+    {
+      "key": "welcome",
+      "kind": "swap",
+      "file": "src/routes/+page.svelte",
+      "line": 25
+    }
+  ]
+}

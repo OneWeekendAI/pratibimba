@@ -1,0 +1,88 @@
+{
+  "candidates": [
+    {
+      "rank": 1,
+      "file": "src/pages/index.astro",
+      "line": 8,
+      "kind": "copy",
+      "key": "hero",
+      "selector": "[data-prb-slot=hero]",
+      "fields": [
+        {
+          "name": "headline",
+          "max": 40,
+          "required": true,
+          "baseline": "Hand-poured candles"
+        },
+        {
+          "name": "subhead",
+          "max": 40,
+          "required": true,
+          "baseline": "Soy wax, cotton wicks."
+        },
+        {
+          "name": "cta_label",
+          "max": 40,
+          "required": true,
+          "baseline": "Shop candles"
+        }
+      ],
+      "metric": "click",
+      "audience": "everyone first; then new vs returning visitors",
+      "goal": "conversion",
+      "why": "the first thing a visitor reads, with static words: a copy slot lets an agent test headline, subhead and button label as plain text",
+      "excerpt": "<section class=\"hero\">",
+      "mark": "add data-prb-slot=\"hero\" to the element; inside it, put each field's words in an element marked data-prb-field=\"<name>\" (headline, subhead, cta_label); this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    },
+    {
+      "rank": 2,
+      "file": "src/pages/index.astro",
+      "line": 14,
+      "kind": "sorted",
+      "key": "products",
+      "selector": "[data-prb-slot=products]",
+      "metric": "click",
+      "audience": "everyone; the order is learned from visitor features",
+      "goal": "revenue",
+      "why": "a list rendered from data with prices: a sorted slot learns which order gets clicked, with each item's key as its id",
+      "excerpt": "<ul class=\"products\">",
+      "mark": "add data-prb-slot=\"products\" to the element; mark each repeated item, directly inside it, data-prb-item=\"<its key>\"; this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    },
+    {
+      "rank": 3,
+      "file": "src/pages/index.astro",
+      "line": 18,
+      "kind": "sorted",
+      "key": "list",
+      "selector": "[data-prb-slot=list]",
+      "metric": "click",
+      "audience": "everyone; the order is learned from visitor features",
+      "goal": "conversion",
+      "why": "3 repeated <div> cards: a sorted slot learns which order gets clicked; give each card a stable item key",
+      "excerpt": "<div class=\"picks\"><div class=\"card\">Rose</div><div class=\"card\">Oud</div><div class=\"card\">Pine<...",
+      "mark": "add data-prb-slot=\"list\" to the element; mark each repeated item, directly inside it, data-prb-item=\"<its key>\"; this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    },
+    {
+      "rank": 4,
+      "file": "src/pages/index.astro",
+      "line": 13,
+      "kind": "swap",
+      "key": "promo",
+      "selector": "[data-prb-slot=promo]",
+      "metric": "click",
+      "audience": "everyone",
+      "goal": "revenue",
+      "why": "an offer line: an offer moves order value, so judge its variants on revenue, not clicks",
+      "excerpt": "<p class=\"promo\">20% off today only</p>}",
+      "mark": "add data-prb-slot=\"promo\" to the element; this is the script tag's markup (no component exists for this framework), and it acts on server-rendered markup only"
+    }
+  ],
+  "existing": [
+    {
+      "key": "offer_box",
+      "kind": "swap",
+      "file": "src/pages/index.astro",
+      "line": 17
+    }
+  ]
+}

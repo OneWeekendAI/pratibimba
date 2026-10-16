@@ -27,9 +27,11 @@ const at = (r, file, line) => r.candidates.find((c) => c.file === file && c.line
 
 // ---- golden outputs on the real examples ----
 
-for (const ex of ['shop', 'next', 'plain']) {
-  test(`examples/${ex} matches its golden scan`, async () => {
-    const got = await scan({ dir: join(EXAMPLES, ex) });
+const FIXTURES = join(here, 'fixtures');
+for (const [ex, root] of [['shop', EXAMPLES], ['next', EXAMPLES], ['plain', EXAMPLES],
+  ['vue', FIXTURES], ['svelte', FIXTURES], ['astro', FIXTURES], ['jsx-lt', FIXTURES]]) {
+  test(`${root === EXAMPLES ? 'examples' : 'fixtures'}/${ex} matches its golden scan`, async () => {
+    const got = await scan({ dir: join(root, ex) });
     const path = join(GOLDEN, `${ex}.json`);
     if (UPDATE) await writeFile(path, `${JSON.stringify(got, null, 2)}\n`);
     assert.deepEqual(got, JSON.parse(await readFile(path, 'utf8')));
@@ -59,6 +61,69 @@ test('examples/plain: a site.json selector marks the HTML hero as an existing sl
   const r = await scan({ dir: join(EXAMPLES, 'plain') });
   assert.deepEqual(r.existing, [{ key: 'hero', kind: 'swap', file: 'index.html', line: 13 }]);
   assert.deepEqual(r.candidates, []);
+});
+
+// ---- Vue, Svelte and Astro: markup only, each framework's loop, the script-tag marks ----
+
+const brief = (r) => r.candidates.map((c) => [c.line, c.kind, c.key]);
+
+test('fixtures/vue: the template is scanned, <script> and <style> are not, v-for is a sorted list', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'vue') });
+  assert.deepEqual(r.existing, [{ key: 'comeback', kind: 'swap', file: 'src/pages/Home.vue', line: 21 }]);
+  assert.deepEqual(brief(r), [[11, 'copy', 'hero'], [18, 'sorted', 'products'], [24, 'swap', 'returning'], [16, 'swap', 'promo'], [23, 'copy', 'book_a_call_cta']]);
+  assert.ok(!r.candidates.some((c) => c.file === 'src/components/Welcome.vue'), 'a component rendered inside a slot is covered by its file name');
+  assert.ok(!r.candidates.some((c) => c.line === 22), 'mustache words are dynamic');
+  assert.ok(!r.candidates.some((c) => c.line < 9 || c.line > 25), 'nothing from <script> or <style>');
+  const [hero, list] = r.candidates;
+  assert.deepEqual(hero.fields.map((f) => f.baseline), ['Hand-poured candles', 'Soy wax, cotton wicks.', 'Shop candles']);
+  assert.equal(list.goal, 'revenue');
+  for (const c of r.candidates) {
+    assert.match(c.mark, new RegExp(`data-prb-slot="${c.key}"`), c.key);
+    assert.doesNotMatch(c.mark, /prb\.(Slot|Copy|Sorted)/, 'there is no Vue component to wrap with');
+    assert.match(c.mark, /script tag/);
+  }
+  assert.match(hero.mark, /data-prb-field="<name>".*headline, subhead, cta_label/);
+  assert.match(list.mark, /data-prb-item=/);
+});
+
+test('fixtures/svelte: {#each} is a sorted list, a prb:slot comment is existing, `<` in braces is not a tag', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'svelte') });
+  assert.deepEqual(r.existing, [{ key: 'welcome', kind: 'swap', file: 'src/routes/+page.svelte', line: 25 }]);
+  assert.deepEqual(brief(r), [[10, 'copy', 'hero'], [19, 'sorted', 'products'], [16, 'swap', 'promo'], [27, 'copy', 'get_started_cta']]);
+  assert.ok(!r.candidates.some((c) => c.line === 28), 'a heading with dynamic words is not a copy slot');
+  assert.match(r.candidates[1].why, /with prices/);
+});
+
+test('fixtures/astro: frontmatter and <script> are skipped, JSX inside expressions is scanned, site.json selectors count', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'astro') });
+  assert.deepEqual(r.existing, [{ key: 'offer_box', kind: 'swap', file: 'src/pages/index.astro', line: 17 }]);
+  assert.deepEqual(brief(r), [[8, 'copy', 'hero'], [14, 'sorted', 'products'], [18, 'sorted', 'list'], [13, 'swap', 'promo']]);
+});
+
+test('fixtures/jsx-lt: comparisons, generics, comments, strings and regexes do not make tags', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'jsx-lt') });
+  assert.deepEqual(brief(r), [[14, 'copy', 'hero'], [17, 'sorted', 'products'], [15, 'swap', 'returning'], [16, 'swap', 'promo'], [20, 'copy', 'get_started_cta']]);
+  assert.ok(!r.candidates.some((c) => c.line < 9), 'nothing from a comment, a template string or a regex');
+});
+
+test('a JSX list mapped without keys is not offered as sorted (no item ids to learn)', async () => {
+  const dir = await fixture({ 'app/page.tsx': `export default function P({ xs }) {
+  return <ul className="products">{xs.map((x) => <li>{x}</li>)}</ul>;
+}
+` });
+  assert.deepEqual((await scan({ dir })).candidates, []);
+});
+
+test('plain HTML: markup inside <script> and <style> is not scanned', async () => {
+  const dir = await fixture({ 'index.html': `<html><body>
+<script>const s = '<button class="cta">Buy now</button>'; if (a<b) go();</script>
+<style>.x::before { content: '<a class="cta">Shop now</a>'; }</style>
+<a class="cta" href="/join">Join us</a>
+</body></html>
+` });
+  const r = await scan({ dir });
+  assert.deepEqual(r.candidates.map((c) => [c.line, c.key]), [[4, 'join_us_cta']]);
+  assert.match(r.candidates[0].mark, /data-prb-field="<name>".*cta_label/, 'a copy mark names its fields');
 });
 
 // ---- each kind on an unslotted repo ----

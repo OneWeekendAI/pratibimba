@@ -1,0 +1,23 @@
+---
+import Layout from '../layouts/Layout.astro';
+const products = await getProducts();
+const sale = products.filter((p) => p.price<limit);
+const fake = '<section class="hero"><h1>Fake</h1><a class="cta" href="#">Shop fake</a></section>';
+---
+<Layout title="Candles">
+  <section class="hero">
+    <h1>Hand-poured candles</h1>
+    <p>Soy wax, cotton wicks.</p>
+    <a class="cta" href="#shop">Shop candles</a>
+  </section>
+  {sale.length<max && <p class="promo">20% off today only</p>}
+  <ul class="products">
+    {products.map((p) => <li class="card"><a href={`/p/${p.slug}`}>{p.name} ₹{p.price}</a></li>)}
+  </ul>
+  <div id="offer"><p>Old offer, 10% off</p></div>
+  <div class="picks"><div class="card">Rose</div><div class="card">Oud</div><div class="card">Pine</div></div>
+  <script>
+    const s = '<button class="cta">Buy now</button>';
+    if (a<b) console.log(s);
+  </script>
+</Layout>
