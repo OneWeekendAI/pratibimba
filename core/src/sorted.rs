@@ -4,7 +4,8 @@
 //! - **Choosing.** Each item is an arm of the slot's LinTS model; the decision's Thompson draws
 //!   (the scores every slot already records) are sorted, highest first, ties to the default order.
 //! - **Holdout and pause.** The declared default order: the order the file lists the items in.
-//! - **Learning (cascade).** At close, the topmost position whose item a metric event from the
+//! - **Learning (cascade).** At close, over the order the page rendered (the first exposure's
+//!   `items`, else the stored ranking; see [`RENDERED`]), the topmost position whose item a metric event from the
 //!   subject names in its `items` is the acted-on one: every item above it learns a miss and it
 //!   learns the reward; items below learn nothing. Nothing acted on: the first `visible` items
 //!   each learn a miss.
@@ -142,6 +143,18 @@ pub fn tally(items: &[String], decisions: &[(Vec<String>, Vec<String>)], visible
     out
 }
 
+/// The item keys decision `d` was rendered in: its first exposure's `items` (an exposure that names
+/// none does not count), else the stored ranking. Callers keep only the slot's declared items, so
+/// an unknown card drops out. The per-item table and the learner both read the order through this.
+const RENDERED: &str = "coalesce(
+                  (SELECT array_agg(it->>'id' ORDER BY n)
+                     FROM (SELECT x.items FROM live_events x
+                            WHERE x.decision_id = d.id AND x.site_id = d.site_id AND x.subject = d.subject
+                              AND x.name = 'exposure' AND jsonb_typeof(x.items) = 'array' AND jsonb_array_length(x.items) > 0
+                            ORDER BY x.received_at, x.id LIMIT 1) f
+                     CROSS JOIN LATERAL jsonb_array_elements(f.items) WITH ORDINALITY j(it, n)),
+                  ARRAY(SELECT v.key FROM unnest(d.ranking) WITH ORDINALITY r(id, n) JOIN variants v ON v.id = r.id ORDER BY r.n))";
+
 /// Per-item results for a sorted slot over its treated decisions created in `[since, now)` whose
 /// window has closed, or `None` for any other kind. The order is the one the decision's first
 /// exposure says was rendered (unknown keys dropped), or the stored order when it names none;
@@ -155,14 +168,7 @@ pub async fn item_results(pool: &sqlx::PgPool, slot: i64, since: chrono::DateTim
     let Some((visible, order)) = spec else { return Ok(None) };
     let items: Vec<String> = order.unwrap_or_default();
     let rows: Vec<(Vec<String>, Vec<String>)> = sqlx::query_as(
-        "SELECT coalesce(
-                  (SELECT array_agg(it->>'id' ORDER BY n)
-                     FROM (SELECT x.items FROM live_events x
-                            WHERE x.decision_id = d.id AND x.site_id = d.site_id AND x.subject = d.subject
-                              AND x.name = 'exposure' AND jsonb_typeof(x.items) = 'array' AND jsonb_array_length(x.items) > 0
-                            ORDER BY x.received_at, x.id LIMIT 1) f
-                     CROSS JOIN LATERAL jsonb_array_elements(f.items) WITH ORDINALITY j(it, n)),
-                  ARRAY(SELECT v.key FROM unnest(d.ranking) WITH ORDINALITY r(id, n) JOIN variants v ON v.id = r.id ORDER BY r.n)),
+        &format!("SELECT {RENDERED},
                 ARRAY(SELECT DISTINCT it->>'id'
                         FROM live_events e
                         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(e.items) = 'array' THEN e.items ELSE '[]' END) it
@@ -173,7 +179,7 @@ pub async fn item_results(pool: &sqlx::PgPool, slot: i64, since: chrono::DateTim
            FROM decisions d JOIN slots s ON s.id = d.slot_id
           WHERE d.slot_id = $1 AND d.ranking IS NOT NULL AND NOT d.in_holdout AND d.exposed_at IS NOT NULL
             AND d.created_at >= $2
-            AND d.created_at + make_interval(secs => s.attribution_window_secs) < $3",
+            AND d.created_at + make_interval(secs => s.attribution_window_secs) < $3"),
     )
     .bind(slot)
     .bind(since)
@@ -188,14 +194,20 @@ pub async fn item_results(pool: &sqlx::PgPool, slot: i64, since: chrono::DateTim
 /// Teach the model one closed sorted decision (see [`lessons`]). `reward` is what the acted-on
 /// item learns: 1, or the revenue goal's capped share.
 pub async fn learn(tx: &mut Transaction<'_, Postgres>, decision: Uuid, slot: i64, features: &Value, reward: f64) -> Result<()> {
-    let (ranking, visible, keys): (Vec<i64>, i32, Vec<String>) = sqlx::query_as(
-        "SELECT d.ranking, (s.sorted->>'visible')::int,
-                ARRAY(SELECT v.key FROM unnest(d.ranking) WITH ORDINALITY r(id, n) JOIN variants v ON v.id = r.id ORDER BY r.n)
-           FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1 AND d.ranking IS NOT NULL",
-    )
+    // The order the page rendered (see [`RENDERED`]), kept to the slot's declared items, as ids.
+    let (visible, rendered, declared): (i32, Vec<String>, Vec<String>) = sqlx::query_as(&format!(
+        "SELECT (s.sorted->>'visible')::int, {RENDERED}, ARRAY(SELECT jsonb_array_elements_text(s.sorted->'order'))
+           FROM decisions d JOIN slots s ON s.id = d.slot_id WHERE d.id = $1 AND d.ranking IS NOT NULL"
+    ))
     .bind(decision)
     .fetch_one(&mut **tx)
     .await?;
+    let arms: Vec<(i64, String)> = sqlx::query_as("SELECT id, key FROM variants WHERE slot_id = $1").bind(slot).fetch_all(&mut **tx).await?;
+    let (ranking, keys): (Vec<i64>, Vec<String>) = rendered
+        .into_iter()
+        .filter(|k| declared.contains(k))
+        .filter_map(|k| arms.iter().find(|(_, a)| *a == k).map(|(id, _)| (*id, k)))
+        .unzip();
     // Every item id the subject's metric events named inside the window, counting only events that name
     // this decision or none (read through live_events, so an erased subject teaches nothing).
     let named: Vec<String> = sqlx::query_scalar(

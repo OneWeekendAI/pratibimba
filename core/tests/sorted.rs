@@ -332,3 +332,60 @@ async fn a_swap_slot_has_no_item_results(pool: PgPool) {
     let detail = api_get(&admin_app(&pool), "/api/sites/demo/slots/hero").await.json();
     assert!(detail["items"].is_null(), "{detail}");
 }
+
+/// Bug fix 2026-10-16: the learner reads the order the exposure says was rendered, as the
+/// per-item table does, so a page that reorders or omits cards teaches what it showed.
+/// Rendered: the stored order reversed with its top item omitted and an unknown card added.
+async fn close_rendered(pool: &PgPool, app: &axum::Router, subject: &str, click_at: Option<usize>) -> (Vec<String>, String) {
+    let d = decide_grid(app, subject).await;
+    let o = order(&d);
+    let rendered: Vec<String> = o[1..].iter().rev().cloned().collect();
+    let mut shown: Vec<&str> = rendered.iter().map(String::as_str).collect();
+    shown.insert(1, "zz");
+    grid_event(app, subject, "exposure", d["decision_id"].as_str(), &shown).await;
+    if let Some(p) = click_at {
+        grid_event(app, subject, "click", None, &[&rendered[p]]).await;
+    }
+    worker::run_once(pool, Utc::now()).await.unwrap();
+    worker::run_once(pool, Utc::now() + Duration::seconds(1801)).await.unwrap();
+    (rendered, o[0].clone())
+}
+
+#[sqlx::test(migrations = false)]
+async fn learning_follows_the_rendered_order_not_the_stored_one(pool: PgPool) {
+    setup(&pool, &ITEMS, None).await;
+    let app = app(&pool);
+    let (r, omitted) = close_rendered(&pool, &app, "v1", Some(1)).await;
+    assert!(bias(&pool, &r[0]).await < 0.0, "rendered first was passed over");
+    assert!(bias(&pool, &r[1]).await > 0.0, "rendered second was clicked");
+    assert_eq!(bias(&pool, &r[2]).await, 0.0, "rendered below the click: nothing");
+    assert_eq!(bias(&pool, &omitted).await, 0.0, "the card the page omitted was never seen");
+}
+
+#[sqlx::test(migrations = false)]
+async fn no_click_misses_the_first_visible_rendered_cards(pool: PgPool) {
+    setup(&pool, &ITEMS, Some(2)).await;
+    let app = app(&pool);
+    let (r, omitted) = close_rendered(&pool, &app, "v1", None).await;
+    assert!(bias(&pool, &r[0]).await < 0.0);
+    assert!(bias(&pool, &r[1]).await < 0.0);
+    assert_eq!(bias(&pool, &r[2]).await, 0.0);
+    assert_eq!(bias(&pool, &omitted).await, 0.0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_rendered_card_the_file_no_longer_lists_teaches_nothing(pool: PgPool) {
+    setup(&pool, &ITEMS, None).await;
+    let app = app(&pool);
+    let d = decide_grid(&app, "v1").await;
+    // The file drops item d (it is retired), but a stale page still renders its card first.
+    pratibimba::site_file::apply(&pool, &file_from(sorted_file(&["a", "b", "c"], None))).await.unwrap();
+    let rest: Vec<String> = order(&d).into_iter().filter(|k| k != "d").collect();
+    let shown = ["d", &rest[0], &rest[1]];
+    grid_event(&app, "v1", "exposure", d["decision_id"].as_str(), &shown).await;
+    grid_event(&app, "v1", "click", None, &[&rest[0]]).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    worker::run_once(&pool, Utc::now() + Duration::seconds(1801)).await.unwrap();
+    assert_eq!(bias(&pool, "d").await, 0.0, "a retired card is not a position");
+    assert!(bias(&pool, &rest[0]).await > 0.0, "the click is on the first declared card");
+}
