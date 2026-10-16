@@ -79,6 +79,27 @@ async fn retire_publishes(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn share_edit_publishes(pool: PgPool) {
+    let (app, store) = published(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    ok(api_post(&app, &format!("/api/variants/{gift}/traffic-share"), json!({ "actor": "owner", "traffic_share": 0.2 })).await).await;
+    assert_eq!(f32s(&pushed(&store)["slots"]["hero"]["arms"][1]["traffic_share"]), 0.2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn share_confirm_publishes(pool: PgPool) {
+    let (app, store) = published(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    let req: i64 = sqlx::query_scalar("INSERT INTO share_requests (variant_id, agent, reason, traffic_share) VALUES ($1, 'agent', 'wins', 0.25) RETURNING id")
+        .bind(gift)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    ok(api_post(&app, &format!("/api/share-requests/{req}/confirm"), json!({ "actor": "owner" })).await).await;
+    assert_eq!(f32s(&pushed(&store)["slots"]["hero"]["arms"][1]["traffic_share"]), 0.25);
+}
+
+#[sqlx::test(migrations = false)]
 async fn kill_switch_publishes(pool: PgPool) {
     let (app, store) = published(&pool).await;
     ok(api_post(&app, "/api/sites/demo/pause", json!({ "actor": "owner", "paused": true })).await).await;

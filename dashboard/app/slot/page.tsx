@@ -8,6 +8,7 @@ import { Suspense, useMemo, useState } from 'react';
 import { LiftCurve, LiftPill } from '@/components/charts';
 import { Audiences } from '@/components/audiences';
 import { Preview } from '@/components/preview';
+import { ShareEditor } from '@/components/share-editor';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
 import { api, type DecisionRow, type SlotDetail, type VariantRow } from '@/lib/api';
@@ -22,7 +23,7 @@ const STATUS: Record<VariantRow['status'], [ChipTone, string]> = {
   retired: ['off', 'retired'],
 };
 
-function VariantCard({ v, index, champion }: { v: VariantRow; index: number; champion: boolean }) {
+function VariantCard({ v, index, champion, site, slot }: { v: VariantRow; index: number; champion: boolean; site: string; slot: string }) {
   const [tone, label] = STATUS[v.status];
   return (
     <Card className="relative w-64 shrink-0 overflow-hidden" data-testid={`variant-${v.key}`}>
@@ -43,6 +44,7 @@ function VariantCard({ v, index, champion }: { v: VariantRow; index: number; cha
           {int(v.counts.n)} closed · {credited(v.counts.credit ?? v.counts.conversions)} converted
           {v.traffic_share !== null && ` · planned share ${Math.round(v.traffic_share * 100)}%`}
         </div>
+        {!v.is_baseline && (v.status === 'approved' || v.status === 'paused') && <ShareEditor site={site} slot={slot} v={v} />}
         {v.pause_reason && (
           <div className="mt-2 rounded-md bg-surface-2 p-2 text-[11.5px] leading-snug text-ink-2" data-testid="death-certificate">
             <b className="text-pause-ink">Paused {when(v.paused_at)}.</b> Converted {pct(v.pause_reason.variant.rate)} vs {pct(v.pause_reason.holdout.rate)} for the holdout (lift{' '}
@@ -144,7 +146,7 @@ function Workbench() {
         <section>
           <SectionTitle hint={<Link className="text-accent" href={`/approvals/?site=${site}`}>Write a draft →</Link>}>Variants</SectionTitle>
           <div className="flex flex-wrap gap-3">
-            {shown.map((v) => <VariantCard key={v.id} v={v} index={s.variants.indexOf(v)} champion={v.key === s.champion && v.status === 'approved'} />)}
+            {shown.map((v) => <VariantCard key={v.id} v={v} index={s.variants.indexOf(v)} champion={v.key === s.champion && v.status === 'approved'} site={site} slot={slot} />)}
             <Link href={`/approvals/?site=${site}&slot=${slot}`} className="grid min-h-40 w-40 shrink-0 place-items-center rounded-lg border border-dashed border-line-strong text-center text-xs text-muted hover:border-accent hover:text-accent">
               + next draft
             </Link>

@@ -664,3 +664,40 @@ test('history_audience_is_written_and_gates_a_variant', async ({ page }) => {
   await page.getByLabel('Audience for gift', { exact: true }).selectOption('');
   await expect.poll(async () => (await api('/sites/shop/slots/hero')).variants.find((v: any) => v.key === 'gift').audience).toBeNull();
 });
+
+// G2: a live variant's share is editable after approval; these change data, so they run last.
+const giftShare = async () => (await api('/sites/shop/slots/hero')).variants.find((v: any) => v.key === 'gift').traffic_share;
+
+test('a_live_variants_share_is_changed_on_its_card', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  const card = page.getByTestId('variant-gift');
+  await card.getByRole('button', { name: 'Change share' }).click();
+  const thumb = card.getByRole('slider');
+  await thumb.focus();
+  await page.keyboard.press('Home');
+  for (let i = 0; i < 19; i++) await page.keyboard.press('ArrowRight');
+  await card.getByRole('button', { name: 'Save 20%' }).click();
+  await expect.poll(async () => Math.round((await giftShare()) * 100)).toBe(20);
+  await expect(card).toContainText('planned share 20%');
+  const a = await api('/sites/shop/approvals');
+  expect(a.recent[0]).toMatchObject({ action: 'share', actor: 'Ritwik', variant: 'gift' });
+});
+
+test('an_agents_share_proposal_is_accepted_in_approvals', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const { token } = await (await c.post('/api/sites/shop/mcp-tokens', { data: { name: 'e2e-share' } })).json();
+  await c.dispose();
+  await mcpCall(token, 'update_slot', { agent: 'Claude Code', justification: 'gift keeps winning', slot: 'hero', traffic_share: { variant: 'gift', share: 0.35 } });
+  expect(Math.round((await giftShare()) * 100)).not.toBe(35);
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('share-request-gift');
+  await expect(row).toContainText('35%');
+  await expect(row).toContainText('gift keeps winning');
+  await row.getByRole('button', { name: 'Accept' }).click();
+  await expect.poll(async () => Math.round((await giftShare()) * 100)).toBe(35);
+  await expect(row).toHaveCount(0);
+});

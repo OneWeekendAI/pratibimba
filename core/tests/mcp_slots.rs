@@ -525,3 +525,189 @@ async fn create_slot_refuses_sorted_options_on_a_swap_slot(pool: PgPool) {
 async fn create_slot_refuses_a_picker_slot(pool: PgPool) {
     refused(json!({ "kind": "picker" }), "kind must be swap, copy or sorted", pool).await;
 }
+
+// ---- update_slot kind options (G2): copy.fields, sorted.visible/items ------------------------
+
+async fn update(app: &Router, t: &str, args: Value) -> Value {
+    call(app, t, "update_slot", why(args)).await
+}
+
+/// A draft copy slot `banner` (headline required, cta_label optional) with one draft, `short`.
+async fn banner(app: &Router, t: &str) {
+    data(&create(app, t, json!({ "key": "banner", "selector": "#banner", "kind": "copy", "copy": headline_fields() })).await);
+    data(&call(app, t, "propose_copy", why(json!({ "slot": "banner", "key": "short", "copy": { "headline": "Ship today" } }))).await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_changes_a_draft_copy_slots_fields(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    let fields = json!({ "fields": [{ "name": "headline", "max": 30, "required": true }, { "name": "kicker", "max": 15 }] });
+    let r = data(&update(&app, &t, json!({ "slot": "banner", "copy": fields })).await);
+    assert_eq!(r["copy"], json!({ "fields": [{ "name": "headline", "max": 30, "required": true }, { "name": "kicker", "max": 15, "required": false }] }), "{r}");
+    assert_eq!(kind_cols(&pool, "banner").await.1.unwrap(), r["copy"]);
+    // The new fields are the ones propose_copy is now held to.
+    data(&call(&app, &t, "propose_copy", why(json!({ "slot": "banner", "key": "kick", "copy": { "headline": "Hi", "kicker": "New" } }))).await);
+}
+
+/// A draft that would stop fitting (a newly required field it lacks) refuses the change.
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_copy_fields_an_existing_variant_lacks(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    let fields = json!({ "fields": [{ "name": "headline", "max": 40, "required": true }, { "name": "cta_label", "max": 20, "required": true }] });
+    let e = err_text(&update(&app, &t, json!({ "slot": "banner", "copy": fields })).await);
+    assert!(e.contains("\"short\"") && e.contains("\"cta_label\" is required"), "{e}");
+    assert_eq!(kind_cols(&pool, "banner").await.1.unwrap(), json!({ "fields": [{ "name": "headline", "max": 40, "required": true }, { "name": "cta_label", "max": 20, "required": false }] }));
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_a_max_an_existing_variant_exceeds(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "banner", "copy": { "fields": [{ "name": "headline", "max": 5, "required": true }] } })).await);
+    assert!(e.contains("\"short\"") && e.contains("max is 5"), "{e}");
+}
+
+/// Dropping a field a variant fills would silently drop that text: refused.
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_dropping_a_field_a_variant_fills(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    data(&call(&app, &t, "propose_copy", why(json!({ "slot": "banner", "key": "cta", "copy": { "headline": "Hi", "cta_label": "Buy" } }))).await);
+    let e = err_text(&update(&app, &t, json!({ "slot": "banner", "copy": { "fields": [{ "name": "headline", "max": 40, "required": true }] } })).await);
+    assert!(e.contains("\"cta\"") && e.contains("not a field"), "{e}");
+}
+
+/// A rejected draft serves nobody and never will; it does not hold the slot's fields hostage.
+#[sqlx::test(migrations = false)]
+async fn a_rejected_draft_does_not_block_a_copy_field_change(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    sqlx::query("UPDATE variants SET status = 'rejected' WHERE key = 'short'").execute(&pool).await.unwrap();
+    data(&update(&app, &t, json!({ "slot": "banner", "copy": { "fields": [{ "name": "headline", "max": 5, "required": true }] } })).await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_copy_fields_on_a_swap_slot(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    promo(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "promo", "copy": headline_fields() })).await);
+    assert!(e.contains("only a kind \"copy\" slot takes copy fields"), "{e}");
+    assert_eq!(kind_cols(&pool, "promo").await.1, None);
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_empty_copy_fields(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "banner", "copy": { "fields": [] } })).await);
+    assert!(e.contains("1-8 fields"), "{e}");
+}
+
+/// The live rule holds for kind options too: an activated copy slot's fields are the owner's.
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_copy_fields_on_a_live_copy_slot(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    approve(&app, baseline_of(&pool, "banner").await.0).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "banner", "copy": { "fields": [{ "name": "headline", "max": 39, "required": true }] } })).await);
+    assert!(e.contains("live"), "{e}");
+}
+
+async fn grid(app: &Router, t: &str) {
+    data(&create(app, t, json!({ "key": "grid", "selector": "#grid", "kind": "sorted", "items": ["tea", "mug", "pot"] })).await);
+}
+
+async fn grid_variants(pool: &PgPool) -> Vec<(String, bool, String)> {
+    sqlx::query_as("SELECT v.key, v.is_baseline, v.status FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.key = 'grid' ORDER BY v.key")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_changes_a_sorted_slots_visible(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    data(&update(&app, &t, json!({ "slot": "grid", "sorted": { "visible": 2 } })).await);
+    assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 2, "order": ["tea", "mug", "pot"] }));
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_a_visible_beyond_the_items(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "grid", "sorted": { "visible": 4 } })).await);
+    assert!(e.contains("sorted.visible"), "{e}");
+    assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 3, "order": ["tea", "mug", "pot"] }));
+}
+
+/// New items arrive as drafts, dropped draft items go, and the new head is the baseline.
+#[sqlx::test(migrations = false)]
+async fn update_slot_replaces_a_sorted_slots_items(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let r = data(&update(&app, &t, json!({ "slot": "grid", "items": ["pot", "cup", "tea"] })).await);
+    assert_eq!(r["sorted"], json!({ "visible": 3, "order": ["pot", "cup", "tea"] }), "{r}");
+    assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 3, "order": ["pot", "cup", "tea"] }));
+    let draft = |k: &str, b: bool| (k.to_string(), b, "draft".to_string());
+    assert_eq!(grid_variants(&pool).await, vec![draft("cup", false), draft("pot", true), draft("tea", false)]);
+    // The slot is still dark: its new head is a draft baseline.
+    assert!(!in_manifest(&app, "grid").await);
+}
+
+/// Fewer items than `visible` brings `visible` down with them (as create_slot clamps it).
+#[sqlx::test(migrations = false)]
+async fn fewer_items_clamp_visible(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    data(&update(&app, &t, json!({ "slot": "grid", "items": ["tea", "mug"] })).await);
+    assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 2, "order": ["tea", "mug"] }));
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_one_item(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "grid", "items": ["tea"] })).await);
+    assert!(e.contains("needs 2-50 items"), "{e}");
+    assert_eq!(grid_variants(&pool).await.len(), 3);
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_a_repeated_item(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "grid", "items": ["tea", "tea"] })).await);
+    assert!(e.contains("invalid or repeated"), "{e}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_items_on_a_copy_slot(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    banner(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "banner", "items": ["a", "b"] })).await);
+    assert!(e.contains("slot takes items"), "{e}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_sorted_options_on_a_swap_slot(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    promo(&app, &t).await;
+    let e = err_text(&update(&app, &t, json!({ "slot": "promo", "sorted": { "visible": 2 } })).await);
+    assert!(e.contains("slot takes sorted options"), "{e}");
+}
+
+/// A person already rejected `mug`: the agent cannot bring it back by listing it again.
+#[sqlx::test(migrations = false)]
+async fn update_slot_refuses_relisting_a_rejected_item(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    grid(&app, &t).await;
+    let mug: i64 = sqlx::query_scalar("SELECT id FROM variants WHERE key = 'mug'").fetch_one(&pool).await.unwrap();
+    let r = api_post(&app, &format!("/api/variants/{mug}/reject"), json!({ "actor": "owner", "comment": "no mugs" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let e = err_text(&update(&app, &t, json!({ "slot": "grid", "items": ["tea", "mug"] })).await);
+    assert!(e.contains("\"mug\" is rejected"), "{e}");
+    assert_eq!(kind_cols(&pool, "grid").await.2.unwrap(), json!({ "visible": 3, "order": ["tea", "mug", "pot"] }));
+}

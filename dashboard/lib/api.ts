@@ -248,8 +248,22 @@ export interface ApprovalCard {
   checks: Check[];
   comments: { action: string; actor: string; comment: string | null; at: string }[];
 }
+/** G2: a share change an agent proposed for a live variant; it waits for a person. */
+export interface ShareRequest {
+  id: number;
+  slot: string;
+  variant: string;
+  variant_id: number;
+  reason: string;
+  traffic_share: number;
+  /** The share it would replace; null means uncapped. */
+  current: number | null;
+  at: string;
+  agent: { name: string; justification?: string | null; on_behalf_of?: string | null; token?: string; audit_id?: number; tool?: string };
+}
 export interface Approvals {
   drafts: ApprovalCard[];
+  share_requests: ShareRequest[];
   max_share: number;
   default_share: number;
   recent: { action: string; actor: string; slot: string; variant: string; comment: string | null; traffic_share: number | null; at: string }[];

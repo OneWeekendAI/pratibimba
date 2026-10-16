@@ -10,8 +10,10 @@
 //!   and the `/api` approve route refuses an MCP token, so an agent cannot approve its own work.
 //! - **Slots, as drafts:** `create_slot` makes a slot whose baseline is a DRAFT, so it is in
 //!   no manifest and decides nothing until a person approves that baseline in the dashboard
-//!   (which activates it). `update_slot` edits a slot only while it is such a draft; a live
-//!   slot's settings are the owner's.
+//!   (which activates it). `update_slot` edits a slot only while it is such a draft (its
+//!   settings, and its kind options judged with its variants by the site file's rules); a live
+//!   slot's settings are the owner's. Its one live-slot change is a PROPOSED `traffic_share`
+//!   for a live variant, which a person confirms (`POST /api/share-requests/{id}/confirm`).
 //! - **Retirement, proposed:** `retire_variant` records a proposal; the variant keeps serving
 //!   until a person confirms it (`POST /api/retire-requests/{id}/confirm`). backend.md leaves the
 //!   retire permission open, so this takes the drafts-only floor.
@@ -156,7 +158,7 @@ const INSTRUCTIONS: &str = "Pratibimba personalises page slots with a bandit ove
 This token sees one site. Read slots, variants, results and decision explanations freely. \
 propose_variant submits a DRAFT: a person approves it in the dashboard; you cannot. \
 On a copy slot (kind copy) use propose_copy instead: plain-text fields within each field's max, no HTML. \
-create_slot makes a DRAFT slot of kind swap, copy (with copy.fields) or sorted (with items, in the default order), live only once a person approves its baseline; update_slot edits only draft slots. \
+create_slot makes a DRAFT slot of kind swap, copy (with copy.fields) or sorted (with items, in the default order), live only once a person approves its baseline; update_slot edits only draft slots (and only proposes a live variant's traffic_share). \
 retire_variant PROPOSES a retirement; the variant keeps serving until a person confirms. \
 install_plugin REQUESTS a plugin; nothing is installed until a person confirms. \
 simulate and fast_forward_visitor run only in the site's sandbox, never on real traffic. \
@@ -243,10 +245,19 @@ fn catalogue() -> Vec<Value> {
                      "decision_ttl_secs": { "type": "integer", "minimum": 0, "description": "Optional: how long a visitor keeps the same decision (default 60)." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["key", "selector"]),
-        tool("update_slot", "Change a DRAFT slot's selector, metric, attribution window or decision TTL (only the fields you send). A live slot's settings belong to the site owner and are refused.",
+        tool("update_slot", "Change a DRAFT slot's selector, metric, attribution window, decision TTL or kind options (only the fields you send): a copy slot's copy.fields, a sorted slot's sorted.visible or items. Kind options are checked as the site file checks them, together with the slot's existing variants: fields a variant would no longer fit (a newly required field it lacks, a max its text exceeds, a field it fills that you drop) are refused, and nothing changes. A live slot's settings belong to the site owner and are refused. On a live slot you may only PROPOSE a live variant's traffic_share (your justification is the reason the reviewer reads); it keeps its share until a person confirms, and the answer appears on list_variants.",
              json!({ "slot": slot,
                      "selector": { "type": "string" }, "metric": { "type": "string" },
-                     "attribution_window_secs": { "type": "integer", "minimum": 1 }, "decision_ttl_secs": { "type": "integer", "minimum": 0 } }),
+                     "attribution_window_secs": { "type": "integer", "minimum": 1 }, "decision_ttl_secs": { "type": "integer", "minimum": 0 },
+                     "copy": { "type": "object", "description": "Draft copy slot only: the new {\"fields\": [{\"name\", \"max\", \"required\"}]} (replaces the old list).",
+                               "properties": { "fields": { "type": "array", "items": { "type": "object",
+                                   "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500 }, "required": { "type": "boolean" } },
+                                   "required": ["name", "max"] } } }, "required": ["fields"] },
+                     "sorted": { "type": "object", "properties": { "visible": { "type": "integer", "minimum": 1 } }, "description": "Draft sorted slot only: how many positions a visitor reads." },
+                     "items": { "type": "array", "items": { "type": "string" }, "description": "Draft sorted slot only: the new item keys in the default order (2-50); the first becomes the head. Dropped items are removed, new ones arrive as drafts." },
+                     "traffic_share": { "type": "object", "description": "PROPOSE a new share for one live (approved) variant: {\"variant\": \"gift\", \"share\": 0.3}, above 0 and at most 0.5.",
+                                        "properties": { "variant": { "type": "string" }, "share": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.5 } },
+                                        "required": ["variant", "share"] } }),
              &["slot"]),
         tool("retire_variant", "PROPOSE retiring a live variant (your justification is the reason the reviewer reads). It keeps serving until a person confirms in the dashboard; you cannot retire it yourself. The baseline cannot be retired. The answer appears on list_variants.",
              json!({ "slot": slot, "variant": { "type": "string", "description": "The variant key." } }),
@@ -503,6 +514,21 @@ struct SlotUpdate {
     metric: Option<String>,
     attribution_window_secs: Option<i32>,
     decision_ttl_secs: Option<i32>,
+    /// A draft copy slot's new fields, judged with its variants by the site file's rules.
+    copy: Option<crate::copy::CopySpec>,
+    /// A draft sorted slot's options (`visible`).
+    sorted: Option<crate::sorted::SortedSpec>,
+    /// A draft sorted slot's new items, in the default order; the first becomes the head.
+    items: Option<Vec<String>>,
+    /// A share for one live variant: only proposed, a person confirms it.
+    traffic_share: Option<ShareProposal>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareProposal {
+    variant: String,
+    share: f32,
 }
 
 #[derive(Deserialize)]
@@ -649,34 +675,206 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     }))
 }
 
-/// `update_slot`: only a draft slot's settings are the agent's to change.
-async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate) -> Result<Value, ApiError> {
+/// `update_slot`: only a draft slot's settings and kind options are the agent's to change. A
+/// live variant's traffic share is the one thing it may touch on a live slot, and only as a
+/// proposal a person confirms (`share_requests`).
+async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, who: &Who<'_>) -> Result<Value, ApiError> {
     let slot_id = slot_id(pool, site, &u.slot).await?;
-    if u.selector.is_none() && u.metric.is_none() && u.attribution_window_secs.is_none() && u.decision_ttl_secs.is_none() {
-        return Err(ApiError::BadRequest("send at least one of selector, metric, attribution_window_secs, decision_ttl_secs".into()));
+    let settings = u.selector.is_some() || u.metric.is_some() || u.attribution_window_secs.is_some() || u.decision_ttl_secs.is_some();
+    let options = u.copy.is_some() || u.sorted.is_some() || u.items.is_some();
+    if !settings && !options && u.traffic_share.is_none() {
+        return Err(ApiError::BadRequest(
+            "send at least one of selector, metric, attribution_window_secs, decision_ttl_secs, copy, sorted, items, traffic_share".into(),
+        ));
     }
-    if !is_draft_slot(pool, slot_id).await? {
+    let draft = is_draft_slot(pool, slot_id).await?;
+    if (settings || options) && !draft {
         return Err(ApiError::Conflict(format!(
-            "slot {:?} is live: its settings belong to the site owner (site file or dashboard). Tell the person what to change instead.",
+            "slot {:?} is live: its settings belong to the site owner (site file or dashboard). Tell the person what to change instead; a live variant's traffic_share you may propose on its own.",
             u.slot
         )));
     }
-    let (selector, metric, window, ttl): (String, String, i32, i32) =
-        sqlx::query_as("SELECT selector, metric, attribution_window_secs, decision_ttl_secs FROM slots WHERE id = $1").bind(slot_id).fetch_one(pool).await?;
-    let selector = u.selector.map(|s| s.trim().to_string()).unwrap_or(selector);
-    let metric = u.metric.unwrap_or(metric);
-    let window = u.attribution_window_secs.unwrap_or(window);
-    let ttl = u.decision_ttl_secs.unwrap_or(ttl);
-    check_slot_settings(&selector, &metric, window, ttl)?;
-    sqlx::query("UPDATE slots SET selector = $2, metric = $3, attribution_window_secs = $4, decision_ttl_secs = $5 WHERE id = $1")
+    // The share proposal is checked before anything is written, so a refusal changes nothing.
+    let share = match &u.traffic_share {
+        Some(p) => Some(check_share_proposal(pool, slot_id, &u.slot, p).await?),
+        None => None,
+    };
+    let mut tx = pool.begin().await?;
+    let mut out = json!({ "slot": u.slot, "status": if draft { "draft" } else { "live" } });
+    if settings || options {
+        let (selector, metric, window, ttl, kind, copy, sorted): (String, String, i32, i32, String, Option<Value>, Option<Value>) = sqlx::query_as(
+            "SELECT selector, metric, attribution_window_secs, decision_ttl_secs, kind, copy, sorted FROM slots WHERE id = $1 FOR UPDATE",
+        )
         .bind(slot_id)
-        .bind(&selector)
-        .bind(&metric)
-        .bind(window)
-        .bind(ttl)
-        .execute(pool)
+        .fetch_one(&mut *tx)
         .await?;
-    Ok(json!({ "slot": u.slot, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl, "status": "draft" }))
+        let selector = u.selector.map(|s| s.trim().to_string()).unwrap_or(selector);
+        let metric = u.metric.unwrap_or(metric);
+        let window = u.attribution_window_secs.unwrap_or(window);
+        let ttl = u.decision_ttl_secs.unwrap_or(ttl);
+        check_slot_settings(&selector, &metric, window, ttl)?;
+        let spec = kind_spec(&mut tx, slot_id, &u.slot, &kind, copy, sorted, u.copy, u.sorted, u.items.clone(), (&selector, &metric, window, ttl)).await?;
+        // The site file's own per-slot rules judge the slot with the variants it already has, so
+        // fields that a variant would no longer fit are refused here, not discovered at approval.
+        crate::site_file::validate_slot(&spec).map_err(|e| ApiError::BadRequest(format!("{e} (the slot's existing variants must still fit; nothing was changed)")))?;
+        if let Some(items) = &u.items {
+            set_items(&mut tx, slot_id, items, call_row).await?;
+        }
+        sqlx::query("UPDATE slots SET selector = $2, metric = $3, attribution_window_secs = $4, decision_ttl_secs = $5, copy = $6, sorted = $7 WHERE id = $1")
+            .bind(slot_id)
+            .bind(&selector)
+            .bind(&metric)
+            .bind(window)
+            .bind(ttl)
+            .bind(crate::copy::stored(&spec))
+            .bind(crate::sorted::stored(&spec))
+            .execute(&mut *tx)
+            .await?;
+        let o = out.as_object_mut().expect("object");
+        o.insert("selector".into(), json!(selector));
+        o.insert("metric".into(), json!(metric));
+        o.insert("attribution_window_secs".into(), json!(window));
+        o.insert("decision_ttl_secs".into(), json!(ttl));
+        o.insert("copy".into(), json!(crate::copy::stored(&spec)));
+        o.insert("sorted".into(), json!(crate::sorted::stored(&spec)));
+    }
+    if let (Some(p), Some(variant_id)) = (&u.traffic_share, share) {
+        let id: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO share_requests (variant_id, mcp_call_id, agent, reason, traffic_share) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (variant_id) WHERE status = 'pending' DO NOTHING RETURNING id",
+        )
+        .bind(variant_id)
+        .bind(call_row)
+        .bind(who.agent.chars().take(128).collect::<String>())
+        .bind(who.justification)
+        .bind(p.share)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(id) = id else {
+            return Err(ApiError::Conflict(format!("variant {:?} already has an open share proposal; see list_variants", p.variant)));
+        };
+        out["traffic_share"] = json!({
+            "id": id, "variant": p.variant, "share": p.share, "status": "proposed",
+            "next": "Share proposal recorded. The variant keeps its current share until a person confirms in the dashboard; the answer appears on list_variants.",
+        });
+    }
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// A proposed share must be in range and for a live, non-baseline variant: its id.
+async fn check_share_proposal(pool: &PgPool, slot_id: i64, slot: &str, p: &ShareProposal) -> Result<i64, ApiError> {
+    admin::check_share(p.share)?;
+    let row: Option<(i64, String, bool)> = sqlx::query_as("SELECT id, status, is_baseline FROM variants WHERE slot_id = $1 AND key = $2")
+        .bind(slot_id)
+        .bind(&p.variant)
+        .fetch_optional(pool)
+        .await?;
+    let Some((id, status, is_baseline)) = row else {
+        return Err(ApiError::NotFound(format!("slot {slot:?} has no variant {:?}", p.variant)));
+    };
+    if is_baseline {
+        return Err(ApiError::BadRequest("the baseline is the page's own content and has no traffic share".into()));
+    }
+    if status != "approved" && status != "paused" {
+        return Err(ApiError::Conflict(format!(
+            "variant {:?} is {status}; only a live variant's share can change (a draft's share is set by the person who approves it: say what you suggest in its note)",
+            p.variant
+        )));
+    }
+    Ok(id)
+}
+
+/// The slot as the site file would declare it after the update, with the variants it has now
+/// (a sorted slot's: the new items), so [`crate::site_file::validate_slot`] can judge both.
+#[allow(clippy::too_many_arguments)]
+async fn kind_spec(
+    tx: &mut sqlx::PgConnection,
+    slot_id: i64,
+    key: &str,
+    kind: &str,
+    copy: Option<Value>,
+    sorted: Option<Value>,
+    new_copy: Option<crate::copy::CopySpec>,
+    new_sorted: Option<crate::sorted::SortedSpec>,
+    items: Option<Vec<String>>,
+    (selector, metric, window, ttl): (&str, &str, i32, i32),
+) -> Result<crate::site_file::SlotSpec, ApiError> {
+    use crate::site_file::VariantSpec;
+    let is_sorted = kind == crate::sorted::KIND;
+    if items.is_some() && !is_sorted {
+        return Err(ApiError::BadRequest("only a kind \"sorted\" slot takes items".into()));
+    }
+    // Rejected and retired variants serve nobody and never will, so they do not hold the fields.
+    let rows: Vec<(String, bool, Option<String>, String)> =
+        sqlx::query_as("SELECT key, is_baseline, payload, status FROM variants WHERE slot_id = $1 ORDER BY id").bind(slot_id).fetch_all(&mut *tx).await?;
+    let copy = match new_copy {
+        Some(c) => Some(c),
+        None => copy.map(|c| serde_json::from_value(c).map_err(|e| ApiError::BadRequest(format!("bad stored copy spec: {e}")))).transpose()?,
+    };
+    let (variants, sorted) = if is_sorted {
+        let stored: Option<(u32, Vec<String>)> = sorted.as_ref().map(|s| {
+            (s["visible"].as_u64().unwrap_or(crate::sorted::DEFAULT_VISIBLE as u64) as u32, serde_json::from_value(s["order"].clone()).unwrap_or_default())
+        });
+        let (visible, order) = stored.unwrap_or((crate::sorted::DEFAULT_VISIBLE, vec![]));
+        let items = items.unwrap_or(order);
+        if let Some((k, status)) = rows.iter().find(|r| items.contains(&r.0) && r.3 != "draft").map(|r| (&r.0, &r.3)) {
+            return Err(ApiError::Conflict(format!("item {k:?} is {status}; only a draft slot's draft items can be reordered or replaced")));
+        }
+        // Visible follows the items down when there are fewer of them, as create_slot clamps it.
+        let visible = new_sorted.and_then(|s| s.visible).unwrap_or(visible.min(items.len() as u32).max(1));
+        let variants = items.into_iter().map(|key| VariantSpec { key, baseline: false, html: None, copy: None }).collect();
+        (variants, Some(crate::sorted::SortedSpec { visible: Some(visible) }))
+    } else {
+        let is_copy = kind == crate::copy::KIND;
+        let variants = rows
+            .into_iter()
+            .filter(|r| r.3 != "rejected" && r.3 != "retired")
+            .map(|(key, baseline, payload, _)| {
+                let text = (is_copy && !baseline).then(|| payload.as_deref().and_then(|p| serde_json::from_str(p).ok())).flatten();
+                let html = (!is_copy && !baseline).then_some(payload).flatten();
+                VariantSpec { key, baseline, html, copy: text }
+            })
+            .collect();
+        (variants, new_sorted)
+    };
+    Ok(crate::site_file::SlotSpec {
+        key: key.to_string(),
+        selector: selector.to_string(),
+        metric: metric.to_string(),
+        attribution_window_secs: window,
+        decision_ttl_secs: ttl,
+        cold_start_exposures: crate::site_file::default_cold_start(),
+        kind: Some(kind.to_string()),
+        in_session: false,
+        picker: None,
+        attribution: None,
+        goal: None,
+        revenue_cap: None,
+        sorted,
+        copy,
+        variants,
+    })
+}
+
+/// A draft sorted slot's new items: dropped items go (drafts that never served anyone), new
+/// ones arrive as drafts, and the head of the new order is the baseline.
+async fn set_items(tx: &mut sqlx::PgConnection, slot_id: i64, items: &[String], call_row: i64) -> Result<(), ApiError> {
+    sqlx::query("DELETE FROM variants WHERE slot_id = $1 AND status = 'draft' AND NOT (key = ANY($2))").bind(slot_id).bind(items).execute(&mut *tx).await?;
+    sqlx::query("UPDATE variants SET is_baseline = false WHERE slot_id = $1").bind(slot_id).execute(&mut *tx).await?;
+    for (i, key) in items.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO variants (slot_id, key, payload, is_baseline, author, status, mcp_call_id) VALUES ($1, $2, NULL, $3, 'agent', 'draft', $4)
+             ON CONFLICT (slot_id, key) DO UPDATE SET is_baseline = EXCLUDED.is_baseline",
+        )
+        .bind(slot_id)
+        .bind(key)
+        .bind(i == 0)
+        .bind(call_row)
+        .execute(&mut *tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// `retire_variant`: a proposal only. The variant's status is never touched here.
@@ -896,7 +1094,7 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
         "create_audience" => create_audience(pool, site, parse(args)?, agent).await,
         "fast_forward_visitor" => fast_forward(pool, site, parse(args)?).await,
         "create_slot" => create_slot(pool, site, parse(args)?, call_row, agent).await,
-        "update_slot" => update_slot(pool, site, parse(args)?).await,
+        "update_slot" => update_slot(pool, site, parse(args)?, call_row, who).await,
         "retire_variant" => retire_variant(pool, site, parse(args)?, call_row, who).await,
         "list_plugins" => {
             parse::<NoArgs>(args)?;
@@ -985,9 +1183,21 @@ async fn list_variants(pool: &PgPool, site: &str, slot: &str) -> Result<Value, A
     .bind(slot_id)
     .fetch_all(pool)
     .await?;
+    #[allow(clippy::type_complexity)]
+    let shares: Vec<(i64, i64, String, f32, String, Option<String>, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT DISTINCT ON (r.variant_id) r.variant_id, r.id, r.status, r.traffic_share, r.reason, r.decided_by, r.created_at
+           FROM share_requests r JOIN variants v ON v.id = r.variant_id
+          WHERE v.slot_id = $1 ORDER BY r.variant_id, r.created_at DESC, r.id DESC",
+    )
+    .bind(slot_id)
+    .fetch_all(pool)
+    .await?;
     let variants: Vec<Value> = rows
         .into_iter()
         .map(|(id, key, status, author, base, html, share, by, at, created)| {
+            let share_request = shares.iter().find(|r| r.0 == id).map(|(_, rid, st, proposed, reason, by, at)| {
+                json!({ "id": rid, "status": st, "traffic_share": proposed, "reason": reason, "decided_by": by, "at": at })
+            });
             let retire = retires
                 .iter()
                 .find(|r| r.0 == id)
@@ -999,7 +1209,7 @@ async fn list_variants(pool: &PgPool, site: &str, slot: &str) -> Result<Value, A
                 .collect();
             json!({ "id": id, "key": key, "status": status, "author": author, "is_baseline": base, "html": html,
                     "traffic_share": share, "approved_by": by, "approved_at": at, "created_at": created, "comments": comments,
-                    "retire_request": retire })
+                    "retire_request": retire, "share_request": share_request })
         })
         .collect();
     Ok(json!({ "slot": slot, "variants": variants }))

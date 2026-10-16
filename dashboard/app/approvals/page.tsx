@@ -9,7 +9,7 @@ import { Preview } from '@/components/preview';
 import { Shell, useActor } from '@/components/shell';
 import { ShareSlider } from '@/components/slider';
 import { Button, Card, Chip, Empty, Field, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
-import { api, ApiError, type ApprovalCard, type Approvals, type Check, type Overview } from '@/lib/api';
+import { api, ApiError, type ApprovalCard, type Approvals, type Check, type Overview, type ShareRequest } from '@/lib/api';
 import { diff, lineDiff, looksLikeCode } from '@/lib/diff';
 import { ago } from '@/lib/format';
 import { useParam } from '@/lib/page';
@@ -252,6 +252,32 @@ function NewDraft({ site, slots, initial }: { site: string; slots: string[]; ini
   );
 }
 
+const pctOf = (s: number | null) => (s === null ? 'uncapped' : `${Math.round(s * 100)}%`);
+
+function ShareProposal({ r, site, approver }: { r: ShareRequest; site: string; approver: string }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const answer = useMutation({
+    mutationFn: (verb: 'confirm' | 'decline') => api.post(`/share-requests/${r.id}/${verb}`, { actor: approver }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals', site] }),
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-4 py-3 text-[13px]" data-testid={`share-request-${r.variant}`}>
+      <span className="font-mono">{r.variant}</span>
+      <span className="text-muted">on {r.slot}: {pctOf(r.current)} → <b className="text-ink">{pctOf(r.traffic_share)}</b>, asked by {r.agent.name}</span>
+      <span className="text-ink-2">“{r.reason}”</span>
+      <span className="ml-auto flex gap-2">
+        <Button onClick={() => answer.mutate('confirm')} disabled={!approver.trim() || answer.isPending}>Accept</Button>
+        <Button variant="ghost" onClick={() => answer.mutate('decline')} disabled={!approver.trim() || answer.isPending}>Decline</Button>
+      </span>
+      {error && <p role="alert" className="w-full text-[12.5px] text-pause-ink">{error}</p>}
+    </div>
+  );
+}
+
+const RECENT: Record<string, [ChipTone, string]> = { approve: ['live', 'approved'], share: ['accent', 'share changed'], retire: ['off', 'retired'], keep: ['off', 'kept'] };
+
 function View() {
   const site = useParam('site')!;
   const initialSlot = useParam('slot');
@@ -272,6 +298,12 @@ function View() {
       </Card>
       <SectionTitle hint={`${q.data.drafts.length} waiting`}>Drafts</SectionTitle>
       {q.data.drafts.length === 0 ? <Empty>Nothing waiting. Drafts you or your team write land here.</Empty> : q.data.drafts.map((c) => <DraftCard key={c.id} card={c} site={site} approver={approver} max={q.data.max_share} />)}
+      {(q.data.share_requests ?? []).length > 0 && (
+        <section>
+          <SectionTitle hint={`${q.data.share_requests.length} waiting`}>Proposed share changes</SectionTitle>
+          <Card className="divide-y divide-line">{q.data.share_requests.map((r) => <ShareProposal key={r.id} r={r} site={site} approver={approver} />)}</Card>
+        </section>
+      )}
       <NewDraft site={site} slots={slots} initial={initialSlot} />
       {q.data.recent.length > 0 && (
         <section>
@@ -279,7 +311,7 @@ function View() {
           <Card className="divide-y divide-line text-[13px]">
             {q.data.recent.map((r, i) => (
               <div key={i} className="flex flex-wrap items-center gap-2 px-4 py-2.5">
-                <Chip tone={r.action === 'approve' ? 'live' : 'off'}>{r.action === 'approve' ? 'approved' : 'rejected'}</Chip>
+                <Chip tone={(RECENT[r.action] ?? ['off', 'rejected'])[0]}>{(RECENT[r.action] ?? ['off', 'rejected'])[1]}</Chip>
                 <span className="font-mono">{r.variant}</span>
                 <span className="text-muted">on {r.slot} by {r.actor}{r.traffic_share !== null ? ` at ${Math.round(r.traffic_share * 100)}%` : ''}</span>
                 {r.comment && <span className="text-ink-2">“{r.comment}”</span>}

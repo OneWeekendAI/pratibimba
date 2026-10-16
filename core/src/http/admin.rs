@@ -49,6 +49,9 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/variants/{id}/audience", post(set_audience))
         .route("/retire-requests/{id}/confirm", post(confirm_retire))
         .route("/retire-requests/{id}/decline", post(decline_retire))
+        .route("/variants/{id}/traffic-share", post(edit_share))
+        .route("/share-requests/{id}/confirm", post(confirm_share))
+        .route("/share-requests/{id}/decline", post(decline_share))
         .route("/models/{slot}/rollback", post(rollback))
         .route("/models/{slot}/versions", get(versions))
         .merge(super::privacy::routes())
@@ -509,7 +512,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let recent: Vec<(String, String, String, String, Option<String>, Option<f32>, DateTime<Utc>)> = sqlx::query_as(
         "SELECT a.action, a.actor, s.key, v.key, a.comment, a.traffic_share, a.created_at
            FROM approvals a JOIN variants v ON v.id = a.variant_id JOIN slots s ON s.id = v.slot_id
-          WHERE s.site_id = $1 AND a.action IN ('approve', 'reject', 'retire', 'keep') ORDER BY a.created_at DESC LIMIT 20",
+          WHERE s.site_id = $1 AND a.action IN ('approve', 'reject', 'retire', 'keep', 'share') ORDER BY a.created_at DESC LIMIT 20",
     )
     .bind(&site)
     .fetch_all(&state.pool)
@@ -535,8 +538,30 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
             json!({ "id": id, "slot": slot, "variant": key, "variant_id": vid, "reason": reason, "at": at, "agent": a })
         })
         .collect();
+    // Share changes an agent proposed (G2); each waits for a person.
+    #[allow(clippy::type_complexity)]
+    let shares: Vec<(i64, String, String, i64, String, String, f32, Option<f32>, DateTime<Utc>, Option<Value>)> = sqlx::query_as(
+        "SELECT r.id, s.key, v.key, v.id, r.agent, r.reason, r.traffic_share, v.traffic_share, r.created_at,
+                CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
+                     'on_behalf_of', c.on_behalf_of, 'token', k.name, 'audit_id', c.id, 'tool', c.tool) END
+           FROM share_requests r JOIN variants v ON v.id = r.variant_id JOIN slots s ON s.id = v.slot_id
+           LEFT JOIN mcp_calls c ON c.id = r.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
+          WHERE s.site_id = $1 AND r.status = 'pending' ORDER BY r.created_at, r.id",
+    )
+    .bind(&site)
+    .fetch_all(&state.pool)
+    .await?;
+    let share_requests: Vec<Value> = shares
+        .into_iter()
+        .map(|(id, slot, key, vid, agent, reason, share, current, at, call)| {
+            let mut a = call.unwrap_or_else(|| json!({ "name": agent }));
+            a["name"] = json!(agent);
+            json!({ "id": id, "slot": slot, "variant": key, "variant_id": vid, "reason": reason, "traffic_share": share,
+                    "current": current, "at": at, "agent": a })
+        })
+        .collect();
     Ok(Json(json!({
-        "drafts": cards, "retirements": retirements,
+        "drafts": cards, "retirements": retirements, "share_requests": share_requests,
         "plugin_requests": crate::plugins::open_requests(&state.pool, &site).await?, "max_share": 0.5, "default_share": 0.1,
         "recent": recent.into_iter().map(|(a, by, slot, key, c, share, at)| json!({
             "action": a, "actor": by, "slot": slot, "variant": key, "comment": c, "traffic_share": share, "at": at })).collect::<Vec<_>>(),
@@ -552,6 +577,14 @@ struct Approve {
     comment: Option<String>,
 }
 
+/// The cap a traffic share lives under, at approval and on every later edit (and in the schema).
+pub(crate) fn check_share(share: f32) -> Result<(), ApiError> {
+    if !(share > 0.0 && share <= 0.5) {
+        return Err(ApiError::BadRequest("a traffic share must be above 0 and at most 50%".into()));
+    }
+    Ok(())
+}
+
 pub(crate) fn actor(name: &str) -> Result<String, ApiError> {
     let n = name.trim();
     if n.is_empty() || n.chars().count() > 128 {
@@ -562,9 +595,7 @@ pub(crate) fn actor(name: &str) -> Result<String, ApiError> {
 
 async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<Approve>) -> Result<Response, ApiError> {
     let approver = actor(&b.approver)?;
-    if !(b.traffic_share > 0.0 && b.traffic_share <= 0.5) {
-        return Err(ApiError::BadRequest("the planned traffic share must be above 0 and at most 50%".into()));
-    }
+    check_share(b.traffic_share)?;
     let mut tx = state.pool.begin().await?;
     #[allow(clippy::type_complexity)]
     let row: Option<(i64, String, Option<String>, Vec<String>, String, Option<String>, bool, Option<Value>)> = sqlx::query_as(
@@ -649,6 +680,113 @@ struct RetireDecision {
     actor: String,
     #[serde(default)]
     comment: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareEdit {
+    actor: String,
+    traffic_share: f32,
+    #[serde(default)]
+    comment: Option<String>,
+}
+
+/// Set a live variant's share inside `tx` and record it: `(site, slot key, variant key, previous)`.
+/// Only an approved or paused non-baseline variant has a share to change; a draft gets one when
+/// it is approved, and the baseline is the page's own content.
+async fn apply_share(tx: &mut sqlx::PgConnection, variant_id: i64, share: f32, who: &str, comment: Option<&str>) -> Result<(String, String, String, Option<f32>), ApiError> {
+    check_share(share)?;
+    let row: Option<(String, bool, Option<f32>, String, String, String)> = sqlx::query_as(
+        "SELECT v.status, v.is_baseline, v.traffic_share, s.site_id, s.key, v.key FROM variants v JOIN slots s ON s.id = v.slot_id
+          WHERE v.id = $1 FOR UPDATE OF v",
+    )
+    .bind(variant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((status, is_baseline, previous, site, slot, key)) = row else {
+        return Err(ApiError::NotFound(format!("unknown variant {variant_id}")));
+    };
+    if is_baseline {
+        return Err(ApiError::BadRequest("the baseline is the page's own content and has no traffic share".into()));
+    }
+    if status != "approved" && status != "paused" {
+        return Err(ApiError::Conflict(format!("variant {key:?} is {status}; only a live variant's share can change (a draft gets its share when approved)")));
+    }
+    sqlx::query("UPDATE variants SET traffic_share = $2 WHERE id = $1").bind(variant_id).bind(share).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment, traffic_share, previous_share) VALUES ($1, 'share', $2, $3, $4, $5)")
+        .bind(variant_id)
+        .bind(who)
+        .bind(comment)
+        .bind(share)
+        .bind(previous)
+        .execute(&mut *tx)
+        .await?;
+    Ok((site, slot, key, previous))
+}
+
+/// A person changes a live variant's traffic share. Decide reads it on the next request.
+async fn edit_share(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<ShareEdit>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let comment = b.comment.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let mut tx = state.pool.begin().await?;
+    let (site, _, key, previous) = apply_share(&mut tx, id, b.traffic_share, &who, comment).await?;
+    tx.commit().await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
+    Ok(Json(json!({ "id": id, "variant": key, "traffic_share": b.traffic_share, "previous_share": previous })))
+}
+
+/// Lock an open share proposal: `(variant_id, proposed share)`.
+async fn open_share_request(tx: &mut sqlx::PgConnection, id: i64) -> Result<(i64, f32), ApiError> {
+    let row: Option<(i64, f32, String)> = sqlx::query_as("SELECT variant_id, traffic_share, status FROM share_requests WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some((variant_id, share, status)) = row else {
+        return Err(ApiError::NotFound(format!("unknown share proposal {id}")));
+    };
+    if status != "pending" {
+        return Err(ApiError::Conflict(format!("share proposal {id} is already {status}")));
+    }
+    Ok((variant_id, share))
+}
+
+/// A person confirms an agent's share proposal: applied and audited as their own edit.
+async fn confirm_share(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<RetireDecision>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let comment = b.comment.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let mut tx = state.pool.begin().await?;
+    let (variant_id, share) = open_share_request(&mut tx, id).await?;
+    let (site, _, key, previous) = apply_share(&mut tx, variant_id, share, &who, comment).await?;
+    sqlx::query("UPDATE share_requests SET status = 'confirmed', decided_by = $2, decided_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(&who)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
+    Ok(Json(json!({ "id": id, "status": "confirmed", "variant": key, "traffic_share": share, "previous_share": previous })))
+}
+
+/// A person declines it: the share stays, and any reason goes back to the agent on the thread.
+async fn decline_share(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<RetireDecision>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let mut tx = state.pool.begin().await?;
+    let (variant_id, _) = open_share_request(&mut tx, id).await?;
+    sqlx::query("UPDATE share_requests SET status = 'declined', decided_by = $2, decided_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(&who)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(c) = b.comment.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment) VALUES ($1, 'comment', $2, $3)")
+            .bind(variant_id)
+            .bind(&who)
+            .bind(c)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "id": id, "status": "declined" })))
 }
 
 /// Lock an open retirement proposal: `(variant_id, site, slot key, variant key)`.

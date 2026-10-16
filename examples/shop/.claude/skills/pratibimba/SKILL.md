@@ -203,9 +203,16 @@ A person approves. You do not, and you cannot.
   content) starts as a draft, so the slot is in no manifest and reaches no visitor until a
   person approves that baseline in the dashboard. Then propose variants for it as usual. In
   the code, mark the element the same way as any other slot (see step 2).
-- **`update_slot` changes only a draft slot.** Once a person has activated a slot, its selector,
-  metric and windows belong to the site owner, and the tool refuses. Tell the user what you
-  would change and why instead.
+- **`update_slot` changes only a draft slot.** On a draft it can also change the kind's
+  options (a copy slot's `copy.fields`, a sorted slot's `sorted.visible` or `items`), checked
+  with the slot's existing variants: fields a variant would no longer fit are refused and
+  nothing changes. Once a person has activated a slot, its selector, metric, windows and
+  options belong to the site owner, and the tool refuses. Tell the user what you would change
+  and why instead.
+- **A live variant's traffic share is only proposed.** `update_slot` with
+  `traffic_share: {"variant": "gift", "share": 0.3}` (above 0, at most 0.5) records a
+  proposal; the variant keeps its share until a person accepts it. Read the answer on
+  `list_variants` (`share_request`).
 - **`retire_variant` only proposes.** Your `justification` is the reason the reviewer reads, so
   cite the evidence (for example *"gift has lost to the holdout for 21 days, lift -3.1% [-5.0,
   -1.2], n=4,800"*). The variant **keeps serving** until a person confirms. The baseline cannot
