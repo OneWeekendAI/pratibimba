@@ -14,6 +14,8 @@
 //! the running experiment, the model state and version, cold-start counts, the site's
 //! privacy mode, holdout fraction, kill switch and night window. Plus the manifest
 //! (`/manifest/:site`) and the installed plugins (name and kind only, never their config).
+//! G5: `erased`, a Bloom filter of the site's erasure hashes ([`erased_filter`]), so the Worker
+//! skips the `gone/` read for a subject it rules out; an erase republishes the snapshot.
 //! Left out on purpose: the per-visitor rows (sticky decision, latest picks), the clock, and the
 //! cookieless salt (whether a salt may leave Core is EC2's decision).
 //!
@@ -314,6 +316,10 @@ pub async fn content(pool: &PgPool, site: &str) -> Result<Option<Value>> {
         .into_iter()
         .map(|(name, kind, deanonymiser, attributor)| json!({ "name": name, "kind": kind, "deanonymiser": deanonymiser, "attributor": attributor }))
         .collect();
+    // G5 (edge-cache.md, Decision 22): every erasure of the site, as a Bloom filter, so the
+    // Worker needs no `gone/` read for a subject it says is not erased.
+    let hashes: Vec<String> =
+        sqlx::query_scalar("SELECT subject_hash FROM erasures WHERE site_id = $1 ORDER BY subject_hash").bind(site).fetch_all(pool).await?;
     let manifest = match crate::http::manifest::load(pool, site).await {
         Ok(m) => serde_json::to_value(m)?,
         Err(e) => return Err(api_err(e)),
@@ -325,7 +331,44 @@ pub async fn content(pool: &PgPool, site: &str) -> Result<Option<Value>> {
         "slots": by_key,
         "plugins": plugins,
         "manifest": manifest,
+        "erased": erased_filter(&hashes),
     })))
+}
+
+/// Bits per erasure in [`erased_filter`]: with [`ERASED_FILTER_K`] = 7, about 0.8 % false positives.
+pub const ERASED_FILTER_BITS_PER: usize = 10;
+pub const ERASED_FILTER_K: u64 = 7;
+/// The filter never grows past 64 KiB (about 52,000 erasures at 1 %); past that its
+/// false-positive rate climbs, which only costs the Worker a `gone/` read. Never a false negative.
+pub const ERASED_FILTER_MAX_BITS: usize = 64 * 1024 * 8;
+
+/// A Bloom filter over `hashes` ([`crate::privacy::subject_hash`] hex, as the `gone/` keys):
+/// `{n, m, k, bits}`, `bits` base64 with bit `i` at byte `i/8`, bit `i%8` (least significant
+/// first). Index `j < k` of a hash is `(h1 + j*h2) mod m`, where `h1`, `h2` are the hash's first two
+/// big-endian 32-bit words, `h2` with its low bit set. The Worker's `inErased` reads the same.
+pub fn erased_filter(hashes: &[String]) -> Value {
+    use base64::Engine;
+    let n = hashes.len();
+    let m = if n == 0 { 0 } else { (n * ERASED_FILTER_BITS_PER).div_ceil(8).max(8).min(ERASED_FILTER_MAX_BITS / 8) * 8 };
+    let mut bits = vec![0u8; m / 8];
+    for h in hashes {
+        let Some((h1, h2)) = filter_words(h) else {
+            continue;
+        };
+        for j in 0..ERASED_FILTER_K {
+            let idx = ((h1 + j * h2) % m as u64) as usize;
+            bits[idx >> 3] |= 1 << (idx & 7);
+        }
+    }
+    if n * ERASED_FILTER_BITS_PER > ERASED_FILTER_MAX_BITS {
+        tracing::warn!(erasures = n, "edge erased filter is at its cap; its false-positive rate is rising");
+    }
+    json!({ "n": n, "m": m, "k": ERASED_FILTER_K, "bits": base64::engine::general_purpose::STANDARD.encode(&bits) })
+}
+
+fn filter_words(hash: &str) -> Option<(u64, u64)> {
+    let word = |at: usize| hash.get(at..at + 8).and_then(|w| u32::from_str_radix(w, 16).ok());
+    Some((word(0)? as u64, (word(8)? | 1) as u64))
 }
 
 fn api_err(e: crate::http::ApiError) -> anyhow::Error {
@@ -486,6 +529,11 @@ pub async fn erased(pool: &PgPool, edge: &Edge, erasure: i64) -> Value {
         return Value::Null;
     }
     let w = ERASE_EDGE_WINDOW_SECS;
+    // G5: the snapshot's erased filter now holds the subject, so republish it (a failure is
+    // logged and the worker pass retries, since the content hash moved).
+    if edge.is_on() {
+        changed_by(pool, edge, "SELECT site_id FROM erasures WHERE id = $1", erasure).await;
+    }
     match push_tombstone(pool, edge, erasure).await {
         Ok(true) => json!({ "tombstone": "pushed", "effective_within_secs": w, "note": format!("effective at the edge within {w} s") }),
         Ok(false) => json!({ "tombstone": "unconfigured", "effective_within_secs": null,
@@ -495,5 +543,81 @@ pub async fn erased(pool: &PgPool, edge: &Edge, erasure: i64) -> Value {
             json!({ "tombstone": "pending", "effective_within_secs": w,
                     "note": format!("the edge push failed and the next worker pass retries it; effective at the edge within {w} s of that pass") })
         }
+    }
+}
+
+#[cfg(test)]
+mod erased_filter_tests {
+    use super::*;
+
+    fn h(site: &str, s: &str) -> String {
+        crate::privacy::subject_hash(site, s)
+    }
+
+    fn member(f: &Value, hash: &str) -> bool {
+        use base64::Engine;
+        let m = f["m"].as_u64().unwrap();
+        let k = f["k"].as_u64().unwrap();
+        let bits = base64::engine::general_purpose::STANDARD.decode(f["bits"].as_str().unwrap()).unwrap();
+        if m == 0 {
+            return false;
+        }
+        let r: Vec<u8> = (0..8).map(|i| u8::from_str_radix(&hash[2 * i..2 * i + 2], 16).unwrap()).collect();
+        let h1 = u32::from_be_bytes([r[0], r[1], r[2], r[3]]) as u64;
+        let h2 = (u32::from_be_bytes([r[4], r[5], r[6], r[7]]) | 1) as u64;
+        (0..k).all(|i| {
+            let idx = (h1 + i * h2) % m;
+            bits[(idx >> 3) as usize] >> (idx & 7) & 1 == 1
+        })
+    }
+
+    #[test]
+    fn an_empty_site_has_an_empty_filter() {
+        assert_eq!(erased_filter(&[]), json!({ "n": 0, "m": 0, "k": 7, "bits": "" }));
+    }
+
+    #[test]
+    fn one_erasure_sets_the_pinned_bits() {
+        // Pinned in the Worker's test too (deploy/proxy-worker/test/erased.test.mjs).
+        assert_eq!(erased_filter(&[h("demo", "alice")]), json!({ "n": 1, "m": 64, "k": 7, "bits": "BQhAAAIQgAA=" }));
+    }
+
+    #[test]
+    fn forty_erasures_set_the_pinned_bits() {
+        // demo's s0..s39: 16 of them have an even second word, so `h2 | 1` matters. Pinned in
+        // the Worker's test too.
+        let hs: Vec<String> = (0..40).map(|i| h("demo", &format!("s{i}"))).collect();
+        assert_eq!(erased_filter(&hs), json!({ "n": 40, "m": 400, "k": 7, "bits": "9p5OHKP/35GFV+jWjkbmGIU9xMlstZ+iOaEt/GHbzxky93pxGzq3Un2Ex31lsGhEFCM=" }));
+    }
+
+    #[test]
+    fn the_filter_is_sized_at_ten_bits_an_erasure_and_capped_at_64_kib() {
+        let many = |n: usize| (0..n).map(|i| h("demo", &format!("s{i}"))).collect::<Vec<_>>();
+        assert_eq!(erased_filter(&many(2))["m"], json!(64), "below the floor");
+        assert_eq!(erased_filter(&many(1000))["m"], json!(10_000));
+        assert_eq!(erased_filter(&many(1001))["m"], json!(10_016), "rounded up to whole bytes");
+        let big = erased_filter(&many(60_000));
+        assert_eq!(big["m"], json!(ERASED_FILTER_MAX_BITS), "not capped");
+        assert_eq!(ERASED_FILTER_MAX_BITS, 64 * 1024 * 8);
+        assert_eq!(big["n"], json!(60_000));
+    }
+
+    #[test]
+    fn every_erasure_is_a_member_and_few_others_are() {
+        let erased: Vec<String> = (0..5000).map(|i| h("demo", &format!("gone-{i}"))).collect();
+        let f = erased_filter(&erased);
+        for e in &erased {
+            assert!(member(&f, e), "a false negative: {e}");
+        }
+        let fp = (0..20_000).filter(|i| member(&f, &h("demo", &format!("live-{i}")))).count();
+        assert!(fp < 400, "{fp} false positives in 20000 (want about 0.8 %)");
+        assert!(fp > 0, "no false positive at all: the filter is not a Bloom filter at 10 bits");
+    }
+
+    #[test]
+    fn past_the_cap_there_are_still_no_false_negatives() {
+        let erased: Vec<String> = (0..70_000).map(|i| h("demo", &format!("x{i}"))).collect();
+        let f = erased_filter(&erased);
+        assert!(erased.iter().all(|e| member(&f, e)));
     }
 }

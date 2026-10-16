@@ -52,10 +52,16 @@
 // still the authority: a cookieless subject this PoP has not seen goes to Core, and Core refuses
 // every write of an erased subject. So the edge window is about a minute; nothing is stored.
 //
+// G5: the snapshot carries `erased`, a Bloom filter of the site's erasures (src/erased.js). A
+// subject it rules out is decided with no gone/ read (a new visitor's first decide used to pay a
+// cold KV miss and go to Core); a hit, or a snapshot with no filter, reads gone/ as above. An
+// erase republishes the snapshot, and Core still refuses the records of an erase newer than it.
+//
 // Rollback: EDGE_DECIDE=off (deploy/proxy-worker/edge-decide.sh off) puts every decide back on
 // Core; deleting the route (switch.sh off) takes the Worker out entirely.
 
 import { decide as kernelDecide, identified as isIdentified, FORMAT } from './kernel.js';
+import { inErased } from './erased.js';
 
 export const SNAPSHOT_WAIT_MS = 150;
 export const BEACON_FRESH_MS = 3000;
@@ -272,6 +278,15 @@ export function createWorker(deps = {}) {
     return got === 'live' ? false : null;
   }
 
+  /** [`erasedAt`] for an edge decide from `snap` (G5): a subject `snap.erased` rules out needs no
+   * KV read (only this PoP's hint, which may know of an erase newer than the snapshot); a filter
+   * hit, or no usable filter, reads gone/ as EC4 does. `via` says which check answered. */
+  async function erasedFor(env, snap, site, raw) {
+    const hash = await sha256hex(`${site}\0${raw}`);
+    if (inErased(snap.erased, hash) === false) return { erased: (await cached(keyUrl('g', hash))) ? true : false, via: 'filter' };
+    return { erased: await erasedAt(env, site, raw), via: 'kv' };
+  }
+
   const goneResponse = (extra = {}) => json(GONE_BODY, 410, { 'x-prb-erased': 'yes', 'cache-control': 'no-store', ...extra });
 
   /** What Core's `x-prb-edge` header taught us: the stored subject and its live decisions. */
@@ -401,8 +416,6 @@ export function createWorker(deps = {}) {
     const batch = path === '/decide/batch';
     const slots = batch ? body.slots : [body.slot];
     if (!Array.isArray(slots) || slots.length === 0 || slots.length > 20 || !slots.every((s) => typeof s === 'string')) return fallback('bad-request');
-    // The tombstone read runs alongside the snapshot's; it never rejects.
-    const erasedP = erasedAt(env, body.site, body.subject);
     const got = await current(env, ctx, body.site);
     if (!got.snap) return fallback(got.reason);
     const snap = got.snap;
@@ -413,7 +426,8 @@ export function createWorker(deps = {}) {
     for (const s of slots) if (snap.slots[s] && snap.slots[s].kind === 'sorted') return fallback('sorted', snap);
     // F4: a copy slot's fields come back as `copy`, which the kernel does not build; same guard.
     for (const s of slots) if (snap.slots[s] && snap.slots[s].kind === 'copy') return fallback('copy', snap);
-    const erased = await erasedP;
+    // G5: the snapshot's erased filter first; gone/ only on a hit or with no filter. Never rejects.
+    const { erased, via: eraseCheck } = await erasedFor(env, snap, body.site, body.subject);
     if (erased === true) {
       console.log(JSON.stringify({ msg: 'edge refused erased subject', site: body.site, colo: request.cf?.colo }));
       return goneResponse({ 'x-prb-decided-by': 'edge', 'x-prb-snapshot-version': String(snap.version) });
@@ -451,10 +465,11 @@ export function createWorker(deps = {}) {
     }
     for (const m of made) if (m.record.cold_start) countColdTurn(snap, m.slot, m.record.variant_id);
     if (made.length > 0) ctx.waitUntil(after(env, snap, body, made));
-    console.log(JSON.stringify({ msg: 'edge decide', site: body.site, slots: slots.length, version: snap.version, sticky: out.length - made.length, ms: now() - started, colo: request.cf?.colo }));
+    console.log(JSON.stringify({ msg: 'edge decide', site: body.site, slots: slots.length, version: snap.version, sticky: out.length - made.length, ms: now() - started, erase: eraseCheck, colo: request.cf?.colo }));
     return json(batch ? { decisions: out } : out[0], 200, {
       'x-prb-decided-by': 'edge',
       'x-prb-snapshot-version': String(snap.version),
+      'x-prb-erase-check': eraseCheck,
       'cache-control': 'no-store',
     });
   }

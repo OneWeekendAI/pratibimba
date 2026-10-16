@@ -135,5 +135,58 @@ async fn the_tombstone_goes_to_kv_not_the_beacon(pool: PgPool) {
     let out = erase(&app_with(&pool, edge), "alice").await;
     assert_eq!(out["edge"]["tombstone"], json!("pushed"), "{out}");
     let seen = seen.lock().unwrap().clone();
-    assert_eq!(seen, [("PUT".to_string(), format!("/client/v4/accounts/acct/storage/kv/namespaces/ns/values/gone%2Fdemo%2F{ALICE_HASH}"))]);
+    let gone: Vec<_> = seen.iter().filter(|(_, p)| p.contains("gone")).cloned().collect();
+    assert_eq!(gone, [("PUT".to_string(), format!("/client/v4/accounts/acct/storage/kv/namespaces/ns/values/gone%2Fdemo%2F{ALICE_HASH}"))]);
+    // G5: the erase also republishes the snapshot (KV and beacon both); the beacon gets nothing else.
+    let kv_snapshots = seen.iter().filter(|(_, p)| p.ends_with("/values/site%2Fdemo")).count();
+    let beacon: Vec<_> = seen.iter().filter(|(_, p)| p == "/_prb/edge/snapshot").collect();
+    assert_eq!(seen.len(), 1 + kv_snapshots + beacon.len(), "an unexpected request: {seen:?}");
+    assert_eq!(beacon.len(), kv_snapshots, "the beacon got something other than the snapshot: {seen:?}");
+}
+
+// ---- G5 (edge-cache.md, Decision 22): the erased set rides in the snapshot ----
+
+/// The Bloom filter of `demo`'s erasures with alice alone (pinned in the unit test and in the
+/// Worker's test/erased.test.mjs), and with alice and bob.
+const ALICE_BITS: &str = "BQhAAAIQgAA=";
+const ALICE_BOB_BITS: &str = "BQhAAAIwyZI=";
+
+#[sqlx::test(migrations = false)]
+async fn an_erase_republishes_the_snapshot_with_the_subject_in_its_filter(pool: PgPool) {
+    setup_demo(&pool).await;
+    let store = Arc::new(MemoryStore::default());
+    let edge = Edge::with_store(store.clone());
+    pratibimba::edge::publish(&pool, &edge, "demo").await.unwrap();
+    let before = store.last("demo").expect("a first snapshot");
+    assert_eq!(before["erased"], json!({ "n": 0, "m": 0, "k": 7, "bits": "" }), "{}", before["erased"]);
+    erase(&app_with(&pool, edge), "alice").await;
+    let after = store.last("demo").expect("a snapshot");
+    assert_eq!(after["version"], json!(before["version"].as_i64().unwrap() + 1), "the erase did not republish the snapshot");
+    assert_eq!(after["erased"], json!({ "n": 1, "m": 64, "k": 7, "bits": ALICE_BITS }));
+}
+
+/// An erasure made with no edge (the CLI before the edge was configured) is in the filter after
+/// the next worker pass, since the content hash moved.
+#[sqlx::test(migrations = false)]
+async fn erasures_made_without_an_edge_reach_the_filter_at_the_next_pass(pool: PgPool) {
+    setup_demo(&pool).await;
+    let store = Arc::new(MemoryStore::default());
+    let edge = Edge::with_store(store.clone());
+    pratibimba::edge::publish(&pool, &edge, "demo").await.unwrap();
+    pratibimba::privacy::erase(&pool, "demo", "alice", "owner", None).await.unwrap();
+    pratibimba::privacy::erase(&pool, "demo", "bob", "owner", None).await.unwrap();
+    pratibimba::worker::run_drain_edge(&pool, &edge).await.unwrap();
+    assert_eq!(store.last("demo").unwrap()["erased"], json!({ "n": 2, "m": 64, "k": 7, "bits": ALICE_BOB_BITS }));
+}
+
+/// The filter is per site: another site's erasure is not in demo's filter.
+#[sqlx::test(migrations = false)]
+async fn another_sites_erasure_is_not_in_the_filter(pool: PgPool) {
+    setup_demo(&pool).await;
+    sqlx::query("INSERT INTO sites (id, origin) VALUES ('other', 'https://other.test')").execute(&pool).await.unwrap();
+    pratibimba::privacy::erase(&pool, "demo", "alice", "owner", None).await.unwrap();
+    pratibimba::privacy::erase(&pool, "other", "bob", "owner", None).await.unwrap();
+    let store = Arc::new(MemoryStore::default());
+    pratibimba::edge::publish(&pool, &Edge::with_store(store.clone()), "demo").await.unwrap();
+    assert_eq!(store.last("demo").unwrap()["erased"], json!({ "n": 1, "m": 64, "k": 7, "bits": ALICE_BITS }));
 }
