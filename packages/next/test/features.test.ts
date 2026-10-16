@@ -79,16 +79,18 @@ test('next_features_callback_reads_the_request_headers', async () => {
   assert.deepEqual(ctx.features, { loyalty_member: true });
 });
 
-test('next_no_manifest_fetch_without_a_features_callback', async () => {
+test('next_no_features_without_a_features_callback', async () => {
   const { ctx, manifests } = await render({});
   assert.equal(ctx.features, undefined);
-  assert.equal(manifests, 0);
+  // Read once all the same, for the beacon's cookie rule (G1), never for features.
+  assert.equal(manifests, 1);
 });
 
-test('next_empty_features_fetch_no_manifest', async () => {
+test('next_empty_features_send_none', async () => {
   const { ctx, manifests } = await render({ features: on({}) });
   assert.equal(ctx.features, undefined);
-  assert.equal(manifests, 0);
+  // Read once all the same, for the beacon's cookie rule (G1), never for features.
+  assert.equal(manifests, 1);
 });
 
 test('next_unreadable_manifest_sends_no_features_and_still_decides', async () => {

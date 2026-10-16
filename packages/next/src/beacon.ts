@@ -14,6 +14,9 @@ export interface BeaconProps {
   eventsPath: string;
   /** The consent the server decided with; events carry the same, so Core stores one subject. */
   consent?: boolean;
+  /** Whether the site may keep the `_prb_tz` cookie for this visitor (`full`, or
+   * `consent_aware` with consent); the slot reads the mode from Core's manifest. */
+  remember?: boolean;
   /** A sorted slot's item keys as rendered: the exposure carries them, and a click inside an
    * element marked `data-prb-item` names that item (the signal Core's cascade learns from). */
   items?: string[];
@@ -35,7 +38,7 @@ function send(p: BeaconProps, name: string, items?: string[]) {
 
 export function PrbBeacon(p: BeaconProps) {
   useEffect(() => {
-    rememberTimeZone(document, p.consent === true);
+    rememberTimeZone(document, p.remember === true);
     // Strict Mode runs effects twice in development; one exposure per decision per page.
     if (!reported.has(p.decision)) {
       reported.add(p.decision);

@@ -69,7 +69,7 @@ test('edge_geo_headers_can_be_switched_off', async () => {
 
 function load() {
   const posted: any[] = [];
-  const cfg = JSON.stringify({ site: 'shop', subject: 'v1', decisions: [{ slot: 'hero', id: 'd-1' }] });
+  const cfg = JSON.stringify({ site: 'shop', subject: 'v1', remember: true, decisions: [{ slot: 'hero', id: 'd-1' }] });
   const dom = new JSDOM(`<!doctype html><html><body><!-- prb:slot="hero" --><h1>Gifts</h1><!-- /prb:slot --><script data-prb='${cfg}'>${BEACON_JS}</script></body></html>`, {
     runScripts: 'dangerously',
     url: 'https://shop.test/',

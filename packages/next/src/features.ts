@@ -77,6 +77,15 @@ export function manifestReader(opts: { core: string; site: string; fetch?: typeo
   };
 }
 
+/**
+ * Whether the site may keep device storage for this visitor (G1): Core's "identified", the same
+ * rule the browser SDK uses for its `_prb_subject` cookie. A manifest that cannot be read says no.
+ */
+export async function mayRemember(read: () => Promise<SiteFeatures | null>, consent: boolean | undefined): Promise<boolean> {
+  const site = await read();
+  return site !== null && identified(site.privacy_mode, consent);
+}
+
 /** `ctx.features` for one request: the callback's values filtered against the manifest. */
 export async function featuresFor(
   read: () => Promise<SiteFeatures | null>,

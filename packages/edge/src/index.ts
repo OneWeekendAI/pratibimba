@@ -10,7 +10,7 @@ import { BEACON_JS } from './beacon.ts';
 import { beforeBodyEnd, rewriter, type Replacement } from './markers.ts';
 import { GEO_TZ_HEADERS, TZ_COOKIE, validTimeZone, visitorTimeZone } from './timezone.ts';
 import { CONSENT_COOKIE, visitorConsent, type ConsentOption } from './consent.ts';
-import { MANIFEST_TTL_MS, featuresFor, manifestReader, type FeatureValues } from './features.ts';
+import { MANIFEST_TTL_MS, featuresFor, manifestReader, mayRemember, type FeatureValues } from './features.ts';
 import { addToCartEvent, purchaseEvent, type Item, type Order } from './commerce.ts';
 
 export { rewriter, beforeBodyEnd, BEACON_JS };
@@ -170,6 +170,13 @@ export function createEdge(opts: EdgeOptions) {
         ? featuresFor(readManifest, () => opts.features!(request), consent).then((features) => (features ? { ...baseCtx, features } : baseCtx))
         : Promise.resolve(baseCtx));
 
+    // The beacon's cookie rule (G1) needs the privacy mode: read from the (cached) manifest once
+    // per page, after the first decision lands (a page with no decision has no beacon, and a
+    // read raced against a slow Core would be aborted, costing its keep-alive socket).
+    let remember = false;
+    let rememberP: Promise<void> | null = null;
+    const readRemember = () => (rememberP ??= mayRemember(readManifest, consent).then((v) => void (remember = v)));
+
     const decided: { slot: string; id: string }[] = [];
     async function decide(slot: string): Promise<Replacement> {
       const ms = opts.timeoutMs ?? 300;
@@ -187,12 +194,13 @@ export function createEdge(opts: EdgeOptions) {
       })();
       const d = await deadline(work, ms);
       if (!d) return { html: null };
+      await readRemember();
       decided.push({ slot, id: d.decision_id });
       return { html: d.payload };
     }
 
     // The beacon tag goes in last, once every slot above it has been decided.
-    const beacon = () => `<script src="/_prb/beacon.js" data-prb='${attr({ site: opts.site, subject, consent, decisions: decided })}'></script>`;
+    const beacon = () => `<script src="/_prb/beacon.js" data-prb='${attr({ site: opts.site, subject, consent, remember, decisions: decided })}'></script>`;
     const body = res.body
       .pipeThrough(new TextDecoderStream())
       .pipeThrough(rewriter(decide))

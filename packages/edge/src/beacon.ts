@@ -14,13 +14,17 @@ export const BEACON_JS = `(function () {
     try { fetch('/_prb/e', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }); } catch (e) {}
   }
   // The edge has no clock of the visitor's: this first-party cookie names the browser's zone,
-  // which the edge prefers to its geolocation. A year with consent; otherwise a session cookie
-  // (rewritten each page, so withdrawing consent shortens a year-long one).
+  // which the edge prefers to its geolocation. It is device storage, so it is kept (a year) only
+  // when the site may remember this visitor (cfg.remember: full, or consent_aware with consent);
+  // otherwise nothing is written and a cookie left from an earlier choice is expired.
   try {
-    var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (zone)
-      document.cookie = '_prb_tz=' + encodeURIComponent(zone) + '; Path=/; SameSite=Lax' +
-        (cfg.consent === true ? '; Max-Age=31536000' : '') + (location.protocol === 'https:' ? '; Secure' : '');
+    var secure = location.protocol === 'https:' ? '; Secure' : '';
+    if (cfg.remember === true) {
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (zone) document.cookie = '_prb_tz=' + encodeURIComponent(zone) + '; Path=/; SameSite=Lax; Max-Age=31536000' + secure;
+    } else if (/(?:^|; )_prb_tz=/.test(document.cookie)) {
+      document.cookie = '_prb_tz=; Path=/; SameSite=Lax; Max-Age=0' + secure;
+    }
   } catch (e) {}
   function markers(slot) {
     var w = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_COMMENT);

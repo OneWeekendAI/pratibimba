@@ -81,16 +81,18 @@ test('edge_features_callback_reads_the_request', async () => {
   assert.deepEqual(ctx.features, { loyalty_member: true });
 });
 
-test('edge_no_manifest_fetch_without_a_features_callback', async () => {
+test('edge_no_features_without_a_features_callback', async () => {
   const { ctx, manifests } = await run({});
   assert.equal(ctx.features, undefined);
-  assert.equal(manifests, 0);
+  // Read once all the same, after the decision, for the beacon's cookie rule (G1).
+  assert.equal(manifests, 1);
 });
 
-test('edge_empty_features_fetch_no_manifest', async () => {
+test('edge_empty_features_send_none', async () => {
   const { ctx, manifests } = await run({ features: on({}) });
   assert.equal(ctx.features, undefined);
-  assert.equal(manifests, 0);
+  // Read once all the same, after the decision, for the beacon's cookie rule (G1).
+  assert.equal(manifests, 1);
 });
 
 test('edge_unreadable_manifest_sends_no_features_and_still_decides', async () => {

@@ -21,7 +21,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
 });
 
-async function mount(decision = 'd-1', consent?: boolean) {
+async function mount(decision = 'd-1', consent?: boolean, remember?: boolean) {
   const host = document.createElement('div');
   host.setAttribute('data-prb-decision', decision);
   host.innerHTML = '<a id="cta">Shop</a>';
@@ -29,7 +29,7 @@ async function mount(decision = 'd-1', consent?: boolean) {
   host.appendChild(mountPoint);
   document.body.appendChild(host);
   const root = createRoot(mountPoint);
-  await act(async () => root.render(createElement(PrbBeacon, { site: 'shop', slot: 'hero', decision, subject: 'v1', eventsPath: '/_prb/e', consent })));
+  await act(async () => root.render(createElement(PrbBeacon, { site: 'shop', slot: 'hero', decision, subject: 'v1', eventsPath: '/_prb/e', consent, remember })));
   return { host, root };
 }
 
@@ -60,7 +60,7 @@ test('beacon_reports_one_exposure_per_decision', async () => {
 test('beacon_remembers_the_browsers_time_zone_in_a_cookie', async () => {
   // The next server render has no clock of its own; this first-party cookie is its fallback.
   document.cookie = '_prb_tz=; max-age=0; path=/';
-  await mount('d-tz');
+  await mount('d-tz', true, true);
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   assert.ok(document.cookie.split('; ').includes(`_prb_tz=${encodeURIComponent(zone)}`), document.cookie);
 });
@@ -81,12 +81,15 @@ test('beacon_events_without_consent_say_so', async () => {
   assert.equal(posts[0].body.consent, false);
 });
 
-// --- the zone cookie outlives the session only with consent -----------------------------------
+// --- the zone cookie is written only when the site may remember the visitor (G1) -------------
 
 /** Every `document.cookie = ...` written while `fn` runs, attributes included. */
 async function cookieWrites(fn: () => Promise<unknown>): Promise<string[]> {
-  const proto = Object.getPrototypeOf(Object.getPrototypeOf(document));
-  const desc = Object.getOwnPropertyDescriptor(proto, 'cookie') ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(proto), 'cookie')!;
+  // The accessor lives on Document.prototype; walk up to it (reads must work too: the beacon
+  // reads the cookie to decide whether there is one to expire).
+  let proto = Object.getPrototypeOf(document);
+  while (proto && !Object.getOwnPropertyDescriptor(proto, 'cookie')) proto = Object.getPrototypeOf(proto);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'cookie')!;
   const writes: string[] = [];
   Object.defineProperty(document, 'cookie', {
     configurable: true,
@@ -104,22 +107,32 @@ async function cookieWrites(fn: () => Promise<unknown>): Promise<string[]> {
   return writes.filter((w) => w.startsWith('_prb_tz='));
 }
 
-test('tz_cookie_is_persistent_with_consent', async () => {
-  const writes = await cookieWrites(() => mount('d-tz-yes', true));
+test('tz_cookie_is_persistent_when_the_site_may_remember', async () => {
+  const writes = await cookieWrites(() => mount('d-tz-yes', true, true));
   assert.equal(writes.length, 1, JSON.stringify(writes));
   assert.match(writes[0], /; Max-Age=31536000/);
 });
 
-test('tz_cookie_is_a_session_cookie_without_consent', async () => {
-  const writes = await cookieWrites(() => mount('d-tz-no'));
-  assert.equal(writes.length, 1, JSON.stringify(writes));
-  assert.doesNotMatch(writes[0], /Max-Age|Expires/i);
+test('tz_cookie_is_not_written_when_the_site_may_not_remember', async () => {
+  document.cookie = '_prb_tz=; Max-Age=0; Path=/';
+  const writes = await cookieWrites(() => mount('d-tz-no', false, false));
+  assert.deepEqual(writes, []);
+  assert.ok(!document.cookie.includes('_prb_tz='), document.cookie);
 });
 
-test('tz_cookie_without_consent_replaces_a_persistent_one', async () => {
-  // A visitor who withdraws consent keeps the zone only for this session.
-  await mount('d-tz-before', true);
-  const writes = await cookieWrites(() => mount('d-tz-after'));
+test('tz_cookie_follows_remember_not_bare_consent', async () => {
+  // A cookieless site with a consenting visitor: consent is true, the site still stores nothing.
+  document.cookie = '_prb_tz=; Max-Age=0; Path=/';
+  const writes = await cookieWrites(() => mount('d-tz-cookieless', true, false));
+  assert.deepEqual(writes, []);
+});
+
+test('tz_cookie_is_expired_when_remembering_stops', async () => {
+  // A visitor who withdraws consent loses the year-long cookie at the next page.
+  await mount('d-tz-before', true, true);
+  assert.ok(document.cookie.includes('_prb_tz='), document.cookie);
+  const writes = await cookieWrites(() => mount('d-tz-after', false, false));
   assert.equal(writes.length, 1, JSON.stringify(writes));
-  assert.doesNotMatch(writes[0], /Max-Age|Expires/i);
+  assert.match(writes[0], /; Max-Age=0/);
+  assert.ok(!document.cookie.includes('_prb_tz='), document.cookie);
 });

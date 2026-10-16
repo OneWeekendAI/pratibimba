@@ -10,7 +10,7 @@ import { decideBatch, isDecision, type Ctx, type Decision, type Fetch } from './
 import { CTX_HEADER, SUBJECT_HEADER, decodeCtx } from './context.ts';
 import { TZ_HEADER, validTimeZone } from './timezone.ts';
 import { CONSENT_HEADER } from './consent.ts';
-import { featuresFor, manifestReader, type FeatureValues } from './features.ts';
+import { featuresFor, manifestReader, mayRemember, type FeatureValues } from './features.ts';
 
 type HeaderReader = Headers | { get(name: string): string | null };
 
@@ -219,6 +219,7 @@ export function createSlot(config: SlotConfig) {
         decision: d.decision_id,
         subject: v!.subject,
         consent: v!.ctx.consent === true,
+        remember: await mayRemember(readManifest, v!.ctx.consent),
         eventsPath: config.eventsPath ?? '/_prb/e',
       }),
     );
@@ -240,6 +241,7 @@ export function createSlot(config: SlotConfig) {
         decision: d.decision_id,
         subject: v!.subject,
         consent: v!.ctx.consent === true,
+        remember: await mayRemember(readManifest, v!.ctx.consent),
         eventsPath: config.eventsPath ?? '/_prb/e',
         items: shown,
       }),
@@ -261,6 +263,7 @@ export function createSlot(config: SlotConfig) {
         decision: d.decision_id,
         subject: v!.subject,
         consent: v!.ctx.consent === true,
+        remember: await mayRemember(readManifest, v!.ctx.consent),
         eventsPath: config.eventsPath ?? '/_prb/e',
       }),
     );

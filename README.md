@@ -701,8 +701,9 @@ hours joined this way after the first three).
 **Server-side SDKs send a time zone name.** A server render has no browser clock, so
 `@pratibimba/next` and `@pratibimba/edge` send `ctx.tz`, an IANA zone such as `Asia/Kolkata`.
 They prefer the zone the browser names, in `_prb_tz`, a first-party cookie their beacon sets
-(a session cookie, or a year with consent), because IP geolocation is wrong behind many
-carriers and every VPN. Without it they fall back to the platform's geolocation
+only when the site may remember the visitor (`full`, or `consent_aware` with consent, the
+browser SDK's own cookie rule; never `cookieless`), and expires once that stops. They prefer
+it because IP geolocation is wrong behind many carriers and every VPN. Without it they fall back to the platform's geolocation
 (`x-vercel-ip-timezone`, Cloudflare's `request.cf.timezone` or `cf-timezone`,
 `cloudfront-viewer-time-zone`). Off those platforms a geo
 header is just something the visitor sent; pass `timeZoneHeaders: []` to ignore it. Core

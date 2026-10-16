@@ -83,7 +83,7 @@ test('beacon_tag_carries_the_decisions', async () => {
   const text = await (await edge().handleRequest(get('/', { cookie: '_prb_subject=abc' }))).text();
   const m = /<script src="\/_prb\/beacon\.js" data-prb='([^']+)'><\/script><\/body>/.exec(text);
   assert.ok(m, text);
-  assert.deepEqual(JSON.parse(m[1]), { site: 'shop', subject: 'abc', consent: false, decisions: [{ slot: 'hero', id: 'd-1' }] });
+  assert.deepEqual(JSON.parse(m[1]), { site: 'shop', subject: 'abc', consent: false, remember: false, decisions: [{ slot: 'hero', id: 'd-1' }] });
 });
 
 test('edge_serves_the_beacon_script', async () => {

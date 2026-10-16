@@ -16,7 +16,7 @@
 
 export const TZ_COOKIE = '_prb_tz';
 export const TZ_HEADER = 'x-prb-tz';
-/** A year, as the subject cookie: only with consent. */
+/** A year, as the subject cookie: only when the site may remember the visitor. */
 export const TZ_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 export const GEO_TZ_HEADERS = ['x-vercel-ip-timezone', 'cf-timezone', 'cloudfront-viewer-time-zone'];
 
@@ -54,19 +54,24 @@ export function visitorTimeZone(headers: HeaderBag, cookie: string | undefined, 
 }
 
 /**
- * Browser side: keep the zone in the first-party cookie the server reads next time. With the
- * visitor's consent it lasts a year, so the first page of the next visit has a zone too;
- * without it, it is a session cookie (rewritten each page, so withdrawing consent shortens a
- * year-long one). A zone name identifies nobody, and without the cookie a server off a geo
- * edge would have no local clock at all, so it is kept for the session rather than dropped.
+ * Browser side: keep the zone in the first-party cookie the server reads next time, for a year,
+ * but only when the site may remember this visitor (`remember`: `full`, or `consent_aware` with
+ * consent, as the browser SDK's own cookie). Otherwise nothing is stored, and a cookie left from
+ * an earlier choice is expired, so withdrawing consent removes it at the next page. The server
+ * then falls back to the geo header.
  */
-export function rememberTimeZone(doc: Document = document, persist = false): void {
+export function rememberTimeZone(doc: Document = document, remember = false): void {
   try {
+    const secure = doc.location?.protocol === 'https:' ? '; Secure' : '';
+    if (!remember) {
+      if (doc.cookie.split('; ').some((c) => c.startsWith(`${TZ_COOKIE}=`))) {
+        doc.cookie = `${TZ_COOKIE}=; Path=/; SameSite=Lax; Max-Age=0${secure}`;
+      }
+      return;
+    }
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (!validTimeZone(zone)) return;
-    const secure = doc.location?.protocol === 'https:' ? '; Secure' : '';
-    const life = persist ? `; Max-Age=${TZ_COOKIE_MAX_AGE}` : '';
-    doc.cookie = `${TZ_COOKIE}=${encodeURIComponent(zone)}; Path=/; SameSite=Lax${life}${secure}`;
+    doc.cookie = `${TZ_COOKIE}=${encodeURIComponent(zone)}; Path=/; SameSite=Lax; Max-Age=${TZ_COOKIE_MAX_AGE}${secure}`;
   } catch {
     // No cookies (sandboxed frame, privacy mode): the server falls back to the geo header.
   }
