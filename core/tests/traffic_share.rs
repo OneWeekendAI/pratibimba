@@ -352,3 +352,119 @@ async fn an_mcp_token_cannot_confirm_a_share_proposal(pool: PgPool) {
     assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.text);
     assert_eq!(share_of(&pool, "gift").await, None);
 }
+
+// ---- re-applying the site file (bug fix 2026-10-16) ------------------------------------------
+//
+// The rule: a variant's `traffic_share` in the site file is applied only when it differs from
+// the value the file stated at the last apply. Omitted, or unchanged since the last apply, the
+// stored share stands, so an owner's edit survives a re-apply. The baseline never has one.
+
+fn demo_with_share(share: Option<f32>) -> pratibimba::site_file::SiteFile {
+    let mut gift = json!({ "key": "gift", "html": "<h1>Gift sets</h1>" });
+    if let Some(s) = share {
+        gift["traffic_share"] = json!(s);
+    }
+    file_from(json!({
+        "site": "demo", "origin": "http://localhost:5173",
+        "slots": [{ "key": "hero", "selector": "#hero", "metric": "click",
+                    "variants": [ { "key": "baseline", "baseline": true }, gift ] }]
+    }))
+}
+
+async fn apply(pool: &PgPool, file: &pratibimba::site_file::SiteFile) {
+    pratibimba::site_file::apply(pool, file).await.unwrap();
+}
+
+async fn share_rows(pool: &PgPool, id: i64) -> Vec<(String, Option<f32>, Option<f32>)> {
+    sqlx::query_as("SELECT actor, traffic_share, previous_share FROM approvals WHERE variant_id = $1 AND action = 'share' ORDER BY id")
+        .bind(id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn reapplying_the_site_file_keeps_an_edited_share(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.2 })).await;
+    apply(&pool, &demo_file()).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.2));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_share_the_file_states_is_applied_and_audited(pool: PgPool) {
+    let (_app, _) = setup(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.3));
+    assert_eq!(share_rows(&pool, gift).await, vec![("cli:apply".to_string(), Some(0.3), None)]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_new_variant_takes_the_files_share(pool: PgPool) {
+    pratibimba::db::migrate(&pool).await.unwrap();
+    apply(&pool, &demo_with_share(Some(0.25))).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.25));
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_unchanged_file_share_does_not_undo_an_edit(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.2 })).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.2));
+    assert_eq!(share_rows(&pool, gift).await.len(), 2, "the unchanged re-apply writes no share row");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_changed_file_share_wins_over_an_edit(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.2 })).await;
+    apply(&pool, &demo_with_share(Some(0.4))).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.4));
+    assert_eq!(share_rows(&pool, gift).await.last().unwrap(), &("cli:apply".to_string(), Some(0.4), Some(0.2)));
+}
+
+#[sqlx::test(migrations = false)]
+async fn dropping_the_files_share_keeps_the_current_one(pool: PgPool) {
+    let (_app, _) = setup(&pool).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    apply(&pool, &demo_file()).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.3));
+    // Stated again after being dropped, it counts as a change and applies.
+    sqlx::query("UPDATE variants SET traffic_share = 0.1 WHERE key = 'gift'").execute(&pool).await.unwrap();
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    assert_eq!(share_of(&pool, "gift").await, Some(0.3));
+}
+
+#[test]
+fn the_site_file_refuses_a_share_out_of_range_or_on_the_baseline() {
+    for bad in [0.0, 0.51, -0.1] {
+        assert!(demo_with_share(Some(bad)).validate().is_err(), "{bad} accepted");
+    }
+    assert!(demo_with_share(Some(0.5)).validate().is_ok());
+    let on_baseline: Result<pratibimba::site_file::SiteFile, _> = serde_json::from_value(json!({
+        "site": "demo", "origin": "http://localhost:5173",
+        "slots": [{ "key": "hero", "selector": "#hero",
+                    "variants": [ { "key": "baseline", "baseline": true, "traffic_share": 0.2 },
+                                  { "key": "gift", "html": "<h1>Gift sets</h1>" } ] }]
+    }));
+    assert!(on_baseline.unwrap().validate().is_err());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_variant_made_the_baseline_loses_its_share(pool: PgPool) {
+    let (_app, _) = setup(&pool).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    apply(&pool, &file_from(json!({
+        "site": "demo", "origin": "http://localhost:5173",
+        "slots": [{ "key": "hero", "selector": "#hero", "metric": "click",
+                    "variants": [ { "key": "baseline", "html": "<h1>Old</h1>" }, { "key": "gift", "baseline": true } ] }]
+    }))).await;
+    assert_eq!(share_of(&pool, "gift").await, None);
+}

@@ -119,6 +119,11 @@ pub struct VariantSpec {
     /// A copy slot's fields (see [`crate::copy`]), instead of html.
     #[serde(default)]
     pub copy: Option<crate::copy::Text>,
+    /// The share of traffic this variant may take, above 0 and at most 0.5; not on a baseline.
+    /// Applied only when it differs from what the file stated at the last apply, so an owner's
+    /// edit in the dashboard survives re-applying an unchanged file. Omitted: the share stands.
+    #[serde(default)]
+    pub traffic_share: Option<f32>,
 }
 
 fn default_metric() -> String {
@@ -209,9 +214,17 @@ pub fn validate_slot(slot: &SlotSpec) -> Result<()> {
         bail!("slot {k:?}: exactly one variant must be marked baseline (found {baselines})");
     }
     let mut keys = std::collections::HashSet::new();
-    for v in &slot.variants {
+    for (i, v) in slot.variants.iter().enumerate() {
         if !is_slug(&v.key) || !keys.insert(&v.key) {
             bail!("slot {k:?}: variant key {:?} is invalid or repeated", v.key);
+        }
+        if let Some(share) = v.traffic_share {
+            if v.baseline || (slot.is_sorted() && i == 0) {
+                bail!("slot {k:?}: baseline {:?} has no traffic_share; it is the page's own content", v.key);
+            }
+            if !(share > 0.0 && share <= 0.5) {
+                bail!("slot {k:?}: variant {:?} traffic_share must be above 0 and at most 0.5", v.key);
+            }
         }
         match (v.baseline, &v.html) {
             (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
@@ -263,6 +276,21 @@ pub async fn apply_edge(pool: &PgPool, file: &SiteFile, edge: &crate::edge::Edge
         .await
         .map_err(|e| anyhow::anyhow!("applied, but the edge snapshot was not published (the worker retries): {e:#}"))?;
     Ok(())
+}
+
+/// The share a re-apply leaves on a variant, and whether the file changed it: `prev` is the
+/// stored `(traffic_share, file_share)`, None for a new variant. The baseline has none. A value
+/// the file states wins only when it differs from what the file stated last time; otherwise
+/// (omitted, or unchanged) the stored share stands, so an owner's edit survives.
+fn file_share(baseline: bool, stated: Option<f32>, prev: Option<(Option<f32>, Option<f32>)>) -> (Option<f32>, bool) {
+    if baseline {
+        return (None, false);
+    }
+    let (current, last_stated) = prev.unwrap_or((None, None));
+    match stated {
+        Some(s) if last_stated != Some(s) => (Some(s), true),
+        _ => (current, false),
+    }
 }
 
 pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
@@ -337,33 +365,59 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             .execute(&mut *tx)
             .await?;
         // Which listed variants this apply newly approves: the webhook says only what changed.
-        let before: Vec<(String, String)> =
-            sqlx::query_as("SELECT key, status FROM variants WHERE slot_id = $1").bind(slot_id).fetch_all(&mut *tx).await?;
+        #[allow(clippy::type_complexity)]
+        let before: Vec<(String, String, Option<f32>, Option<f32>)> =
+            sqlx::query_as("SELECT key, status, traffic_share, file_share FROM variants WHERE slot_id = $1").bind(slot_id).fetch_all(&mut *tx).await?;
         // Clear the baseline flag first so moving it between variants never trips the
         // one-baseline index halfway through.
         sqlx::query("UPDATE variants SET is_baseline = false WHERE slot_id = $1").bind(slot_id).execute(&mut *tx).await?;
         for (i, v) in slot.variants.iter().enumerate() {
             // A sorted slot's first item stands as its baseline: the head of the default order.
             let baseline = v.baseline || (slot.is_sorted() && i == 0);
-            sqlx::query(
-                "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at, approved_model_version)
-                 VALUES ($1, $2, $3, $4, 'approved', $5, now(), (SELECT version FROM models WHERE slot_id = $1))
+            let prev = before.iter().find(|(k, ..)| k == &v.key);
+            let (share, file_changed) = file_share(baseline, v.traffic_share, prev.map(|p| (p.2, p.3)));
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at, approved_model_version, traffic_share, file_share)
+                 VALUES ($1, $2, $3, $4, 'approved', $5, now(), (SELECT version FROM models WHERE slot_id = $1), $6, $7)
                  ON CONFLICT (slot_id, key) DO UPDATE SET payload = EXCLUDED.payload, is_baseline = EXCLUDED.is_baseline,
                      status = 'approved', approved_by = EXCLUDED.approved_by, approved_at = now(),
                      approved_model_version = COALESCE(variants.approved_model_version, EXCLUDED.approved_model_version),
-                     traffic_share = NULL",
+                     traffic_share = EXCLUDED.traffic_share, file_share = EXCLUDED.file_share
+                 RETURNING id",
             )
             .bind(slot_id)
             .bind(&v.key)
             .bind(v.copy.as_ref().map(crate::copy::payload).or_else(|| v.html.clone()))
             .bind(baseline)
             .bind(APPROVER)
-            .execute(&mut *tx)
+            .bind(share)
+            .bind(if baseline { None } else { v.traffic_share })
+            .fetch_one(&mut *tx)
             .await?;
+            let previous = prev.and_then(|p| p.2);
+            if file_changed && prev.is_some() && previous != share {
+                // The file changed this share: audit it as a person's edit is audited.
+                sqlx::query("INSERT INTO approvals (variant_id, action, actor, traffic_share, previous_share) VALUES ($1, 'share', $2, $3, $4)")
+                    .bind(id)
+                    .bind(APPROVER)
+                    .bind(share)
+                    .bind(previous)
+                    .execute(&mut *tx)
+                    .await?;
+                tracing::info!(site = %file.site, slot = %slot.key, variant = %v.key, ?share, ?previous, "apply: site file set the traffic share");
+            } else if v.traffic_share.is_some() && !file_changed && previous != v.traffic_share {
+                tracing::info!(site = %file.site, slot = %slot.key, variant = %v.key, kept = ?previous, file = ?v.traffic_share,
+                    "apply: kept the edited traffic share; the file's value has not changed since the last apply");
+            }
         }
         for v in &slot.variants {
-            if !before.iter().any(|(k, s)| k == &v.key && s == "approved") {
-                let data = json!({ "slot": slot.key, "variant": v.key, "approved_by": APPROVER, "traffic_share": null });
+            if !before.iter().any(|(k, s, ..)| k == &v.key && s == "approved") {
+                let share: Option<f32> = sqlx::query_scalar("SELECT traffic_share FROM variants WHERE slot_id = $1 AND key = $2")
+                    .bind(slot_id)
+                    .bind(&v.key)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                let data = json!({ "slot": slot.key, "variant": v.key, "approved_by": APPROVER, "traffic_share": share });
                 webhooks::enqueue(&mut *tx, &file.site, "variant.approved", data).await?;
             }
         }

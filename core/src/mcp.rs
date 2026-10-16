@@ -589,9 +589,9 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     // The slot as the site file would declare it, so the site file's rules judge it: a sorted
     // slot's items are its variants; any other kind has the one baseline.
     let variants = match a.items {
-        Some(items) => items.into_iter().map(|key| crate::site_file::VariantSpec { key, baseline: false, html: None, copy: None }).collect(),
+        Some(items) => items.into_iter().map(|key| crate::site_file::VariantSpec { key, baseline: false, html: None, copy: None, traffic_share: None }).collect(),
         None if sorted => vec![],
-        None => vec![crate::site_file::VariantSpec { key: "baseline".into(), baseline: true, html: None, copy: None }],
+        None => vec![crate::site_file::VariantSpec { key: "baseline".into(), baseline: true, html: None, copy: None, traffic_share: None }],
     };
     let spec = crate::site_file::SlotSpec {
         key: a.key.clone(),
@@ -823,7 +823,7 @@ async fn kind_spec(
         }
         // Visible follows the items down when there are fewer of them, as create_slot clamps it.
         let visible = new_sorted.and_then(|s| s.visible).unwrap_or(visible.min(items.len() as u32).max(1));
-        let variants = items.into_iter().map(|key| VariantSpec { key, baseline: false, html: None, copy: None }).collect();
+        let variants = items.into_iter().map(|key| VariantSpec { key, baseline: false, html: None, copy: None, traffic_share: None }).collect();
         (variants, Some(crate::sorted::SortedSpec { visible: Some(visible) }))
     } else {
         let is_copy = kind == crate::copy::KIND;
@@ -833,7 +833,7 @@ async fn kind_spec(
             .map(|(key, baseline, payload, _)| {
                 let text = (is_copy && !baseline).then(|| payload.as_deref().and_then(|p| serde_json::from_str(p).ok())).flatten();
                 let html = (!is_copy && !baseline).then_some(payload).flatten();
-                VariantSpec { key, baseline, html, copy: text }
+                VariantSpec { key, baseline, html, copy: text, traffic_share: None }
             })
             .collect();
         (variants, new_sorted)
