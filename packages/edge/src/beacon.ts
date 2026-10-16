@@ -7,9 +7,12 @@ export const BEACON_JS = `(function () {
   var me = document.currentScript;
   if (!me) return;
   var cfg = JSON.parse(me.getAttribute('data-prb') || '{}');
-  function send(name, d) {
+  // items: a sorted slot's cards, [{id}] (the rendered order on exposure, the card on a click).
+  function send(name, d, items) {
+    var ev = { id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: name, slot: d.slot, decision_id: d.id };
+    if (items && items.length) ev.items = items.slice(0, 100).map(function (k) { return { id: k }; });
     var body = JSON.stringify({ site: cfg.site, subject: cfg.subject,
-      events: [{ id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: name, slot: d.slot, decision_id: d.id }],
+      events: [ev],
       tz_offset: -new Date().getTimezoneOffset(), consent: cfg.consent === true });
     try { fetch('/_prb/e', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }); } catch (e) {}
   }
@@ -44,8 +47,14 @@ export const BEACON_JS = `(function () {
     (cfg.decisions || []).forEach(function (d) {
       var pair = markers(d.slot);
       if (!pair) return;
-      send('exposure', d);
-      document.addEventListener('click', function (ev) { if (inside(ev.target, pair)) send('click', d); }, true);
+      var sorted = Array.isArray(d.items);
+      send('exposure', d, sorted ? d.items : null);
+      document.addEventListener('click', function (ev) {
+        if (!inside(ev.target, pair)) return;
+        // The card a click landed in, if it sits between the markers (a sorted slot only).
+        var card = sorted && ev.target.closest ? ev.target.closest('[data-prb-item]') : null;
+        send('click', d, card && inside(card, pair) ? [card.getAttribute('data-prb-item')] : null);
+      }, true);
     });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();

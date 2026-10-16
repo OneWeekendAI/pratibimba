@@ -260,3 +260,75 @@ async fn explain_tells_a_sorted_decision_by_its_order(pool: PgPool) {
     }
     assert!(treated && held);
 }
+
+/// Post one event for `subject` on the grid, with optional items.
+async fn grid_event(app: &axum::Router, subject: &str, name: &str, decision: Option<&str>, items: &[&str]) {
+    let mut ev = json!({ "id": uuid::Uuid::new_v4(), "name": name, "slot": "grid", "decision_id": decision });
+    if !items.is_empty() {
+        ev["items"] = json!(items.iter().map(|k| json!({ "id": k })).collect::<Vec<_>>());
+    }
+    let r = post(app, "/e", json!({ "site": "demo", "subject": subject, "events": [ev] })).await;
+    assert!(r.status.is_success(), "{}", r.text);
+}
+
+/// G3: per-item results read the order the exposure says was rendered (falling back to the
+/// stored order), count only treated closed exposed decisions, and follow the cascade.
+#[sqlx::test(migrations = false)]
+async fn per_item_results_follow_the_rendered_order_and_the_cascade(pool: PgPool) {
+    setup(&pool, &ITEMS, Some(2)).await;
+    let app = app(&pool);
+    // s1: the page rendered the order reversed (plus an unknown card), and s1 clicked its second card.
+    let d1 = decide_grid(&app, "s1").await;
+    let mut rendered: Vec<String> = order(&d1).into_iter().rev().collect();
+    let id1 = d1["decision_id"].as_str().unwrap();
+    let mut shown: Vec<&str> = rendered.iter().map(String::as_str).collect();
+    shown.insert(1, "zz");
+    grid_event(&app, "s1", "exposure", Some(id1), &shown).await;
+    grid_event(&app, "s1", "click", None, &[&rendered[1]]).await;
+    // s2: an exposure with no items (the stored order stands), no click.
+    let d2 = decide_grid(&app, "s2").await;
+    grid_event(&app, "s2", "exposure", d2["decision_id"].as_str(), &[]).await;
+    // s3: clicked, then moved to the holdout: it must not count.
+    let d3 = decide_grid(&app, "s3").await;
+    grid_event(&app, "s3", "exposure", d3["decision_id"].as_str(), &[]).await;
+    grid_event(&app, "s3", "click", None, &[&order(&d3)[0]]).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+    let later = Utc::now() + Duration::seconds(1801);
+    worker::run_once(&pool, later).await.unwrap();
+    sqlx::query("UPDATE decisions SET in_holdout = true WHERE subject = 's3'").execute(&pool).await.unwrap();
+    // Age everything two hours, so the windows are closed for the admin API's own clock too.
+    sqlx::query("UPDATE decisions SET created_at = created_at - interval '2 hours'").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE events SET received_at = received_at - interval '2 hours'").execute(&pool).await.unwrap();
+    // s4: exposed and clicked, but its window is still open: it must not count yet.
+    let d4 = decide_grid(&app, "s4").await;
+    grid_event(&app, "s4", "exposure", d4["decision_id"].as_str(), &[]).await;
+    grid_event(&app, "s4", "click", None, &[&order(&d4)[0]]).await;
+    worker::run_once(&pool, Utc::now()).await.unwrap();
+
+    let keys: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
+    let acted = rendered[1].clone();
+    rendered.retain(|k| k != "zz");
+    let want = pratibimba::sorted::tally(&keys, &[(rendered, vec![acted]), (order(&d2), vec![])], 2);
+    let r = pratibimba::results::site(&pool, "demo", pratibimba::results::ALL_TIME, Utc::now()).await.unwrap().unwrap();
+    let grid = r.slots.iter().find(|s| s.key == "grid").unwrap();
+    assert_eq!(grid.treated.n, 2, "the rollup still counts decisions");
+    assert_eq!(grid.items.as_deref(), Some(&want[..]));
+    assert_eq!(want.iter().map(|i| i.acted).sum::<u64>(), 1);
+
+    // The admin API carries them, on the slot and in the site's results.
+    let admin = admin_app(&pool);
+    let detail = api_get(&admin, "/api/sites/demo/slots/grid").await.json();
+    assert_eq!(detail["items"], serde_json::to_value(&want).unwrap(), "{detail}");
+    let all = api_get(&admin, "/api/sites/demo/results").await.json();
+    assert!(all["results"]["slots"][0]["items"].is_array(), "{all}");
+}
+
+/// G3: a swap slot has no per-item results.
+#[sqlx::test(migrations = false)]
+async fn a_swap_slot_has_no_item_results(pool: PgPool) {
+    setup_demo(&pool).await;
+    let r = pratibimba::results::site(&pool, "demo", pratibimba::results::ALL_TIME, Utc::now()).await.unwrap().unwrap();
+    assert!(r.slots.iter().all(|s| s.items.is_none()));
+    let detail = api_get(&admin_app(&pool), "/api/sites/demo/slots/hero").await.json();
+    assert!(detail["items"].is_null(), "{detail}");
+}

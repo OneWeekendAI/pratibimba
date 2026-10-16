@@ -11,7 +11,7 @@ import { Preview } from '@/components/preview';
 import { ShareEditor } from '@/components/share-editor';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
-import { api, type DecisionRow, type SlotDetail, type VariantRow } from '@/lib/api';
+import { api, type DecisionRow, type ItemRow, type SlotDetail, type VariantRow } from '@/lib/api';
 import { ago, int, pct, pp, seriesVar, shortId, when } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
@@ -132,6 +132,31 @@ function DecisionsTable({ site, slot, variants }: { site: string; slot: string; 
   );
 }
 
+/** G3: a sorted slot's items, one row each, in the declared order. */
+function ItemsTable({ items }: { items: ItemRow[] }) {
+  const cols = ['Item', 'Shown', 'Avg position', 'Acted on', 'Rate'];
+  return (
+    <Card className="overflow-auto">
+      <table className="w-full text-[13px]" data-testid="items-table">
+        <thead className="border-b border-line text-left text-xs text-muted">
+          <tr>{cols.map((c) => <th key={c} className="px-4 py-2 font-medium">{c}</th>)}</tr>
+        </thead>
+        <tbody>
+          {items.map((i) => (
+            <tr key={i.key} className="border-b border-line last:border-0">
+              <td className="px-4 py-2 font-mono text-[12px]">{i.key}</td>
+              <td className="px-4 py-2 tabular">{int(i.shown)}</td>
+              <td className="px-4 py-2 tabular">{i.mean_position === null ? '—' : i.mean_position.toFixed(1)}</td>
+              <td className="px-4 py-2 tabular">{int(i.acted)}</td>
+              <td className="px-4 py-2 tabular">{pct(i.rate, 0)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
 function Workbench() {
   const site = useParam('site')!;
   const slot = useParam('slot')!;
@@ -153,6 +178,12 @@ function Workbench() {
           </div>
           <p className="mt-2 text-xs text-muted">Per-variant lift compares the variant’s visitors with the holdout. The bandit chose who saw it by context, so it is descriptive; the slot’s overall lift below is the causal number.</p>
         </section>
+        {s.items && (
+          <section>
+            <SectionTitle hint="rate = acted on ÷ times seen, as the learner counts it">Items</SectionTitle>
+            <ItemsTable items={s.items} />
+          </section>
+        )}
         <section>
           <SectionTitle hint={<span>slot lift <LiftPill lift={s.lift} small /></span>}>Lift over time</SectionTitle>
           <Card className="p-4">

@@ -701,3 +701,20 @@ test('an_agents_share_proposal_is_accepted_in_approvals', async ({ page }) => {
   await expect.poll(async () => Math.round((await giftShare()) * 100)).toBe(35);
   await expect(row).toHaveCount(0);
 });
+
+test('sorted_slot_shows_a_row_per_item', async ({ page }) => {
+  // Last, because it adds a second site (see stack.mjs).
+  test.setTimeout(90_000);
+  expect((await fetch('http://127.0.0.1:3400/__seed-sorted')).status).toBe(204);
+  await signIn(page);
+  await page.goto('/app/slot/?site=rack&slot=grid');
+  const s = await api('/sites/rack/slots/grid');
+  expect(s.items.map((i: any) => i.key)).toEqual(['kaapi', 'filter', 'decoction', 'gift']);
+  const rows = page.locator('[data-testid=items-table] tbody tr');
+  await expect(rows).toHaveCount(4);
+  for (const [n, i] of s.items.entries()) {
+    const rate = i.rate === null ? '—' : `${(i.rate * 100).toFixed(0)}%`;
+    const pos = i.mean_position === null ? '—' : i.mean_position.toFixed(1);
+    await expect(rows.nth(n).locator('td')).toHaveText([i.key, String(i.shown), pos, String(i.acted), rate]);
+  }
+});

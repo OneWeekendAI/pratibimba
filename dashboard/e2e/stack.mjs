@@ -65,6 +65,10 @@ let reach = true;
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/__ready') return res.writeHead(ready ? 200 : 503).end();
+  if (url.pathname === '/__seed-sorted') {
+    await (sortedSeed ??= seedSorted());
+    return res.writeHead(204).end();
+  }
   if (url.pathname === '/__mode') {
     reach = url.searchParams.get('reach') !== 'off';
     return res.writeHead(204).end();
@@ -78,6 +82,39 @@ createServer(async (req, res) => {
   res.writeHead(200, { 'content-type': 'text/html', 'x-prb-sdk': 'next/0.1.0' });
   res.end('<!doctype html><title>Kaapi Co.</title><h1>Kaapi Co.</h1>');
 }).listen(3400, '127.0.0.1');
+
+// G3: a sorted slot on a second site, so its per-item table has rows and shop stays as it was.
+// Seeded on the first GET /__seed-sorted, not here: a second site would stop the sign-in landing
+// straight on shop's home, so the test that needs it runs last and asks for it.
+let sortedSeed = null;
+async function seedSorted() {
+  execFileSync(BIN, ['apply', path.join(here, 'sorted.json')], { env, stdio: 'pipe' });
+  // Twelve visitors: nine click the first, second or third card shown, three click nothing.
+  for (let i = 0; i < 12; i++) {
+    const subject = `g-${i}`;
+    const d = await call('/decide', { site: 'rack', slot: 'grid', subject });
+    const events = [{ id: uuid(), name: 'exposure', slot: 'grid', decision_id: d.decision_id, items: d.order.map((id) => ({ id })) }];
+    if (i % 4 !== 3) events.push({ id: uuid(), name: 'click', slot: 'grid', decision_id: d.decision_id, items: [{ id: d.order[i % 3] }] });
+    await call('/e', { site: 'rack', subject, events });
+  }
+  // Two hours back, so every window is closed. One statement, retried as `backdate` is: the
+  // running worker can deadlock it, and Postgres then rolls the whole shift back.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      psql(
+        `UPDATE decisions SET created_at = created_at - interval '2 hours' WHERE site_id = 'rack';
+         UPDATE events SET received_at = received_at - interval '2 hours' WHERE site_id = 'rack';`,
+        DB,
+      );
+      break;
+    } catch (e) {
+      if (!/deadlock detected/.test(String(e.stderr ?? e.message)) || attempt >= 5) throw e;
+    }
+  }
+  await until('the sorted slot to show its items', () =>
+    fetch(`${CORE}/api/sites/rack/slots/grid`, { headers: H }).then((r) => r.json()).then((r) =>
+      (r.items ?? []).reduce((n, i) => n + i.acted, 0) === 9, () => false));
+}
 
 const H = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
 async function call(p, body, admin = false) {

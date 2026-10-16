@@ -144,6 +144,21 @@ export interface SlotDetail {
   variants: VariantRow[];
   curve: CurvePoint[];
   audiences: AudienceRow[];
+  /** A sorted slot's per-item results (G3); null for other kinds. */
+  items: ItemRow[] | null;
+}
+/** One item of a sorted slot, over treated closed exposed decisions, counted as the cascade learns. */
+export interface ItemRow {
+  key: string;
+  /** Rendered within the first `visible` positions. */
+  shown: number;
+  mean_position: number | null;
+  /** Taught from: at or above the acted-on card, or the visible set when nothing was acted on. */
+  seen: number;
+  /** The topmost card acted on. */
+  acted: number;
+  /** acted / seen. */
+  rate: number | null;
 }
 /** A promoted audience: a segment that can gate a variant. */
 export interface AudienceRow {

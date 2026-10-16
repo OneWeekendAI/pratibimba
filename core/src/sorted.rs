@@ -86,11 +86,103 @@ pub fn rank(scores: &[(i64, f64)], default: &[i64]) -> Vec<i64> {
 
 /// The cascade's lessons for one closed decision: `(arm, reward)`. `acted` is the position of
 /// the topmost item acted on, if any; `reward` is what that item learns.
-pub fn lessons(ranking: &[i64], acted: Option<usize>, visible: usize, reward: f64) -> Vec<(i64, f64)> {
+pub fn lessons<T: Clone>(ranking: &[T], acted: Option<usize>, visible: usize, reward: f64) -> Vec<(T, f64)> {
     match acted {
-        Some(p) => ranking.iter().take(p).map(|id| (*id, 0.0)).chain(ranking.get(p).map(|id| (*id, reward))).collect(),
-        None => ranking.iter().take(visible).map(|id| (*id, 0.0)).collect(),
+        Some(p) => ranking.iter().take(p).map(|id| (id.clone(), 0.0)).chain(ranking.get(p).map(|id| (id.clone(), reward))).collect(),
+        None => ranking.iter().take(visible).map(|id| (id.clone(), 0.0)).collect(),
     }
+}
+
+/// One item's results over a sorted slot's treated, closed, exposed decisions (G3).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ItemResult {
+    pub key: String,
+    /// Decisions that rendered it within the first `visible` positions.
+    pub shown: u64,
+    /// Its mean position (1 = first) over the decisions that rendered it.
+    pub mean_position: Option<f64>,
+    /// Decisions the cascade taught it from: at or above the acted-on position, or within
+    /// `visible` when nothing was acted on. The same rule as [`lessons`].
+    pub seen: u64,
+    /// Decisions where it was the topmost item acted on (the cascade's success).
+    pub acted: u64,
+    /// `acted / seen`.
+    pub rate: Option<f64>,
+}
+
+/// Per-item results. `items` is the slot's item keys in the declared order; each decision is
+/// `(rendered order, item keys its metric events named)`.
+pub fn tally(items: &[String], decisions: &[(Vec<String>, Vec<String>)], visible: usize) -> Vec<ItemResult> {
+    let mut out: Vec<ItemResult> = items.iter().map(|k| ItemResult { key: k.clone(), ..Default::default() }).collect();
+    let mut pos_sum = vec![0.0; items.len()];
+    let mut pos_n = vec![0u64; items.len()];
+    let at = |k: &str| items.iter().position(|i| i == k);
+    for (rendered, named) in decisions {
+        for (p, k) in rendered.iter().enumerate() {
+            let Some(i) = at(k) else { continue };
+            pos_sum[i] += (p + 1) as f64;
+            pos_n[i] += 1;
+            if p < visible {
+                out[i].shown += 1;
+            }
+        }
+        let acted = rendered.iter().position(|k| named.contains(k));
+        for (k, y) in lessons(rendered, acted, visible, 1.0) {
+            let Some(i) = at(&k) else { continue };
+            out[i].seen += 1;
+            if y > 0.0 {
+                out[i].acted += 1;
+            }
+        }
+    }
+    for (i, r) in out.iter_mut().enumerate() {
+        r.mean_position = (pos_n[i] > 0).then(|| pos_sum[i] / pos_n[i] as f64);
+        r.rate = (r.seen > 0).then(|| r.acted as f64 / r.seen as f64);
+    }
+    out
+}
+
+/// Per-item results for a sorted slot over its treated decisions created in `[since, now)` whose
+/// window has closed, or `None` for any other kind. The order is the one the decision's first
+/// exposure says was rendered (unknown keys dropped), or the stored order when it names none;
+/// acts are read as [`learn`] reads them.
+pub async fn item_results(pool: &sqlx::PgPool, slot: i64, since: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> Result<Option<Vec<ItemResult>>> {
+    let spec: Option<(Option<i32>, Option<Vec<String>>)> =
+        sqlx::query_as("SELECT (sorted->>'visible')::int, ARRAY(SELECT jsonb_array_elements_text(sorted->'order')) FROM slots WHERE id = $1 AND kind = 'sorted'")
+            .bind(slot)
+            .fetch_optional(pool)
+            .await?;
+    let Some((visible, order)) = spec else { return Ok(None) };
+    let items: Vec<String> = order.unwrap_or_default();
+    let rows: Vec<(Vec<String>, Vec<String>)> = sqlx::query_as(
+        "SELECT coalesce(
+                  (SELECT array_agg(it->>'id' ORDER BY n)
+                     FROM (SELECT x.items FROM live_events x
+                            WHERE x.decision_id = d.id AND x.site_id = d.site_id AND x.subject = d.subject
+                              AND x.name = 'exposure' AND jsonb_typeof(x.items) = 'array' AND jsonb_array_length(x.items) > 0
+                            ORDER BY x.received_at, x.id LIMIT 1) f
+                     CROSS JOIN LATERAL jsonb_array_elements(f.items) WITH ORDINALITY j(it, n)),
+                  ARRAY(SELECT v.key FROM unnest(d.ranking) WITH ORDINALITY r(id, n) JOIN variants v ON v.id = r.id ORDER BY r.n)),
+                ARRAY(SELECT DISTINCT it->>'id'
+                        FROM live_events e
+                        CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(e.items) = 'array' THEN e.items ELSE '[]' END) it
+                       WHERE e.site_id = d.site_id AND e.subject = d.subject AND e.name = s.metric
+                         AND (e.decision_id IS NULL OR e.decision_id = d.id)
+                         AND e.received_at >= d.created_at
+                         AND e.received_at <= d.created_at + make_interval(secs => s.attribution_window_secs))
+           FROM decisions d JOIN slots s ON s.id = d.slot_id
+          WHERE d.slot_id = $1 AND d.ranking IS NOT NULL AND NOT d.in_holdout AND d.exposed_at IS NOT NULL
+            AND d.created_at >= $2
+            AND d.created_at + make_interval(secs => s.attribution_window_secs) < $3",
+    )
+    .bind(slot)
+    .bind(since)
+    .bind(now)
+    .fetch_all(pool)
+    .await?;
+    let rows: Vec<(Vec<String>, Vec<String>)> =
+        rows.into_iter().map(|(r, named)| (r.into_iter().filter(|k| items.contains(k)).collect(), named)).collect();
+    Ok(Some(tally(&items, &rows, visible.unwrap_or(4).max(0) as usize)))
 }
 
 /// Teach the model one closed sorted decision (see [`lessons`]). `reward` is what the acted-on
@@ -156,5 +248,37 @@ mod tests {
         assert_eq!(lessons(&[7, 8, 9, 6], Some(2), 3, 1.0), vec![(7, 0.0), (8, 0.0), (9, 1.0)]);
         assert_eq!(lessons(&[7, 8, 9, 6], Some(0), 3, 0.4), vec![(7, 0.4)]);
         assert_eq!(lessons(&[7, 8, 9, 6], None, 3, 1.0), vec![(7, 0.0), (8, 0.0), (9, 0.0)]);
+    }
+
+    fn keys(k: &[&str]) -> Vec<String> {
+        k.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The backend.md worked example: `c, a, d, b` with `visible` 3, one click on d and one
+    /// decision with no click; a third rendered `b, a` only (c and d gated).
+    #[test]
+    fn item_results_follow_the_cascade() {
+        let items = keys(&["a", "b", "c", "d"]);
+        let ds = vec![
+            (keys(&["c", "a", "d", "b"]), keys(&["d"])),
+            (keys(&["c", "a", "d", "b"]), vec![]),
+            (keys(&["b", "a"]), keys(&["a", "b"])),
+        ];
+        let r = tally(&items, &ds, 3);
+        let get = |k: &str| r.iter().find(|i| i.key == k).unwrap().clone();
+        assert_eq!(r.iter().map(|i| i.key.as_str()).collect::<Vec<_>>(), ["a", "b", "c", "d"], "items keep the declared order");
+        // shown: in the first `visible` positions rendered.
+        assert_eq!([get("a").shown, get("b").shown, get("c").shown, get("d").shown], [3, 1, 2, 2]);
+        // seen: what the learner taught (at or above the act, or the visible set with no act).
+        assert_eq!([get("a").seen, get("b").seen, get("c").seen, get("d").seen], [2, 1, 2, 2]);
+        // acted: the topmost acted-on item only (b, not a, in the third).
+        assert_eq!([get("a").acted, get("b").acted, get("c").acted, get("d").acted], [0, 1, 0, 1]);
+        assert_eq!(get("d").rate, Some(0.5));
+        assert_eq!(get("a").rate, Some(0.0));
+        assert_eq!(get("a").mean_position, Some((2.0 + 2.0 + 2.0) / 3.0));
+        assert_eq!(get("b").mean_position, Some((4.0 + 4.0 + 1.0) / 3.0));
+        assert_eq!(get("c").mean_position, Some(1.0));
+        let none = tally(&items, &[], 3);
+        assert_eq!((none[0].shown, none[0].mean_position, none[0].rate), (0, None, None));
     }
 }

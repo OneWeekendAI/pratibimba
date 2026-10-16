@@ -337,7 +337,7 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
         "attribution_window_secs": window, "decision_ttl_secs": ttl, "model_version": version,
         "treated": sr.treated, "holdout": sr.holdout, "lift": sr.lift, "champion": champion,
         "variants": variants, "curve": results::curve(&state.pool, slot_id, now).await?,
-        "audiences": audiences,
+        "audiences": audiences, "items": sr.items,
     })))
 }
 

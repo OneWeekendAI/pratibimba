@@ -1,0 +1,15 @@
+{
+  "site": "rack",
+  "origin": "http://localhost:3400",
+  "holdout_fraction": 0,
+  "slots": [
+    {
+      "key": "grid",
+      "selector": "[data-prb-slot=grid]",
+      "kind": "sorted",
+      "metric": "click",
+      "sorted": { "visible": 2 },
+      "variants": [{ "key": "kaapi" }, { "key": "filter" }, { "key": "decoction" }, { "key": "gift" }]
+    }
+  ]
+}

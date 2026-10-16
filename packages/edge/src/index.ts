@@ -177,7 +177,8 @@ export function createEdge(opts: EdgeOptions) {
     let rememberP: Promise<void> | null = null;
     const readRemember = () => (rememberP ??= mayRemember(readManifest, consent).then((v) => void (remember = v)));
 
-    const decided: { slot: string; id: string }[] = [];
+    // `items`: a sorted slot's keys as the rewriter placed them, for the exposure (F2b, G3).
+    const decided: { slot: string; id: string; items?: string[] }[] = [];
     async function decide(slot: string): Promise<Replacement> {
       const ms = opts.timeoutMs ?? 300;
       // Raced, not aborted: an abort destroys the keep-alive socket, so every later page would
@@ -190,13 +191,16 @@ export function createEdge(opts: EdgeOptions) {
           signal: AbortSignal.timeout(Math.max(ms, opts.hardTimeoutMs ?? 10_000)),
         });
         if (!r.ok) return null;
-        return (await r.json()) as { decision_id: string; payload: string | null };
+        return (await r.json()) as { decision_id: string; payload: string | null; order?: unknown };
       })();
       const d = await deadline(work, ms);
       if (!d) return { html: null };
       await readRemember();
-      decided.push({ slot, id: d.decision_id });
-      return { html: d.payload };
+      const entry: (typeof decided)[number] = { slot, id: d.decision_id };
+      decided.push(entry);
+      const order = Array.isArray(d.order) && d.order.every((k) => typeof k === 'string') ? (d.order as string[]) : undefined;
+      if (!order) return { html: d.payload };
+      return { html: null, order, rendered: (keys) => void (entry.items = keys) };
     }
 
     // The beacon tag goes in last, once every slot above it has been decided.

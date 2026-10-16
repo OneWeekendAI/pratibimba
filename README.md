@@ -154,7 +154,11 @@ adds `order`. `<prb.Sorted>` renders each keyed child in that order (wrapped in 
 `display: contents` element marked `data-prb-item`), its exposure lists the rendered order and a
 click on a card names that card. With the script tag, mark each card `data-prb-item="<key>"`
 directly inside the slot's element and the script moves them. The `@pratibimba/edge` rewriter
-does not reorder; the edge-decide Worker sends every sorted slot to Core.
+reorders the `data-prb-item` cards between a slot's markers the same way (markup it cannot
+balance, such as an omitted `</li>`, is served in page order); the edge-decide Worker sends
+every sorted slot to Core. Items the order leaves out follow the ordered ones. The slot's
+dashboard page shows one row per item: how often it was in view, its average position, and how
+often it was the card acted on, counted as the learner counts it.
 
 A **copy slot** declares `copy.fields` (each a `name`, a `max` length in characters and whether
 it is `required`), and its variants carry `copy` (field to text) instead of `html`. Text with
