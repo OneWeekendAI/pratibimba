@@ -24,7 +24,8 @@ use sha2::Sha256;
 use sqlx::{PgExecutor, PgPool};
 use uuid::Uuid;
 
-pub const EVENT_TYPES: [&str; 6] = ["decision", "exposure", "conversion", "variant.approved", "variant.retired", "auto_rollback"];
+pub const EVENT_TYPES: [&str; 7] =
+    ["decision", "exposure", "conversion", "variant.approved", "variant.retired", "variant.share_changed", "auto_rollback"];
 
 /// Attempts before a delivery is given up as `failed`.
 pub const MAX_ATTEMPTS: i32 = 8;

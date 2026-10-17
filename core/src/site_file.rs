@@ -404,6 +404,8 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
                     .bind(previous)
                     .execute(&mut *tx)
                     .await?;
+                let data = json!({ "variant_id": id, "slot": slot.key, "variant": v.key, "traffic_share": share, "previous_share": previous, "changed_by": APPROVER });
+                webhooks::enqueue(&mut *tx, &file.site, "variant.share_changed", data).await?;
                 tracing::info!(site = %file.site, slot = %slot.key, variant = %v.key, ?share, ?previous, "apply: site file set the traffic share");
             } else if v.traffic_share.is_some() && !file_changed && previous != v.traffic_share {
                 tracing::info!(site = %file.site, slot = %slot.key, variant = %v.key, kept = ?previous, file = ?v.traffic_share,

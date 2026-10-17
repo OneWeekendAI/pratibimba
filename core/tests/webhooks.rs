@@ -118,7 +118,7 @@ async fn create_returns_the_secret_once_and_list_hides_it(pool: PgPool) {
 async fn list_names_every_event_type(pool: PgPool) {
     let app = setup(&pool).await;
     let l = api_get(&app, "/api/sites/demo/webhooks").await.json();
-    assert_eq!(l["event_types"], json!(["decision", "exposure", "conversion", "variant.approved", "variant.retired", "auto_rollback"]));
+    assert_eq!(l["event_types"], json!(["decision", "exposure", "conversion", "variant.approved", "variant.retired", "variant.share_changed", "auto_rollback"]));
 }
 
 #[sqlx::test(migrations = false)]

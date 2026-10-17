@@ -312,7 +312,7 @@ export interface McpCallDetail extends McpCall {
   variants: { id: number; slot: string; key: string; status: string }[];
 }
 
-export type WebhookEvent = 'decision' | 'exposure' | 'conversion' | 'variant.approved' | 'variant.retired' | 'auto_rollback';
+export type WebhookEvent = 'decision' | 'exposure' | 'conversion' | 'variant.approved' | 'variant.retired' | 'variant.share_changed' | 'auto_rollback';
 export interface WebhookSubscription {
   id: number;
   url: string;

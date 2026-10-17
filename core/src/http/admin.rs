@@ -721,6 +721,8 @@ async fn apply_share(tx: &mut sqlx::PgConnection, variant_id: i64, share: f32, w
         .bind(previous)
         .execute(&mut *tx)
         .await?;
+    let data = json!({ "variant_id": variant_id, "slot": slot, "variant": key, "traffic_share": share, "previous_share": previous, "changed_by": who });
+    crate::webhooks::enqueue(&mut *tx, &site, "variant.share_changed", data).await?;
     Ok((site, slot, key, previous))
 }
 

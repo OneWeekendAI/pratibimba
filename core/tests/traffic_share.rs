@@ -468,3 +468,76 @@ async fn a_variant_made_the_baseline_loses_its_share(pool: PgPool) {
     }))).await;
     assert_eq!(share_of(&pool, "gift").await, None);
 }
+
+// ---- the webhook (2026-10-18) ----------------------------------------------------------------
+//
+// Every share change, whoever made it (an owner's edit, a confirmed agent proposal, the site
+// file), sends `variant.share_changed` with the value it replaced. Read from the outbox, in the
+// same transaction as the change.
+
+async fn subscribe_shares(pool: &PgPool) {
+    sqlx::query("INSERT INTO webhook_subscriptions (site_id, url, events, secret) VALUES ('demo', 'https://example.com/h', ARRAY['variant.share_changed'], 's')")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn share_events(pool: &PgPool) -> Vec<Value> {
+    sqlx::query_scalar("SELECT payload FROM webhook_deliveries WHERE event = 'variant.share_changed' ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_owners_share_edit_sends_a_webhook(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    subscribe_shares(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    let r = edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.2 })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let e = share_events(&pool).await;
+    assert_eq!(e.len(), 1, "{e:?}");
+    let d = &e[0]["data"];
+    assert_eq!((d["slot"].as_str(), d["variant"].as_str(), d["changed_by"].as_str()), (Some("hero"), Some("gift"), Some("owner")));
+    assert_eq!(d["variant_id"], json!(gift));
+    assert_eq!(d["traffic_share"].as_f64().map(|v| v as f32), Some(0.2));
+    assert_eq!(d["previous_share"], Value::Null);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_confirmed_share_proposal_sends_a_webhook(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    subscribe_shares(&pool).await;
+    data(&propose(&app, &t, json!({ "traffic_share": { "variant": "gift", "share": 0.3 } })).await);
+    assert!(share_events(&pool).await.is_empty(), "a proposal changes nothing yet");
+    let id = open_request(&pool).await;
+    let r = api_post(&app, &format!("/api/share-requests/{id}/confirm"), json!({ "actor": "owner" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let e = share_events(&pool).await;
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!(e[0]["data"]["changed_by"], "owner");
+    assert_eq!(e[0]["data"]["traffic_share"].as_f64().map(|v| v as f32), Some(0.3));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_refused_share_edit_sends_nothing(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    subscribe_shares(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    let r = edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.9 })).await;
+    assert_ne!(r.status, StatusCode::OK);
+    assert!(share_events(&pool).await.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_share_the_file_changes_sends_a_webhook_and_an_unchanged_file_does_not(pool: PgPool) {
+    let (_app, _) = setup(&pool).await;
+    subscribe_shares(&pool).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    let e = share_events(&pool).await;
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!(e[0]["data"]["changed_by"], "cli:apply");
+    assert_eq!(e[0]["data"]["traffic_share"].as_f64().map(|v| v as f32), Some(0.3));
+}
