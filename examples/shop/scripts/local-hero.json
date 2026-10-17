@@ -1,0 +1,30 @@
+{
+  "site": "shop",
+  "origin": "http://localhost:3200",
+  "currency": "INR",
+  "slots": [
+    {
+      "key": "hero",
+      "selector": "[data-prb-slot=hero]",
+      "metric": "click",
+      "variants": [
+        {
+          "key": "baseline",
+          "baseline": true
+        },
+        {
+          "key": "filter-angle",
+          "html": "<section class=\"hero\"><h1>Filter coffee the way it is made at home</h1><p>Our Estate Filter Blend: 70/30 coffee and chicory, roasted on Monday.</p><a class=\"cta\" href=\"/p/estate-filter\">Shop filter</a></section>"
+        },
+        {
+          "key": "tasting-notes",
+          "html": "<section class=\"hero\"><h1>Dark chocolate and jaggery, in an espresso</h1><p>Small batches from Chikmagalur, shipped the day they rest.</p><a class=\"cta\" href=\"/p/monday-espresso\">Taste the espresso</a></section>"
+        },
+        {
+          "key": "price-upfront",
+          "html": "<section class=\"hero\"><h1>Monday Espresso, ₹549 for 250 g</h1><p>Single-origin from Chikmagalur, roasted on Monday.</p><a class=\"cta\" href=\"/p/monday-espresso\">Shop espresso</a></section>"
+        }
+      ]
+    }
+  ]
+}

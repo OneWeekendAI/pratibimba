@@ -60,6 +60,8 @@ const PRODUCTS = [{ slug: 'monday-espresso', price: 549 }, { slug: 'estate-filte
 // (the sparse phases, to see the first render after an idle keep-alive socket).
 const PLANS = {
   smoke: [{ name: 'smoke', rate: 1, secs: 20 }],
+  // The local demo (demo-record.mjs): 90 s of steady traffic against the local stack.
+  demo: [{ name: 'demo', rate: 4, secs: 90 }],
   // E5 (2026-10-08): one steady block, then estimates.mjs while the windows close.
   short: [{ name: 'steady', rate: 2.5, secs: 1200 }],
   // EC3 (2026-10-13): four minutes through the events queue, to reconcile against Core.
