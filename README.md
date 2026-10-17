@@ -38,7 +38,7 @@ flowchart LR
     worker["pratibimba worker<br/>closes windows, learns, rolls back"]
     db[("Postgres")]
     kv[["Workers KV<br/>(edge snapshot, optional)"]]
-    queue>["Cloudflare Queue<br/>(edge /e buffer, optional)"]
+    queue["Cloudflare Queue<br/>(edge /e buffer, optional)"]
   end
   subgraph Humans["Humans and agents"]
     dash["dashboard /app<br/>(approval gate)"]
