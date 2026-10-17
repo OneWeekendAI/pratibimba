@@ -197,12 +197,13 @@ work is held behind suites and mutation tests.
 
 | Suite | Pass count | Covers |
 |---|---|---|
-| `cargo test` (Core) | **940 / 0** | bandit math, HTTP, worker, migrations, cohort sims, replay, erase, edge snapshot, parity, webhooks |
-| `dashboard` Playwright e2e | **51 / 51** | real Core + worker + seeded 8,000-visitor history, headless Chromium, every screen |
-| `@pratibimba/next` | 110 / 0 | SSR decide, cookies, proxy, `<prb.Slot>`, keep-alive pool |
-| `@pratibimba/edge` | 88 / 0 | marker rewriter, streaming, snapshot reader, Workers/Deno/Vercel handlers |
-| `@pratibimba/client` | — | script-tag swap in jsdom |
+| `cargo test` (Core) | **957 / 0** | bandit math, HTTP, worker, migrations, cohort sims, replay, erase, edge snapshot, parity, webhooks |
+| `dashboard` Playwright e2e | **52 / 52** | real Core + worker + seeded 8,000-visitor history, headless Chromium, every screen |
+| `@pratibimba/next` | 111 / 0 | SSR decide, cookies, proxy, `<prb.Slot>`, keep-alive pool |
+| `@pratibimba/edge` | 102 / 0 | marker rewriter, streaming, snapshot reader, Workers/Deno/Vercel handlers |
+| `@pratibimba/client` | 95 / 0 | script-tag swap in jsdom |
 | `@pratibimba/agent` | 107 / 0 | installer, MCP, `scan` across JSX/TSX, HTML, Vue, Svelte, Astro |
+| `deploy/proxy-worker` | 77 / 0 | edge decide, queue drain, tombstones, Bloom erased-set |
 
 Counts above are the latest recorded in the project tracker; `cargo test` is the number
 reported after the G4 pass (2026-10-16).
@@ -449,7 +450,7 @@ leaving the privacy salts out by design. `pratibimba restore <file>` loads a dum
 ```sh
 # Core — any Postgres where you can create databases; each test gets a fresh one.
 export DATABASE_URL=postgres://postgres@localhost:5432/postgres
-cargo test                                        # ~940 tests: bandit, HTTP, worker, migrations, cohorts, edge, parity
+cargo test                                        # ~957 tests: bandit, HTTP, worker, migrations, cohorts, edge, parity
 
 # TypeScript packages
 cd packages/client && npm install && npm test     # the script, in jsdom
