@@ -202,6 +202,8 @@ export interface DecisionDetail {
   policy_version: number;
   seed: string;
   features: Record<string, number>;
+  /** The audiences this decision evaluated (those gating a variant of the slot), and whether the visitor matched. */
+  audiences?: { id: number; name: string; matched: boolean }[];
   scores: { variant: string; variant_id: number; score: number }[];
   replay_matches: boolean | null;
   counterfactual: null | {

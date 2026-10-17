@@ -83,12 +83,16 @@ function Detail() {
                 <tr key={k} className="border-b border-line last:border-0">
                   <td className="py-1.5 text-ink-2">{named[k] ?? k}</td>
                   <td className="py-1.5 font-mono text-xs text-muted">{k}</td>
-                  <td className="tabular py-1.5 text-right">{v}</td>
+                  <td className="tabular py-1.5 text-right">{Number.isInteger(v) ? v : v.toFixed(3)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="mt-3 text-xs text-muted">Audiences: none matched; this site has none yet.</p>
+          <p className="mt-3 text-xs text-muted" data-testid="audiences">
+            {d.audiences?.length
+              ? <>Audiences: {d.audiences.map((a, i) => <span key={a.id}>{i > 0 && ', '}{a.name} ({a.matched ? 'matched' : 'not matched'})</span>)}</>
+              : 'Audiences: none gate a variant of this slot.'}
+          </p>
         </Card>
         <Card className="p-4">
           <SectionTitle>Arm scores</SectionTitle>
