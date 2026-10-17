@@ -70,14 +70,14 @@ export function Audiences({ site, slot, variants, audiences }: { site: string; s
       <SectionTitle>Audiences</SectionTitle>
       <ul className="space-y-2 text-xs text-ink-2" aria-label="Variant audiences">
         {live.map((v) => (
-          <li key={v.id} className="flex items-center justify-between gap-2">
-            <span className="font-mono text-ink">{v.key}</span>
+          <li key={v.id} className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+            <span className="font-mono whitespace-nowrap text-ink">{v.key}</span>
             {v.is_baseline ? (
               <span className="text-muted">everyone</span>
             ) : (
               <select
                 aria-label={`Audience for ${v.key}`}
-                className={`${inputClass} h-8 max-w-44 text-xs`}
+                className={`${inputClass} h-8 max-w-full text-xs`}
                 value={v.audience ?? ''}
                 disabled={gate.isPending}
                 onChange={(e) => gate.mutate({ id: v.id, audience: e.target.value ? Number(e.target.value) : null })}

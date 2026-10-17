@@ -275,15 +275,15 @@ async fn site_results(State(state): State<Arc<AppState>>, Path(site): Path<Strin
 
 async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Path<(String, String)>) -> Result<Json<Value>, ApiError> {
     let now = Utc::now();
-    let row: Option<(i64, String, String, i32, i32, i64)> = sqlx::query_as(
-        "SELECT s.id, s.selector, s.metric, s.attribution_window_secs, s.decision_ttl_secs, m.version
+    let row: Option<(i64, String, String, i32, i32, i64, String, Option<Value>)> = sqlx::query_as(
+        "SELECT s.id, s.selector, s.metric, s.attribution_window_secs, s.decision_ttl_secs, m.version, s.kind, s.copy
            FROM slots s JOIN models m ON m.slot_id = s.id WHERE s.site_id = $1 AND s.key = $2",
     )
     .bind(&site)
     .bind(&slot)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((slot_id, selector, metric, window, ttl, version)) = row else {
+    let Some((slot_id, selector, metric, window, ttl, version, kind, copy_spec)) = row else {
         return Err(ApiError::NotFound(format!("unknown slot {slot:?} on site {site:?}")));
     };
     let r = results::site(&state.pool, &site, results::ALL_TIME, now).await?.expect("site exists");
@@ -333,7 +333,9 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
     let live: Vec<&results::VariantResult> = sr.variants.iter().filter(|v| v.status == "approved").collect();
     let champion = live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline)).map(|v| v.key.clone());
     Ok(Json(json!({
-        "site": site, "slot": slot, "id": slot_id, "selector": selector, "metric": metric,
+        "site": site, "slot": slot, "id": slot_id, "kind": kind, "selector": selector, "metric": metric,
+        // A copy slot's declared fields (F4), so a card can label each one; null for other kinds.
+        "fields": copy_spec.as_ref().map(|s| s["fields"].clone()),
         "attribution_window_secs": window, "decision_ttl_secs": ttl, "model_version": version,
         "treated": sr.treated, "holdout": sr.holdout, "lift": sr.lift, "champion": champion,
         "variants": variants, "curve": results::curve(&state.pool, slot_id, now).await?,

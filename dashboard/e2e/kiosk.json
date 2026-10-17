@@ -1,0 +1,24 @@
+{
+  "site": "kiosk",
+  "origin": "http://localhost:3400",
+  "holdout_fraction": 0.5,
+  "slots": [
+    {
+      "key": "note",
+      "selector": "[data-prb-slot=note]",
+      "metric": "click",
+      "variants": [{ "key": "plain", "baseline": true }, { "key": "fresh", "html": "<p>Roasted this Monday.</p>" }]
+    },
+    {
+      "key": "tagline",
+      "selector": "[data-prb-slot=tagline]",
+      "kind": "copy",
+      "metric": "click",
+      "copy": { "fields": [{ "name": "headline", "max": 60, "required": true }, { "name": "cta_label", "max": 24 }] },
+      "variants": [
+        { "key": "own", "baseline": true },
+        { "key": "monday", "copy": { "headline": "Roasted Monday, at your door by Thursday", "cta_label": "Get this week's roast" } }
+      ]
+    }
+  ]
+}

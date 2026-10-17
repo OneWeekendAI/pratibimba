@@ -69,6 +69,10 @@ createServer(async (req, res) => {
     await (sortedSeed ??= seedSorted());
     return res.writeHead(204).end();
   }
+  if (url.pathname === '/__seed-kiosk') {
+    await (kioskSeed ??= seedKiosk());
+    return res.writeHead(204).end();
+  }
   if (url.pathname === '/__mode') {
     reach = url.searchParams.get('reach') !== 'off';
     return res.writeHead(204).end();
@@ -114,6 +118,40 @@ async function seedSorted() {
   await until('the sorted slot to show its items', () =>
     fetch(`${CORE}/api/sites/rack/slots/grid`, { headers: H }).then((r) => r.json()).then((r) =>
       (r.items ?? []).reduce((n, i) => n + i.acted, 0) === 9, () => false));
+}
+
+// A third site for the dashboard's quieter states, seeded on the first GET /__seed-kiosk (last,
+// like rack): `note` has one closed hour of traffic, so its curve is a single point; `tagline`
+// is a copy slot nobody has seen, so its results card has nothing to draw.
+let kioskSeed = null;
+async function seedKiosk() {
+  execFileSync(BIN, ['apply', path.join(here, 'kiosk.json')], { env, stdio: 'pipe' });
+  for (let i = 0; i < 60; i++) {
+    const subject = `k-${i}`;
+    const d = await call('/decide', { site: 'kiosk', slot: 'note', subject });
+    const events = [{ id: uuid(), name: 'exposure', slot: 'note', decision_id: d.decision_id }];
+    if (i % 3 === 0) events.push({ id: uuid(), name: 'click', slot: 'note', decision_id: d.decision_id });
+    await call('/e', { site: 'kiosk', subject, events });
+  }
+  // Every decision into one hour bucket that closed well over an attribution window ago: one
+  // shift for all, from the first decision to 110 minutes before the top of this hour. Events
+  // first, while the decisions still say where the shift starts. Retried as `backdate` is.
+  const by = "((SELECT min(created_at) FROM decisions WHERE site_id = 'kiosk') - (date_trunc('hour', now()) - interval '110 minutes'))";
+  for (let attempt = 1; ; attempt++) {
+    try {
+      psql(
+        `UPDATE events SET received_at = received_at - ${by} WHERE site_id = 'kiosk';
+         UPDATE decisions SET created_at = created_at - (SELECT min(created_at) FROM decisions WHERE site_id = 'kiosk') + (date_trunc('hour', now()) - interval '110 minutes') WHERE site_id = 'kiosk';`,
+        DB,
+      );
+      break;
+    } catch (e) {
+      if (!/deadlock detected/.test(String(e.stderr ?? e.message)) || attempt >= 5) throw e;
+    }
+  }
+  await until('the kiosk note slot to show a one-point curve', () =>
+    fetch(`${CORE}/api/sites/kiosk/slots/note`, { headers: H }).then((r) => r.json()).then((r) =>
+      r.curve?.length === 1 && Object.values(r.curve[0].variants).some((v) => v), () => false));
 }
 
 const H = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };

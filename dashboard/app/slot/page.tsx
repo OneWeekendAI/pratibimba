@@ -23,7 +23,26 @@ const STATUS: Record<VariantRow['status'], [ChipTone, string]> = {
   retired: ['off', 'retired'],
 };
 
-function VariantCard({ v, index, champion, site, slot }: { v: VariantRow; index: number; champion: boolean; site: string; slot: string }) {
+/** A copy slot's variant (F4): its fields as labelled plain text, in the slot's declared order. */
+function CopyFields({ payload, fields }: { payload: string | null; fields: SlotDetail['fields'] }) {
+  let text: Record<string, string> = {};
+  try {
+    text = JSON.parse(payload ?? '{}') ?? {};
+  } catch {}
+  const names = fields?.map((f) => f.name) ?? Object.keys(text);
+  return (
+    <dl className="min-h-24 space-y-1.5 rounded-md border border-line bg-surface-2/40 px-3 py-2 text-[12.5px] leading-snug" data-testid="copy-fields">
+      {names.map((n) => (
+        <div key={n}>
+          <dt className="font-mono text-[10.5px] text-muted">{n}</dt>
+          <dd className="text-ink">{text[n] ?? <span className="text-muted">—</span>}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function VariantCard({ v, index, champion, site, slot, fields }: { v: VariantRow; index: number; champion: boolean; site: string; slot: string; fields: SlotDetail['fields'] }) {
   const [tone, label] = STATUS[v.status];
   return (
     <Card className="relative w-64 shrink-0 overflow-hidden" data-testid={`variant-${v.key}`}>
@@ -34,7 +53,11 @@ function VariantCard({ v, index, champion, site, slot }: { v: VariantRow; index:
           <span className="font-mono text-[13px] font-semibold">{v.key}</span>
           {v.is_baseline && <span className="text-[11px] text-muted">baseline</span>}
         </div>
-        <Preview html={v.is_baseline ? null : v.payload} label={`preview of ${v.key}`} height={96} scale={0.62} />
+        {fields && !v.is_baseline ? (
+          <CopyFields payload={v.payload} fields={fields} />
+        ) : (
+          <Preview html={v.is_baseline ? null : v.payload} label={`preview of ${v.key}`} height={96} scale={0.62} />
+        )}
         <div className="mt-3 flex items-center justify-between text-xs">
           <Chip tone={tone}>{label}</Chip>
           <span className="tabular text-ink-2">{pct(v.share, 0)} of traffic</span>
@@ -132,9 +155,12 @@ function DecisionsTable({ site, slot, variants }: { site: string; slot: string; 
   );
 }
 
-/** G3: a sorted slot's items, one row each, in the declared order. */
+/**
+ * G3: a sorted slot's items in the declared order, one numbered row each. Items are not variants:
+ * the learner orders them per visitor, so there is no traffic share to set.
+ */
 function ItemsTable({ items }: { items: ItemRow[] }) {
-  const cols = ['Item', 'Shown', 'Avg position', 'Acted on', 'Rate'];
+  const cols = ['#', 'Item', 'Shown', 'Avg position', 'Acted on', 'Rate'];
   return (
     <Card className="overflow-auto">
       <table className="w-full text-[13px]" data-testid="items-table">
@@ -142,8 +168,9 @@ function ItemsTable({ items }: { items: ItemRow[] }) {
           <tr>{cols.map((c) => <th key={c} className="px-4 py-2 font-medium">{c}</th>)}</tr>
         </thead>
         <tbody>
-          {items.map((i) => (
+          {items.map((i, n) => (
             <tr key={i.key} className="border-b border-line last:border-0">
+              <td className="w-10 px-4 py-2 text-muted tabular">{n + 1}</td>
               <td className="px-4 py-2 font-mono text-[12px]">{i.key}</td>
               <td className="px-4 py-2 tabular">{int(i.shown)}</td>
               <td className="px-4 py-2 tabular">{i.mean_position === null ? '—' : i.mean_position.toFixed(1)}</td>
@@ -165,23 +192,27 @@ function Workbench() {
   const s = q.data;
   const shown = s.variants.filter((v) => v.status !== 'draft' && v.status !== 'rejected');
   const series = s.variants.map((v, index) => ({ key: v.key, index })).filter((x) => s.curve.some((p) => p.variants[x.key]));
+  // A sorted slot's variants are its items: a numbered list, no cards and no share to set.
+  const sorted = s.kind === 'sorted';
+  const items: ItemRow[] = s.items ?? shown.map((v) => ({ key: v.key, shown: 0, mean_position: null, seen: 0, acted: 0, rate: null }));
   return (
     <div className="grid gap-8 xl:grid-cols-[1fr_260px]">
       <div className="min-w-0 space-y-8">
-        <section>
-          <SectionTitle hint={<Link className="text-accent" href={`/approvals/?site=${site}`}>Write a draft →</Link>}>Variants</SectionTitle>
-          <div className="flex flex-wrap gap-3">
-            {shown.map((v) => <VariantCard key={v.id} v={v} index={s.variants.indexOf(v)} champion={v.key === s.champion && v.status === 'approved'} site={site} slot={slot} />)}
-            <Link href={`/approvals/?site=${site}&slot=${slot}`} className="grid min-h-40 w-40 shrink-0 place-items-center rounded-lg border border-dashed border-line-strong text-center text-xs text-muted hover:border-accent hover:text-accent">
-              + next draft
-            </Link>
-          </div>
-          <p className="mt-2 text-xs text-muted">Per-variant lift compares the variant’s visitors with the holdout. The bandit chose who saw it by context, so it is descriptive; the slot’s overall lift below is the causal number.</p>
-        </section>
-        {s.items && (
+        {sorted ? (
           <section>
-            <SectionTitle hint="rate = acted on ÷ times seen, as the learner counts it">Items</SectionTitle>
-            <ItemsTable items={s.items} />
+            <SectionTitle hint="in the order declared; the learner reorders them per visitor">Items</SectionTitle>
+            <ItemsTable items={items} />
+          </section>
+        ) : (
+          <section>
+            <SectionTitle hint={<Link className="text-accent" href={`/approvals/?site=${site}`}>Write a draft →</Link>}>Variants</SectionTitle>
+            <div className="flex flex-wrap gap-3">
+              {shown.map((v) => <VariantCard key={v.id} v={v} index={s.variants.indexOf(v)} champion={v.key === s.champion && v.status === 'approved'} site={site} slot={slot} fields={s.kind === 'copy' ? s.fields : null} />)}
+              <Link href={`/approvals/?site=${site}&slot=${slot}`} className="grid min-h-40 w-40 shrink-0 place-items-center rounded-lg border border-dashed border-line-strong text-center text-xs text-muted hover:border-accent hover:text-accent">
+                + next draft
+              </Link>
+            </div>
+            <p className="mt-2 text-xs text-muted">Per-variant lift compares the variant’s visitors with the holdout. The bandit chose who saw it by context, so it is descriptive; the slot’s overall lift below is the causal number.</p>
           </section>
         )}
         <section>

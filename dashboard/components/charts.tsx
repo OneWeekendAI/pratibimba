@@ -2,7 +2,7 @@
 // Charts follow the house dataviz rules: one axis, 2px lines, band washes at ~12%, a legend
 // for two or more series, values in text ink, the variant's colour fixed by its order.
 import { useMemo } from 'react';
-import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, CartesianGrid, Cell, ComposedChart, ErrorBar, Line, ReferenceLine, ResponsiveContainer, Scatter, Tooltip, XAxis, YAxis } from 'recharts';
 import type { CurvePoint, Interval } from '@/lib/api';
 import { niceTicks, pp, seriesVar } from '@/lib/format';
 
@@ -78,8 +78,15 @@ export function LiftCurve({ curve, series, height = 260 }: { curve: CurvePoint[]
     for (let t = d.getTime() + 86_400_000; t <= last; t += 86_400_000) out.push(t);
     return out.length >= 2 ? out : undefined;
   }, [curve]);
-  if (curve.length === 0) return <div className="grid h-40 place-items-center text-[13px] text-muted">No closed attribution windows yet. The curve starts once the first ones close.</div>;
+  // Nothing to draw (no closed window yet, or no holdout to compare with): one short line, not
+  // an empty frame of axes.
+  if (curve.length === 0 || series.length === 0) {
+    return <p className="text-[13px] text-muted" data-testid="curve-empty">{curve.length === 0 ? 'No closed windows yet.' : 'No holdout to compare with yet.'}</p>;
+  }
   const last = curve[curve.length - 1];
+  // One hour of closed windows is one point, and a line needs two: draw each variant's lift so
+  // far as a dot with its confidence sequence as an error bar, instead of an invisible line.
+  if (curve.length === 1) return <LiftDots point={last} series={series} height={height} domain={domain} />;
   return (
     <div>
       <div style={{ height }} role="img" aria-label="Cumulative lift against the holdout, per variant, with 95% confidence sequences">
@@ -159,6 +166,45 @@ export function LiftCurve({ curve, series, height = 260 }: { curve: CurvePoint[]
           <span className="inline-block h-px w-4 bg-ink-2" /> holdout (zero)
         </span>
       </div>
+    </div>
+  );
+}
+
+/** A one-point curve: each variant's lift so far against the holdout, with its 95% sequence. */
+function LiftDots({ point, series, height, domain }: { point: CurvePoint; series: Series[]; height: number; domain: { range: [number, number]; ticks: number[] } }) {
+  const rows = series.flatMap((s) => {
+    const i = point.variants[s.key];
+    return i ? [{ key: s.key, index: s.index, v: i.estimate * 100, err: [(i.estimate - i.lo) * 100, (i.hi - i.estimate) * 100] }] : [];
+  });
+  return (
+    <div>
+      <div style={{ height }} role="img" aria-label="Lift against the holdout so far, per variant, with 95% confidence sequences" data-testid="lift-dots">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+            <CartesianGrid stroke="var(--grid)" vertical={false} />
+            <XAxis dataKey="key" type="category" stroke="var(--axis)" tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} />
+            <YAxis
+              domain={domain.range}
+              ticks={domain.ticks}
+              interval={0}
+              allowDataOverflow
+              stroke="var(--axis)"
+              tick={{ fill: 'var(--muted)', fontSize: 11 }}
+              tickLine={false}
+              axisLine={false}
+              width={48}
+              tickFormatter={(v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v)}`}
+              label={{ value: 'pp vs holdout', angle: -90, position: 'insideLeft', fill: 'var(--muted)', fontSize: 11, dx: 6, dy: 40 }}
+            />
+            <ReferenceLine y={0} stroke="var(--ink-2)" strokeWidth={1} />
+            <Scatter dataKey="v" isAnimationActive={false}>
+              {rows.map((r) => <Cell key={r.key} fill={seriesVar(r.index)} />)}
+              <ErrorBar dataKey="err" width={10} strokeWidth={1.5} stroke="var(--ink-2)" direction="y" />
+            </Scatter>
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="mt-2 text-xs text-muted">One hour of closed windows so far; the line over time starts with the second.</p>
     </div>
   );
 }

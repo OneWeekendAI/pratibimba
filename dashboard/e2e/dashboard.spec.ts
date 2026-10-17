@@ -665,6 +665,44 @@ test('history_audience_is_written_and_gates_a_variant', async ({ page }) => {
   await expect.poll(async () => (await api('/sites/shop/slots/hero')).variants.find((v: any) => v.key === 'gift').audience).toBeNull();
 });
 
+test('audience_select_is_as_wide_as_its_longest_audience', async ({ page }) => {
+  await signIn(page);
+  // A long audience name: the select must show it whole and stay inside the sidebar card.
+  const name = `Lapsed buyers, autumn ${Date.now() % 1000}`;
+  const headers = { authorization: `Bearer ${TOKEN}` };
+  const seg = await page.request.post(`${CORE}/api/sites/shop/segments`, { headers, data: { predicate: { purchase_count: { gte: 2 + (Date.now() % 500) } }, name, actor: 'e2e' } });
+  expect(seg.status()).toBe(201);
+  expect((await page.request.post(`${CORE}/api/segments/${(await seg.json()).id}/promote`, { headers, data: { actor: 'e2e' } })).status()).toBe(200);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  const pick = page.getByLabel('Audience for gift', { exact: true });
+  await expect(pick.locator('option', { hasText: name })).toHaveCount(1);
+  const fit = await pick.evaluate((el: HTMLSelectElement) => {
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    const cs = getComputedStyle(el);
+    ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const widest = Math.max(...[...el.options].map((o) => ctx.measureText(o.text).width));
+    const box = el.getBoundingClientRect();
+    const card = el.closest('[aria-label="Variant audiences"]')!.getBoundingClientRect();
+    return { widest, width: box.width, right: box.right, cardRight: card.right };
+  });
+  expect(fit.width).toBeGreaterThanOrEqual(fit.widest + 20);
+  expect(fit.right).toBeLessThanOrEqual(fit.cardRight + 0.5);
+});
+
+test('audit_without_an_id_lists_the_tool_calls', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/audit/');
+  await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible();
+  await expect(page.getByText('Tool call #')).toHaveCount(0);
+  const rows = page.getByTestId('mcp-call');
+  await expect(rows.first()).toBeVisible();
+  const tail = await api('/sites/shop/mcp-calls?limit=25');
+  await expect(rows).toHaveCount(tail.calls.length);
+  await rows.first().click();
+  await expect(page).toHaveURL(new RegExp(`/app/audit/\\?id=${tail.calls[0].id}`));
+  await expect(page.getByTestId('audit-record')).toBeVisible();
+});
+
 // G2: a live variant's share is editable after approval; these change data, so they run last.
 const giftShare = async () => (await api('/sites/shop/slots/hero')).variants.find((v: any) => v.key === 'gift').traffic_share;
 
@@ -715,6 +753,63 @@ test('sorted_slot_shows_a_row_per_item', async ({ page }) => {
   for (const [n, i] of s.items.entries()) {
     const rate = i.rate === null ? '—' : `${(i.rate * 100).toFixed(0)}%`;
     const pos = i.mean_position === null ? '—' : i.mean_position.toFixed(1);
-    await expect(rows.nth(n).locator('td')).toHaveText([i.key, String(i.shown), pos, String(i.acted), rate]);
+    await expect(rows.nth(n).locator('td')).toHaveText([String(n + 1), i.key, String(i.shown), pos, String(i.acted), rate]);
   }
+});
+
+test('sorted_slot_items_are_a_numbered_list_without_share_controls', async ({ page }) => {
+  expect((await fetch('http://127.0.0.1:3400/__seed-sorted')).status).toBe(204);
+  await signIn(page);
+  await page.goto('/app/slot/?site=rack&slot=grid');
+  await expect(page.locator('[data-testid=items-table] tbody tr td:nth-child(2)')).toHaveText(['kaapi', 'filter', 'decoction', 'gift']);
+  // Items are not variants: no variant cards, no share to change, no "next draft".
+  await expect(page.locator('[data-testid^=variant-]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Change share' })).toHaveCount(0);
+  await expect(page.getByText('of traffic')).toHaveCount(0);
+});
+
+// The kiosk site (stack.mjs): a one-hour curve and a copy slot nobody has seen. Last, like rack.
+test('copy_slot_card_shows_its_fields_as_labelled_text', async ({ page }) => {
+  test.setTimeout(90_000);
+  expect((await fetch('http://127.0.0.1:3400/__seed-kiosk')).status).toBe(204);
+  await signIn(page);
+  await page.goto('/app/slot/?site=kiosk&slot=tagline');
+  const card = page.getByTestId('variant-monday');
+  const fields = card.getByTestId('copy-fields');
+  await expect(fields.locator('dt')).toHaveText(['headline', 'cta_label']);
+  await expect(fields.locator('dd')).toHaveText(['Roasted Monday, at your door by Thursday', 'Get this week\'s roast']);
+  await expect(card.locator('iframe')).toHaveCount(0);
+  await expect(card).not.toContainText('{');
+});
+
+test('one_closed_hour_draws_a_dot_per_variant', async ({ page }) => {
+  test.setTimeout(90_000);
+  expect((await fetch('http://127.0.0.1:3400/__seed-kiosk')).status).toBe(204);
+  await signIn(page);
+  const s = await api('/sites/kiosk/slots/note');
+  expect(s.curve).toHaveLength(1);
+  const n = Object.values(s.curve[0].variants).filter(Boolean).length;
+  expect(n).toBeGreaterThanOrEqual(1);
+  await page.goto('/app/results/?site=kiosk');
+  const card = page.getByTestId('result-note');
+  await expect(card.getByTestId('lift-dots')).toBeVisible();
+  await expect(card.locator('.recharts-scatter-symbol')).toHaveCount(n);
+  await expect(card.locator('.recharts-errorBar')).toHaveCount(n);
+});
+
+test('results_card_with_no_closed_window_draws_no_empty_chart', async ({ page }) => {
+  test.setTimeout(90_000);
+  expect((await fetch('http://127.0.0.1:3400/__seed-kiosk')).status).toBe(204);
+  await signIn(page);
+  await page.goto('/app/results/?site=kiosk');
+  const card = page.getByTestId('result-tagline');
+  await expect(card).toContainText('no closed windows yet');
+  await expect(card.locator('.recharts-wrapper')).toHaveCount(0);
+  // Its own height, not stretched to the charted card beside it.
+  await expect(page.getByTestId('result-note').locator('.recharts-wrapper')).toHaveCount(1);
+  expect((await card.boundingBox())!.height).toBeLessThan(120);
+  // The workbench says it in one short line, not a frame of axes.
+  await page.goto('/app/slot/?site=kiosk&slot=tagline');
+  await expect(page.getByTestId('curve-empty')).toHaveText('No closed windows yet.');
+  expect((await page.getByTestId('curve-empty').boundingBox())!.height).toBeLessThan(40);
 });

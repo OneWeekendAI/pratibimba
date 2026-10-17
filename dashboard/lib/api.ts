@@ -132,6 +132,10 @@ export interface SlotDetail {
   site: string;
   slot: string;
   id: number;
+  /** swap, picker, sorted or copy. */
+  kind: string;
+  /** A copy slot's declared fields (F4); null for other kinds. */
+  fields: { name: string; max: number; required?: boolean }[] | null;
   selector: string;
   metric: string;
   attribution_window_secs: number;

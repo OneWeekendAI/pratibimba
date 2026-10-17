@@ -4,9 +4,10 @@
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Suspense, type ReactNode } from 'react';
+import { McpTailCard } from '@/components/agent';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, type ChipTone } from '@/components/ui';
-import { api, type McpCallDetail } from '@/lib/api';
+import { api, type McpCallDetail, type SiteRow } from '@/lib/api';
 import { when } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
@@ -58,12 +59,40 @@ function Record({ c }: { c: McpCallDetail }) {
   );
 }
 
+/** /audit with no id: the site's newest tool calls, each linking to its record. */
+function AuditLog() {
+  const param = useParam('site');
+  const sites = useQuery({ queryKey: ['sites'], queryFn: () => api.get<SiteRow[]>('/sites'), enabled: !param });
+  const site = param ?? (sites.data?.length === 1 ? sites.data[0].id : null);
+  const title = <><div className="text-xs text-muted">{site ?? 'Audit'}</div><h1 className="font-serif text-3xl">Audit log</h1></>;
+  return (
+    <Shell site={site} title={title}>
+      {site ? (
+        <div className="max-w-4xl"><McpTailCard site={site} /></div>
+      ) : sites.isLoading ? (
+        <Loading />
+      ) : !sites.data?.length ? (
+        <Empty>No sites yet, so no tool calls.</Empty>
+      ) : (
+        <Card className="max-w-xl divide-y divide-line text-[13px]">
+          {sites.data.map((s) => (
+            <Link key={s.id} href={`/audit/?site=${s.id}`} className="block px-4 py-2.5 hover:bg-surface-2/60">
+              <span className="font-mono">{s.id}</span> <span className="text-muted">tool calls</span>
+            </Link>
+          ))}
+        </Card>
+      )}
+    </Shell>
+  );
+}
+
 function Page() {
   const id = useParam('id');
   const q = useQuery({ queryKey: ['mcp-call', id], queryFn: () => api.get<McpCallDetail>(`/mcp-calls/${id}`), enabled: !!id });
+  if (!id) return <AuditLog />;
   return (
     <Shell site={q.data?.site ?? null} title={<><div className="text-xs text-muted">{q.data?.site ?? 'Audit'} · MCP audit log</div><h1 className="font-serif text-3xl">Tool call #{id}</h1></>}>
-      {!id ? <Empty>No tool call given.</Empty> : q.isError ? <Empty>That tool call was not found.</Empty> : q.data ? <Record c={q.data} /> : <Loading />}
+      {q.isError ? <Empty>That tool call was not found.</Empty> : q.data ? <Record c={q.data} /> : <Loading />}
     </Shell>
   );
 }

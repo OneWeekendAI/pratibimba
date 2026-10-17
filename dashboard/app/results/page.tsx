@@ -38,7 +38,7 @@ function View() {
       <section>
         <SectionTitle hint="ranked by lift × traffic">Slots</SectionTitle>
         {ranked.length === 0 && <Empty>No slots.</Empty>}
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           {ranked.map((s) => {
             const idx = new Map(s.variants.map((v, i) => [v.key, i]));
             const series = s.variants.map((v) => ({ key: v.key, index: idx.get(v.key)! })).filter((x) => (curves[s.key] ?? []).some((p) => p.variants[x.key]));
@@ -56,7 +56,8 @@ function View() {
                     {s.goal === 'revenue' && <> · optimising revenue</>}
                   </p>
                 )}
-                <LiftCurve curve={curves[s.key] ?? []} series={series} height={160} />
+                {/* No closed window (or no holdout) yet: the pill above already says so in one line. */}
+                {series.length > 0 && <LiftCurve curve={curves[s.key] ?? []} series={series} height={160} />}
               </Card>
             );
           })}
