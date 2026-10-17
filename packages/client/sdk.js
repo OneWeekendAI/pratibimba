@@ -14,6 +14,13 @@
  *   4. A hard timeout (400 ms, data-timeout) removes the hide rule whatever happened. A decision
  *      that lands after it is NOT swapped (that would be the flicker this exists to avoid) and is
  *      reported as `missed`.
+ *   5. Single-page apps (React, Vue, ...) mount slot elements later. A MutationObserver applies
+ *      the slot's decision to each element as it mounts, before the next paint; a remount gets
+ *      the same decision, and the exposure is reported once. An element that mounts before its
+ *      decision is held hidden (data-prb-wait) for at most data-timeout from its own mount, then
+ *      shown as the page drew it. Once the visitor has seen a slot's baseline, or the pointer is
+ *      on the element, the decision is not swapped in on that page (`missed`). Keep a slot's
+ *      contents static in the framework (it must not re-render children the SDK replaced).
  *
  * The subject lives in sessionStorage (cookieless) or in a first-party `_prb_subject` cookie for
  * a year, by the site's privacy_mode (from the manifest): `full` always uses the cookie,
@@ -195,10 +202,29 @@
     style.textContent = slots.map(function (s) { return ':is(' + s.selector + '):not([data-prb-done])'; }).join(',') +
       '{visibility:hidden!important}';
     (document.head || document.documentElement).appendChild(style);
+    // Single-page apps: a slot element that mounts after the page-load deadline, before its
+    // decision, is held by this attribute instead, for its own data-timeout (see `hold`).
+    var waitRule = document.createElement('style');
+    waitRule.id = 'prb-wait';
+    waitRule.textContent = '[data-prb-wait]{visibility:hidden!important}';
+    (document.head || document.documentElement).appendChild(waitRule);
   }
+  var started = Date.now();
+  // Per slot: d, the decision once it has landed; failed, decide gave none; shown, the visitor
+  // has seen the page's own version, so the decision may no longer be swapped in on this page;
+  // exposed and missed, which of the two the decision has been reported as (at most one, once).
+  var state = {};
+  slots.forEach(function (s) { state[s.key] = { d: null, failed: false, shown: false, exposed: false, missed: false }; });
+  // True once prb-hide is gone: at the page-load deadline, or when every slot has settled.
   var timedOut = false;
   function revealAll() {
     timedOut = true;
+    // Elements of a slot still undecided keep what is left of their own allowance (one a
+    // single-page app mounted a moment ago); those in the HTML show the baseline now.
+    slots.forEach(function (slot) {
+      var s = state[slot.key];
+      if (!s.d && !s.failed) each(slot, function (el) { hold(slot, el); });
+    });
     if (style && style.parentNode) style.parentNode.removeChild(style);
   }
   var timer = setTimeout(revealAll, timeoutMs);
@@ -242,38 +268,112 @@
   }
 
   function reveal(slot) {
-    each(slot, function (el) { el.setAttribute('data-prb-done', ''); });
+    each(slot, function (el) { el.removeAttribute('data-prb-wait'); el.setAttribute('data-prb-done', ''); });
+  }
+
+  // Holds an undecided slot element hidden for what is left of data-timeout, counted from when
+  // it mounted (page load, for one in the HTML), then shows the page's own version: fail open.
+  function hold(slot, el) {
+    if (el.hasAttribute('data-prb-done') || el.hasAttribute('data-prb-wait')) return;
+    var left = timeoutMs - (Date.now() - (el.prbT0 === undefined ? started : el.prbT0));
+    if (left <= 0) { showOwn(slot, el); return; }
+    el.setAttribute('data-prb-wait', '');
+    setTimeout(function () { if (el.hasAttribute('data-prb-wait')) showOwn(slot, el); }, left);
+  }
+
+  // The visitor sees the page's own version of this element, so from now on the slot's decision
+  // would be a visible jump: it is not swapped in anywhere on this page.
+  function showOwn(slot, el) {
+    el.removeAttribute('data-prb-wait');
+    el.setAttribute('data-prb-done', '');
+    state[slot.key].shown = true;
+  }
+
+  // Never swap what is under the visitor's hand. A held slot is hidden, but the page's own CSS
+  // can make a child of it visible (visibility is inherited and overridable), and that child can
+  // have the pointer on it.
+  function underPointer(el) {
+    if (pointerAt && el.contains(pointerAt)) return true;
+    try { return el.matches(':hover'); } catch (e) { return false; }
   }
 
   // --- 3. apply a decision ------------------------------------------------------------------
-  function apply(slot, d) {
-    if (timedOut) {
-      // Too late to swap without a visible jump: keep the baseline the visitor already sees.
-      store.del(cacheKey(slot));
-      send('missed', slot.key, d.decision_id);
-      return;
-    }
+  // The decision has landed, after DOMContentLoaded. Every element of the slot on the page now is
+  // still hidden (by prb-hide or prb-wait) unless the visitor has already seen its baseline.
+  function decided(slot, d) {
+    var s = state[slot.key];
+    s.d = d;
     current[slot.key] = d;
     if (d.explanation && d.explanation.in_holdout === true) heldOut = true;
     if (d.explanation && d.explanation.in_holdout === false) notHeld = true;
+    if (s.shown) { missed(slot); return; }
+    each(slot, function (el) { place(slot, el); });
+  }
+
+  function missed(slot) {
+    var s = state[slot.key];
+    if (s.exposed || s.missed) return;
+    s.missed = true;
+    // Too late to swap without a visible jump: keep the baseline the visitor already sees.
+    store.del(cacheKey(slot));
+    send('missed', slot.key, s.d.decision_id);
+  }
+
+  // Puts the slot's decision into one element: one in the HTML, or one a single-page app mounts
+  // at any time later (a remount gets the same decision; the exposure is reported once).
+  function place(slot, el) {
+    var s = state[slot.key];
+    var d = s.d;
+    if (s.shown || underPointer(el)) { showOwn(slot, el); missed(slot); return; }
     var sorted = slot.kind === 'sorted' && Array.isArray(d.order);
     var shown = [];
-    each(slot, function (el) {
-      if (!('prbOrig' in el)) el.prbOrig = el.innerHTML;
-      if (sorted) shown = reorder(el, d.order);
-      else if (d.copy && typeof d.copy === 'object') writeCopy(el, d.copy);
-      else if (d.payload !== null && d.payload !== undefined) el.innerHTML = d.payload;
-      el.setAttribute('data-prb-done', '');
-      el.setAttribute('data-prb-variant', d.variant);
-      // Reads the slot's current decision: an on-device swap re-points it.
-      el.addEventListener('click', function (e) {
-        var item = sorted ? itemOf(e.target, el) : null;
-        send('click', slot.key, current[slot.key].decision_id, item ? { items: [{ id: item }] } : null);
-      }, true);
-      if (slot.kind === 'picker' && d.variant === 'picker' && slot.picker) renderPicker(slot, d, el);
-    });
+    if (!('prbOrig' in el)) el.prbOrig = el.innerHTML;
+    if (sorted) shown = reorder(el, d.order);
+    else if (d.copy && typeof d.copy === 'object') writeCopy(el, d.copy);
+    else if (d.payload !== null && d.payload !== undefined) el.innerHTML = d.payload;
+    el.removeAttribute('data-prb-wait');
+    el.setAttribute('data-prb-done', '');
+    el.setAttribute('data-prb-variant', d.variant);
+    // Reads the slot's current decision: an on-device swap re-points it.
+    el.addEventListener('click', function (e) {
+      var item = sorted ? itemOf(e.target, el) : null;
+      send('click', slot.key, current[slot.key].decision_id, item ? { items: [{ id: item }] } : null);
+    }, true);
+    if (slot.kind === 'picker' && d.variant === 'picker' && slot.picker) renderPicker(slot, d, el);
+    if (s.exposed || s.missed) return;
+    s.exposed = true;
     send('exposure', slot.key, d.decision_id, sorted && shown.length ? { items: shown.slice(0, 100).map(function (k) { return { id: k }; }) } : null);
   }
+
+  // --- single-page apps: slot elements that mount after DOMContentLoaded -------------------
+  // A MutationObserver callback runs as a microtask, before the browser paints again, so an
+  // element that mounts after its decision gets it before anyone can see the baseline.
+  function mounted(slot, el) {
+    var s = state[slot.key];
+    if (s.d) place(slot, el);
+    else if (s.failed) el.setAttribute('data-prb-done', '');
+    else if (timedOut) hold(slot, el);
+    // Otherwise prb-hide hides it until the decision lands or the page-load deadline passes.
+  }
+
+  function scan() {
+    slots.forEach(function (slot) {
+      each(slot, function (el) {
+        if (el.prbSeen) return;
+        el.prbSeen = true;
+        if (el.prbT0 === undefined) el.prbT0 = Date.now();
+        mounted(slot, el);
+      });
+    });
+  }
+
+  // Registered before any decision can land, so it runs first at DOMContentLoaded. Elements
+  // that were in the HTML have been hidden since first paint: their allowance ran from load.
+  onReady(function () {
+    slots.forEach(function (slot) { each(slot, function (el) { if (el.prbT0 === undefined) el.prbT0 = started; }); });
+    scan();
+    if (window.MutationObserver) new window.MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+  });
 
   // --- a sorted slot (F2b) ------------------------------------------------------------------
   // F4: a copy slot. The page marks each field with data-prb-field="<name>"; the SDK writes the
@@ -512,8 +612,8 @@
         return d;
       });
     p.then(
-      function (d) { onReady(function () { apply(slot, d); settled(); }); },
-      function () { onReady(function () { reveal(slot); settled(); }); }
+      function (d) { onReady(function () { decided(slot, d); settled(); }); },
+      function () { onReady(function () { state[slot.key].failed = true; reveal(slot); settled(); }); }
     );
   });
 
