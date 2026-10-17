@@ -30,6 +30,12 @@
 // bags, INR. A RETRY share of orders is sent twice with the same order_id, which Core must count
 // once. analyze.mjs reconciles every order's value against the revenue Core credited.
 //
+// EVERY SLOT: the beacon reports an exposure for every slot a page rendered, so this does too:
+// besides the hero and the grid, the home page's hero_copy (inside the baseline hero) and
+// comeback, and the product page's promo. A share of visitors (more after a click) open a product
+// page, where add_to_cart (the metric of promo, comeback and hero_copy) fires with its
+// CART_TRUTH probability (truth.mjs), as prb.addToCart would from the server.
+//
 // What the server can see: mobile (user agent), from_ad (utm_* on the URL), returning (a
 // subject cookie with consent: the site is consent_aware and the store runs PRB_PERSIST=1),
 // and the local clock through the `_prb_tz` cookie the beacon would have set. A referrer is
@@ -39,7 +45,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { GRID_TRUTH, TRUTH_TABLE } from './truth.mjs';
+import { CART_TRUTH, GRID_TRUTH, TRUTH_TABLE } from './truth.mjs';
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -53,8 +59,11 @@ const SEED = Number(arg('seed', '7'));
 const TRUTH = TRUTH_TABLE;
 const BUY = Number(arg('buy', '0.06'));
 const BUY_AFTER_CLICK = Number(arg('buy-after-click', '0.35'));
+const BROWSE = Number(arg('browse', '0.3'));
+const BROWSE_AFTER_CLICK = 0.7;
 const RETRY = 0.25;
 const PRODUCTS = [{ slug: 'monday-espresso', price: 549 }, { slug: 'estate-filter', price: 699 }];
+const CATALOG = [...PRODUCTS, { slug: 'kaapi-decoction', price: 899 }];
 
 // Phases: `rate` visits per second (Poisson), or `gap` [min, max] seconds between visits
 // (the sparse phases, to see the first render after an idle keep-alive socket).
@@ -62,6 +71,8 @@ const PLANS = {
   smoke: [{ name: 'smoke', rate: 1, secs: 20 }],
   // The local demo (demo-record.mjs): 90 s of steady traffic against the local stack.
   demo: [{ name: 'demo', rate: 4, secs: 90 }],
+  // demo-record.mjs runs this three times, an hour apart once backdated, so the curves have points.
+  'demo-third': [{ name: 'demo', rate: 4, secs: 30 }],
   // E5 (2026-10-08): one steady block, then estimates.mjs while the windows close.
   short: [{ name: 'steady', rate: 2.5, secs: 1200 }],
   // EC3 (2026-10-13): four minutes through the events queue, to reconcile against Core.
@@ -128,6 +139,10 @@ function cookieOf(res, name) {
 
 async function postEvent(subject, v, decision, name, clock, slot = 'hero', items) {
   const ev = { id: randomUUID(), name, slot, decision_id: decision, ...(items?.length ? { items: items.map((id) => ({ id })) } : {}) };
+  return send(subject, v, ev, clock);
+}
+
+async function send(subject, v, ev, clock) {
   const body = { site: 'shop', subject, events: [ev], tz_offset: clock.offset, consent: v.consent === true };
   try {
     const r = await fetch(`${BASE}/_prb/e`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -137,6 +152,41 @@ async function postEvent(subject, v, decision, name, clock, slot = 'hero', items
   } catch (e) {
     return { status: 0, error: String(e) };
   }
+}
+
+/** Every slot a page rendered, but those named in `skip`: [{slot, variant, decision}]. */
+function slotsIn(html, skip) {
+  return [...html.matchAll(/data-prb-slot="([^"]+)" data-prb-variant="([^"]+)" data-prb-decision="([^"]+)"/g)]
+    .map((m) => ({ slot: m[1], variant: m[2], decision: m[3] }))
+    .filter((x) => !skip.includes(x.slot));
+}
+
+async function exposeAll(subject, v, clock, found) {
+  return Promise.all(found.map(async (x) => ({ ...x, exposure: await postEvent(subject, v, x.decision, 'exposure', clock, x.slot) })));
+}
+
+/** A product page: render it as this visitor, expose its slots, maybe add to cart. */
+async function browse(subject, v, slug, clock, headers) {
+  const cookies = [`_prb_subject=${encodeURIComponent(subject)}`];
+  if (v.consent) cookies.push('_prb_consent=granted');
+  if (v.sendsTz) cookies.push(`_prb_tz=${encodeURIComponent(v.tz)}`);
+  const rec = { slug };
+  try {
+    const res = await fetch(`${BASE}/p/${slug}`, { headers: { ...headers, cookie: cookies.join('; ') }, redirect: 'manual' });
+    const html = await res.text();
+    rec.status = res.status;
+    rec.slots = await exposeAll(subject, v, clock, slotsIn(html, []));
+    const promo = rec.slots.find((x) => x.slot === 'promo');
+    rec.p_cart = CART_TRUTH(promo?.variant);
+    if (rnd() < rec.p_cart) {
+      await sleep(400 + rnd() * 1500);
+      const p = CATALOG.find((x) => x.slug === slug);
+      rec.cart = await send(subject, v, { id: randomUUID(), name: 'add_to_cart', items: [{ id: slug, price: p.price, quantity: 1 }] }, clock);
+    }
+  } catch (e) {
+    rec.error = String(e);
+  }
+  return rec;
 }
 
 async function checkout(subject, v, order) {
@@ -221,6 +271,12 @@ async function visit(phase) {
           break;
         }
       }
+    }
+    // The home page's other slots (hero_copy inside the baseline hero, comeback): exposed as rendered.
+    rec.slots = await exposeAll(subject, v, clock, slotsIn(html, ['hero', 'grid']));
+    if (rnd() < (rec.clicked || rec.grid?.clicked ? BROWSE_AFTER_CLICK : BROWSE)) {
+      const slug = rec.grid?.clicked ?? pick(CATALOG).slug;
+      rec.browse = await browse(subject, v, slug, clock, headers);
     }
     if (!v.returning && v.consent) returners.push({ subject, mobile: v.mobile, tz: v.tz, sendsTz: v.sendsTz, last: started });
     else if (v.ref) v.ref.subject = subject;

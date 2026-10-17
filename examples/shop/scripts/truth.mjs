@@ -19,3 +19,7 @@ export const GRID_TRUTH = {
   'estate-filter': () => 0.06,
   'kaapi-decoction': (c) => (c.mobile ? 0.2 : 0.04),
 };
+
+// The product page: the chance a visitor who opened it adds the bag to the cart, by the promo
+// line they saw (the metric of promo, comeback and hero_copy). The bundle line helps a little.
+export const CART_TRUTH = (promo) => ({ bundle: 0.3, 'grinder-free': 0.26 })[promo] ?? 0.2;

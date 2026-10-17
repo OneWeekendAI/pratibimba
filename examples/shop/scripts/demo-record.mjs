@@ -7,8 +7,8 @@
 //   node examples/shop/scripts/demo-record.mjs [--out ../pratibimba-demo] [--skip-seed]
 //
 // Seeding (skipped with --skip-seed): 90 s of cohort traffic through the shop (cohort.mjs, plan
-// `demo`), then every decision moved two hours back so the worker closes their windows and the
-// results have something to show, plus two drafts for the approvals queue. The video is written
+// `demo-third` three times), each third moved back to its own hour so the worker closes their
+// windows and the curves have points, plus two drafts for the approvals queue. The video is written
 // to --out (default ../pratibimba-demo, outside git) as pratibimba-demo.webm.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readdirSync, renameSync } from 'node:fs';
@@ -36,14 +36,19 @@ const api = async (p, body) => {
 async function seed() {
   // The come-back offer is for lapsed buyers only (audiences.mjs), as on the hosted shop.
   execFileSync('node', [path.join(here, 'audiences.mjs'), '--core', CORE], { env: { ...process.env, PRB_ADMIN_TOKEN: TOKEN }, stdio: 'inherit' });
-  console.log('seed: 90 s of cohort traffic through the shop');
-  const c = spawnSync('node', [path.join(here, 'cohort.mjs'), '--base', SHOP, '--plan', 'demo', '--out', path.join(OUT, 'demo-cohort.jsonl')], {
-    cwd: path.resolve(here, '..'), stdio: ['ignore', 'ignore', 'inherit'],
-  });
-  if (c.status) throw new Error('cohort failed');
-  // Close every window: decisions and their events two hours back, then let the worker settle.
-  psql(`UPDATE decisions SET created_at = created_at - interval '2 hours' WHERE site_id = 'shop';
-        UPDATE events SET received_at = received_at - interval '2 hours' WHERE site_id = 'shop';`);
+  // Three 30 s thirds of cohort traffic, each moved back (with its events) to its own hour, four,
+  // three and two hours ago: every window closes, and the lift curves get a point per hour. All
+  // traffic in one hour would be one point, which a line cannot draw.
+  for (const [i, hours] of [4, 3, 2].entries()) {
+    console.log(`seed: cohort traffic, third ${i + 1} of 3`);
+    const since = psql('SELECT now()::text');
+    const c = spawnSync('node', [path.join(here, 'cohort.mjs'), '--base', SHOP, '--plan', 'demo-third', '--seed', String(7 + i), '--out', path.join(OUT, 'demo-cohort.jsonl')], {
+      cwd: path.resolve(here, '..'), stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    if (c.status) throw new Error('cohort failed');
+    psql(`UPDATE decisions SET created_at = created_at - interval '${hours} hours' WHERE site_id = 'shop' AND created_at >= '${since}';
+          UPDATE events SET received_at = received_at - interval '${hours} hours' WHERE site_id = 'shop' AND received_at >= '${since}';`);
+  }
   for (let i = 0; i < 120; i++) {
     const open = Number(psql("SELECT count(*) FROM decisions WHERE site_id = 'shop' AND settled_at IS NULL AND created_at < now() - interval '1 hour'"));
     if (open === 0) break;
@@ -176,6 +181,10 @@ async function main() {
   await page.goto(CORE + '/app/approvals/?site=shop');
   await page.getByText('Recent decisions').scrollIntoViewIfNeeded();
   await step(page, 'Every approval and share change is recorded, by whom', 4500);
+  await page.goto(CORE + '/app/slot/?site=shop&slot=comeback');
+  await step(page, 'An audience gate: the come-back offer is shown only to lapsed buyers', 4500);
+  await page.goto(CORE + '/app/audit/');
+  await step(page, 'The audit log: every tool call a coding agent makes, refused or not', 4000);
   await ctx.close();
 
   // 5. Back on the shop: new visitors can now get the approved copy.
