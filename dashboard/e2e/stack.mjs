@@ -133,19 +133,24 @@ let s = 20261006;
 const rand = () => ((s = (s * 1103515245 + 12345) % 2147483648) / 2147483648);
 const truth = { hero: { baseline: 0.08, gift: 0.2, free_ship: 0.005 }, banner: { plain: 0.04, ten_off: 0.05 } };
 const uuid = () => crypto.randomUUID();
-const exposedHero = []; // raw subjects, in order: Core stores them pseudonymised
+// Raw subjects whose every decision was exposed, in order (Core stores them pseudonymised). A
+// buyer must be one of these: an order from a visitor with an unexposed decision still in its
+// window is held by the worker for a late exposure (ORPHAN_HOLD_SECS, 30 min), so the seeded
+// revenue would never be credited in time.
+const exposedHero = [];
 async function visit(i) {
   const subject = `v-${i.toString(36)}-${Math.floor(rand() * 1e9).toString(36)}`;
   const ctx = { returning: rand() < 0.35, mobile: rand() < 0.55, from_ad: rand() < 0.2 };
   const { decisions } = await call('/decide/batch', { site: 'shop', subject, slots: ['hero', 'banner'], ctx });
   const events = [];
+  let all = true;
   for (const d of decisions) {
-    if (rand() < 0.04) continue; // a few never render: decided, not exposed
+    if (rand() < 0.04) { all = false; continue; } // a few never render: decided, not exposed
     events.push({ id: uuid(), name: 'exposure', slot: d.slot, decision_id: d.decision_id });
-    if (d.slot === 'hero') exposedHero.push(subject);
     if (rand() < truth[d.slot][d.variant]) events.push({ id: uuid(), name: 'click', slot: d.slot, decision_id: d.decision_id });
   }
   if (events.length) await call('/e', { site: 'shop', subject, events });
+  if (all) exposedHero.push(subject);
 }
 async function visits(from, to) {
   let next = from;
