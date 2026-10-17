@@ -286,9 +286,10 @@
     });
   }
 
-  // The page marks each item with data-prb-item="<key>". The decided items move, in order, to
-  // where the first item stood; an item the order leaves out (gated for this visitor) follows
-  // them in its page order: the page owns its cards. Other children keep their places.
+  // The page marks each item with data-prb-item="<key>". The decided items fill the items'
+  // places, in order; an item the order leaves out (gated for this visitor) follows them in its
+  // page order: the page owns its cards. Other children (an ad tile, a divider, the whitespace
+  // between cards) keep their places, as in the edge rewriter and the next SDK.
   // Returns the keys in the order they now stand, the ordered ones first.
   function reorder(el, order) {
     var items = [];
@@ -304,10 +305,9 @@
       if (byKey[k] && placed.indexOf(byKey[k]) < 0) { placed.push(byKey[k]); keys.push(k); }
     });
     items.forEach(function (c) { if (placed.indexOf(c) < 0) placed.push(c); });
-    var anchor = document.createComment('prb');
-    el.insertBefore(anchor, items[0]);
-    placed.forEach(function (c) { el.insertBefore(c, anchor); });
-    el.removeChild(anchor);
+    var marks = items.map(function (c) { var m = document.createComment('prb'); el.insertBefore(m, c); return m; });
+    placed.forEach(function (c, n) { el.insertBefore(c, marks[n]); });
+    marks.forEach(function (m) { el.removeChild(m); });
     return keys;
   }
 

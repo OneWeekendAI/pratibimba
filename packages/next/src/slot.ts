@@ -85,8 +85,9 @@ export function copyText<F extends string>(fallback: Record<F, string>, copy: un
 
 /**
  * The children in the decided order, each keyed child wrapped in a `display: contents` element
- * marked `data-prb-item`. Keyed children move, in order, to where the first one stood; one the
- * order leaves out (gated for this visitor) follows them in page order. Returns the keys of the
+ * marked `data-prb-item`. Keyed children fill the keyed children's places in the decided order;
+ * one the order leaves out (gated for this visitor) follows them in page order. A child without a
+ * key keeps its place, as in the edge rewriter and the browser SDK. Returns the keys of the
  * ordered items as rendered.
  */
 export function arrange(children: ReactNode, order: string[] | undefined): { nodes: ReactNode[]; shown: string[] } {
@@ -107,15 +108,8 @@ export function arrange(children: ReactNode, order: string[] | undefined): { nod
   }
   for (const c of items) if (!placed.includes(c)) placed.push(c);
   const wrap = (c: ReactNode) => createElement('div', { key: keyOf(c)!, 'data-prb-item': keyOf(c)!, style: { display: 'contents' } }, c);
-  const nodes: ReactNode[] = [];
-  let done = false;
-  for (const c of all) {
-    if (keyOf(c) === null) nodes.push(c);
-    else if (!done) {
-      nodes.push(...placed.map(wrap));
-      done = true;
-    }
-  }
+  let n = 0;
+  const nodes = all.map((c) => (keyOf(c) === null ? c : wrap(placed[n++])));
   return { nodes, shown };
 }
 

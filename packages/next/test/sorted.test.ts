@@ -89,3 +89,18 @@ test('sorted_beacon_click_names_the_card', async () => {
   (document.getElementById('title') as any).click();
   assert.equal(ev('click')[1].items, undefined);
 });
+
+test('sorted_keeps_an_unkeyed_child_between_the_cards_in_its_place', async () => {
+  // Same rule as the edge rewriter and the browser SDK: the cards fill the cards' places in the
+  // decided order; anything else (an ad tile, a divider) stays where the page put it.
+  const Sorted = sortedWith(() => grid(['c', 'a', 'b']));
+  const kids = [
+    createElement('article', { key: 'a' }, 'card-a'),
+    createElement('aside', { className: 'ad' }, 'ad-tile'),
+    createElement('article', { key: 'b' }, 'card-b'),
+    createElement('article', { key: 'c' }, 'card-c'),
+  ];
+  const html = renderToStaticMarkup(await Sorted({ id: 'grid', children: kids }));
+  const seq = [...html.matchAll(/card-([a-d])|ad-tile/g)].map((m) => m[1] ?? 'ad');
+  assert.deepEqual(seq, ['c', 'ad', 'a', 'b']);
+});

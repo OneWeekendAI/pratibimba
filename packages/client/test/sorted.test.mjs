@@ -75,3 +75,13 @@ test('a_swap_slot_never_reorders_its_children', async () => {
   await sleep(20);
   assert.deepEqual(rendered(p), ['a', 'b', 'c', 'd']);
 });
+
+test('sorted_slot_keeps_a_child_between_the_cards_in_its_place', async () => {
+  // Same rule as the edge rewriter and the next SDK: the cards fill the cards' places in the
+  // decided order; a child that is not a card (an ad tile, a divider) keeps its place.
+  const body = '<ul id="grid"><li data-prb-item="a">a</li><li id="ad">ad</li><li data-prb-item="b">b</li><li data-prb-item="c">c</li></ul>';
+  const p = load({ manifest: MANIFEST, body, decide: () => ok({ ...DECISION, order: ['c', 'a', 'b'] }) });
+  await sleep(20);
+  const seq = [...p.w.document.querySelector('#grid').children].map((e) => e.getAttribute('data-prb-item') ?? e.id);
+  assert.deepEqual(seq, ['c', 'ad', 'a', 'b']);
+});
