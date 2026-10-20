@@ -265,12 +265,35 @@ The compose file at [`examples/compose.yml`](examples/compose.yml) runs Postgres
 
 ```sh
 export PRB_ADMIN_TOKEN=change-me
-docker compose -f examples/compose.yml up
+docker compose -f examples/compose.yml up -d     # first run builds the image: several minutes
+
+# Declare a site, its slots and its variants (re-run after every edit to the file).
+docker compose -f examples/compose.yml run --rm --no-deps \
+  -v "$PWD/examples/plain/site.json:/site.json:ro" serve apply /site.json
+
+# Ask for a decision.
+curl -s localhost:8080/decide -H 'content-type: application/json' \
+  -d '{"site":"demo","slot":"hero","subject":"visitor-1"}'
 ```
 
-Open `http://localhost:8080/app/` and sign in with `PRB_ADMIN_TOKEN`. The backup service
-writes a plain-SQL dump to `./backups` once a day; the salts are left out of the dump by
-design, so a backup cannot link one day's cookieless visitors to the next.
+Open `http://localhost:8080/app/` and sign in with `PRB_ADMIN_TOKEN`. Events go to
+`POST /e` with the `decision_id` (see [HTTP API](#http-api-summary)); the worker credits them
+at once and updates the model when the slot's `attribution_window_secs` closes.
+
+The backup service writes a plain-SQL dump to `examples/backups/` (next to the compose file)
+on start and then once a day; the salts are left out of the dump by design, so a backup cannot
+link one day's cookieless visitors to the next. To take one now, or restore one into a new,
+empty database:
+
+```sh
+docker compose -f examples/compose.yml run --rm --no-deps --entrypoint pratibimba backup backup /backups
+docker compose -f examples/compose.yml exec db createdb -U postgres restored
+docker compose -f examples/compose.yml run --rm --no-deps --entrypoint pratibimba \
+  -e PRB_DB=postgres://postgres:pratibimba@db:5432/restored backup restore /backups/<file>.sql
+```
+
+`docker compose -f examples/compose.yml down` stops the stack (keep `PRB_ADMIN_TOKEN` set);
+`down -v` also deletes the database volume.
 
 ### Self-hosted (plain Docker)
 
