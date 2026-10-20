@@ -9,8 +9,51 @@
       "attribution_window_secs": 1800,
       "decision_ttl_secs": 60,
       "variants": [
-        { "key": "baseline", "baseline": true },
-        { "key": "gift", "html": "<h1>Gift sets, wrapped and ready</h1><a href=\"#shop\">Shop gifts</a>" }
+        {
+          "key": "baseline",
+          "baseline": true
+        },
+        {
+          "key": "gift",
+          "html": "<h1>Gift sets, wrapped and ready</h1><a href=\"#shop\">Shop gifts</a>"
+        },
+        {
+          "key": "side_by_side",
+          "html": "<div style=\"display:flex;gap:16px;align-items:center\"><img src=\"/img/autumn.svg\" alt=\"Autumn candles in amber jars\" width=\"160\" height=\"60\"><div><h1>Autumn candles are here</h1><a href=\"#shop\">Shop autumn</a></div></div>"
+        }
+      ]
+    },
+    {
+      "key": "banner",
+      "selector": "#banner",
+      "kind": "copy",
+      "metric": "click",
+      "copy": {
+        "fields": [
+          {
+            "name": "image",
+            "type": "image",
+            "required": true,
+            "max": 120
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "own",
+          "baseline": true
+        },
+        {
+          "key": "autumn",
+          "copy": {
+            "image": {
+              "url": "/img/autumn.svg",
+              "alt": "Amber autumn candles",
+              "width": 320,
+              "height": 120
+            }
+          }
+        }
       ]
     }
   ]

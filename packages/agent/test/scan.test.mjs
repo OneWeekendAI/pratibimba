@@ -57,9 +57,9 @@ test('examples/next: the hero component is covered because it renders inside <pr
   assert.deepEqual(r.candidates, [], 'nav, the slotted hero and the slotted promo leave nothing');
 });
 
-test('examples/plain: a site.json selector marks the HTML hero as an existing slot', async () => {
+test('examples/plain: site.json selectors mark the HTML hero and the image banner as existing slots, with their declared kinds', async () => {
   const r = await scan({ dir: join(EXAMPLES, 'plain') });
-  assert.deepEqual(r.existing, [{ key: 'hero', kind: 'swap', file: 'index.html', line: 13 }]);
+  assert.deepEqual(r.existing, [{ key: 'hero', kind: 'swap', file: 'index.html', line: 13 }, { key: 'banner', kind: 'copy', file: 'index.html', line: 18 }]);
   assert.deepEqual(r.candidates, []);
 });
 

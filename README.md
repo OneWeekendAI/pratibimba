@@ -90,9 +90,13 @@ flowchart LR
 ### Decisioning
 
 - **Per-slot LinTS bandit** with a holdout and auto-rollback.
-- **Three slot kinds.** `swap` picks one variant; `sorted` learns a per-item order with
-  cascade credit (misses above the acted item, reward to it, nothing below); `copy` renders
-  typed plain-text fields with length limits.
+- **Three slot kinds.** `swap` picks one variant (any HTML: a new layout, an image beside the
+  headline, a different banner); `sorted` learns a per-item order with cascade credit (misses
+  above the acted item, reward to it, nothing below); `copy` renders typed fields: plain text
+  with length limits, and images (an uploaded asset or URL, with required alt text).
+- **Images are first-class.** Core stores uploads per site, content-addressed, served with a
+  one-year immutable cache and a policy that cannot run script; SVGs with script are refused.
+  Local directory or any S3-compatible bucket. Images no live variant uses are cleaned up.
 - **Explain and replay.** Each decision's record names the arm, every variant's sampled
   score, the policy version, the audiences evaluated and whether the visitor matched.
 - **Fixed-allocation experiments.** Lay a weighted A/B/n over one slot's approved variants,
@@ -168,7 +172,9 @@ flowchart LR
 - **Instruction pack.** `npm i -g @pratibimba/agent` ships a guide the agent reads first;
   `npx @pratibimba/agent install` adds the pack to a project, `npx @pratibimba/agent scan`
   reads JSX/TSX, plain HTML, Vue, Svelte and Astro and proposes candidate slots with
-  file:line, selector, kind (swap/copy/sorted) and the exact `create_slot` arguments.
+  file:line, selector, kind (swap/copy/sorted) and the exact `create_slot` arguments; a hero or
+  banner with a picture comes with an image field. `upload_asset` lets the agent upload an
+  image it was given; the variant that uses it still needs a person's approval.
 
 ### Dashboard
 
@@ -197,22 +203,22 @@ work is held behind suites and mutation tests.
 
 | Suite | Pass count | Covers |
 |---|---|---|
-| `cargo test` (Core) | **957 / 0** | bandit math, HTTP, worker, migrations, cohort sims, replay, erase, edge snapshot, parity, webhooks |
-| `dashboard` Playwright e2e | **58 / 58** | real Core + worker + seeded 8,000-visitor history, headless Chromium, every screen |
-| `@pratibimba/next` | 111 / 0 | SSR decide, cookies, proxy, `<prb.Slot>`, keep-alive pool |
-| `@pratibimba/edge` | 102 / 0 | marker rewriter, streaming, snapshot reader, Workers/Deno/Vercel handlers |
-| `@pratibimba/client` | 109 / 0 | script-tag swap in jsdom, including slots a single-page app mounts later |
-| `@pratibimba/agent` | 107 / 0 | installer, MCP, `scan` across JSX/TSX, HTML, Vue, Svelte, Astro |
+| `cargo test` (Core) | **1000 / 0** | bandit math, HTTP, worker, migrations, cohort sims, replay, erase, edge snapshot, parity, webhooks, assets |
+| `dashboard` Playwright e2e | **62 / 62** | real Core + worker + seeded 8,000-visitor history, headless Chromium, every screen |
+| `@pratibimba/next` | 123 / 0 | SSR decide, cookies, proxy, `<prb.Slot>`, keep-alive pool |
+| `@pratibimba/edge` | 109 / 0 | marker rewriter, streaming, snapshot reader, Workers/Deno/Vercel handlers |
+| `@pratibimba/client` | 115 / 0 | script-tag swap in jsdom, including slots a single-page app mounts later |
+| `@pratibimba/agent` | 119 / 0 | installer, MCP, `scan` across JSX/TSX, HTML, Vue, Svelte, Astro |
 | `deploy/proxy-worker` | 77 / 0 | edge decide, queue drain, tombstones, Bloom erased-set |
 
-Counts above are the latest recorded in the project tracker; `cargo test` is the number
-reported after the G4 pass (2026-10-16).
+Counts above are the latest recorded in the project tracker, as of the S11 pass (2026-10-20).
 
 **Mutation testing.** Each feature's suite is held to killing every planted mutant before
 the box ticks on `main`. Representative recent runs:
 
 | Feature pass | Mutants | Killed | Notes |
 |---|---|---|---|
+| Images and assets (S11) | 65 | 65 | SVG script, type spoofing, size cap, path traversal, cross-site access, GC, renderers, scan |
 | Edge round-trip cut (`latency-mutants/`) | 20 | 20 | two tests fail on the pre-cut code; the rest pin semantics |
 | Erased-set Bloom filter (G5) | 20 | 20 | 9 Core, 11 Worker |
 | Scan tokenizer (G4) | 84 | 84 | 26 new; three survived first run and were killed with sharper fixtures |
@@ -344,9 +350,10 @@ export const { GET, POST } = prb.route;
 // a sorted slot: keyed children, rendered in the order Core decides
 <prb.Sorted id="grid">{products.map((p) => <Card key={p.slug} p={p} />)}</prb.Sorted>
 
-// a copy slot: typed plain-text fields with length limits
-<prb.Copy id="hero_copy" fallback={{ headline: 'Roasted on Monday', cta_label: 'Shop' }}>
-  {(t) => <><h1>{t.headline}</h1><a href="/shop">{t.cta_label}</a></>}
+// a copy slot: typed fields; text as plain strings, images as {src, alt}
+<prb.Copy id="hero_copy" fallback={{ headline: 'Roasted on Monday', cta_label: 'Shop',
+                                     banner: { src: '/beans.jpg', alt: 'Coffee beans' } }}>
+  {(t) => <><prb.Image image={t.banner} /><h1>{t.headline}</h1><a href="/shop">{t.cta_label}</a></>}
 </prb.Copy>
 ```
 
@@ -388,6 +395,52 @@ slot's contents once and leave them static: the framework must not re-render chi
 script replaced (in React, a constant `dangerouslySetInnerHTML`, or plain text in
 `data-prb-field` elements of a copy slot).
 
+### Images and layout
+
+A variant can change what a visitor sees, not only what they read. Two ways, both behind the
+same approval gate:
+
+**An image field** changes a picture without anyone writing HTML. Declare it on a copy slot
+and mark the `<img>` (from [`examples/plain`](examples/plain)):
+
+```json
+{ "key": "banner", "selector": "#banner", "kind": "copy",
+  "copy": { "fields": [{ "name": "image", "type": "image", "required": true }] },
+  "variants": [
+    { "key": "own", "baseline": true },
+    { "key": "autumn", "copy": { "image": { "url": "/img/autumn.svg", "alt": "Amber autumn candles", "width": 320, "height": 120 } } }
+  ] }
+```
+
+```html
+<section id="banner">
+  <img data-prb-field="image" src="/img/beans.svg" alt="Coffee beans on a counter" width="320" height="120">
+</section>
+```
+
+The script tag and the edge rewriter set `src`, `alt` and size as attributes and drop the
+`srcset`/`<source>`s that would override them; in Next.js render it with `<prb.Image>`. A value
+is `{ "url": "https://…" | "/path" }` or `{ "asset": "<id>" }` for an image uploaded to Core:
+
+```sh
+curl -X POST --data-binary @autumn.webp -H "authorization: Bearer $PRB_ADMIN_TOKEN" \
+  'localhost:8080/api/sites/demo/assets?name=autumn.webp'     # -> {"id": "<sha256>", ...}
+```
+
+or the dashboard's Images shelf, or the agent's `upload_asset` tool. The type is judged by the
+bytes, not the name; uploads are size-capped; an asset can only be named by its own site.
+Core serves it at `/assets/<site>/<id>` (your page uses `/_prb/assets/<site>/<id>`).
+
+**A swap variant** changes the layout. Its HTML can rearrange the region, for example the
+image beside the headline instead of below it:
+
+```json
+{ "key": "side_by_side", "html": "<div style=\"display:flex;gap:16px;align-items:center\"><img src=\"/img/autumn.svg\" alt=\"Autumn candles in amber jars\" width=\"160\" height=\"60\"><div><h1>Autumn candles are here</h1><a href=\"#shop\">Shop autumn</a></div></div>" }
+```
+
+The dashboard previews every variant as it looks: swap HTML in a sandboxed frame, image
+fields as the images, side by side with the champion.
+
 ### Point your coding agent at it
 
 ```sh
@@ -414,7 +467,7 @@ Git ref.
 | Path | What's in it |
 |---|---|
 | `core/` | the Rust binary: HTTP server, worker, MCP, bandit math, migrations, parity, cohort sims |
-| `core/migrations/` | SQL migrations (`0001_init.sql` … `0260_share_webhook.sql`) |
+| `core/migrations/` | SQL migrations (`0001_init.sql` … `0270_assets.sql`) |
 | `core/tests/` | integration tests on throwaway databases (bandit, decide, worker, edge, cohort, …) |
 | `dashboard/` | the Next.js dashboard, built as a static export, served by Core at `/app` |
 | `packages/next/` | `@pratibimba/next` SDK |
@@ -423,7 +476,7 @@ Git ref.
 | `packages/agent/` | `@pratibimba/agent` MCP instruction pack and `scan` CLI |
 | `examples/next/` | plain Next.js example |
 | `examples/edge/` | plain Cloudflare Worker example |
-| `examples/plain/` | script-tag example with a declared `site.json` |
+| `examples/plain/` | script-tag example with a declared `site.json`: a layout swap and an image field |
 | `examples/shop/` | a Next.js store with commerce events, an agent-drafted hero and sorted grid |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |

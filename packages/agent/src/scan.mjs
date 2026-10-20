@@ -66,10 +66,11 @@ export async function scan({ dir, limit } = {}) {
       const prb = /^prb\.(Slot|Sorted|Copy|Text)$/.exec(el.name);
       const dataKey = attr(el.attrs, 'data-prb-slot');
       const commentKey = f.markup ? f.comments.find((c) => c.before === el.start)?.key : undefined;
-      const siteKey = f.markup ? site.find((s) => matches(s.selector, el))?.key : undefined;
-      const key = prb ? attr(el.attrs, 'id') : dataKey ?? commentKey ?? siteKey;
+      const siteSlot = f.markup ? site.find((s) => matches(s.selector, el)) : undefined;
+      const key = prb ? attr(el.attrs, 'id') : dataKey ?? commentKey ?? siteSlot?.key;
       if (!key) continue;
-      const kind = prb ? { Slot: 'swap', Sorted: 'sorted', Copy: 'copy', Text: 'copy' }[prb[1]] : 'swap';
+      const declared = site.find((s) => s.key === key)?.kind;
+      const kind = prb ? { Slot: 'swap', Sorted: 'sorted', Copy: 'copy', Text: 'copy' }[prb[1]] : ['copy', 'sorted'].includes(declared) ? declared : 'swap';
       existing.push({ key, kind, file: f.rel, line: el.line });
       f.covered.push([el.start, el.end]);
       for (const m of f.text.slice(el.start, el.end).matchAll(/<([A-Z]\w*)\b/g)) coveredNames.add(m[1]);

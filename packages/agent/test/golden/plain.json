@@ -6,6 +6,12 @@
       "kind": "swap",
       "file": "index.html",
       "line": 13
+    },
+    {
+      "key": "banner",
+      "kind": "copy",
+      "file": "index.html",
+      "line": 18
     }
   ]
 }
