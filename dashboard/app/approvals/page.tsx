@@ -5,11 +5,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import clsx from 'clsx';
 import { Suspense, useEffect, useMemo, useState } from 'react';
+import { AssetShelf, FieldView } from '@/components/assets';
 import { Preview } from '@/components/preview';
 import { Shell, useActor } from '@/components/shell';
 import { ShareSlider } from '@/components/slider';
 import { Button, Card, Chip, Empty, Field, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
-import { api, ApiError, type ApprovalCard, type Approvals, type Check, type Overview, type ShareRequest } from '@/lib/api';
+import { api, ApiError, type ApprovalCard, type Approvals, type Asset, type Check, type CopyField, type FieldValue, type Overview, type ShareRequest, type SlotDetail } from '@/lib/api';
 import { diff, lineDiff, looksLikeCode } from '@/lib/diff';
 import { ago } from '@/lib/format';
 import { useParam } from '@/lib/page';
@@ -63,8 +64,8 @@ function Diff({ before, after }: { before: string | null; after: string }) {
 }
 
 /** Who wrote a draft over MCP, why, and where the tool call is recorded. */
-/** A copy slot's draft beside its champion, field by field, as plain text (F4). */
-function CopyFields({ card }: { card: ApprovalCard }) {
+/** A copy slot's draft beside its champion, field by field: text as text, images as images (F4, S11). */
+function CopyFields({ card, site }: { card: ApprovalCard; site: string }) {
   const own = card.champion?.is_baseline;
   return (
     <table className="w-full text-sm" data-testid="copy-fields">
@@ -76,19 +77,13 @@ function CopyFields({ card }: { card: ApprovalCard }) {
         </tr>
       </thead>
       <tbody>
-        {(card.fields ?? []).map((f) => {
-          const text = card.copy?.[f.name] ?? '';
-          return (
-            <tr key={f.name} className="border-t border-line align-top">
-              <td className="py-1.5 pr-3 font-mono text-xs">{f.name}</td>
-              <td className="py-1.5 pr-3 text-muted">{own ? 'the page’s own' : (card.champion?.copy?.[f.name] ?? '—')}</td>
-              <td className="py-1.5">
-                {text || <span className="text-muted">—</span>}
-                <span className="ml-2 text-xs text-muted">{[...text].length}/{f.max}</span>
-              </td>
-            </tr>
-          );
-        })}
+        {(card.fields ?? []).map((f) => (
+          <tr key={f.name} className="border-t border-line align-top">
+            <td className="py-1.5 pr-3 font-mono text-xs">{f.name}</td>
+            <td className="w-[40%] py-1.5 pr-3 text-muted">{own ? 'the page’s own' : <FieldView value={card.champion?.copy?.[f.name]} site={site} compact />}</td>
+            <td className="w-[40%] py-1.5"><FieldView value={card.copy?.[f.name]} field={f} site={site} /></td>
+          </tr>
+        ))}
       </tbody>
     </table>
   );
@@ -146,7 +141,7 @@ function DraftCard({ card, site, approver, max }: { card: ApprovalCard; site: st
         <span className="ml-auto text-xs text-muted">audience: everyone</span>
       </div>
       {card.agent && <AgentBadge agent={card.agent} />}
-      {card.fields ? <CopyFields card={card} /> : <>
+      {card.fields ? <CopyFields card={card} site={site} /> : <>
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
           <div className="mb-1 text-xs text-muted">Current champion: <span className="font-mono">{card.champion?.key ?? '—'}</span></div>
@@ -204,20 +199,67 @@ function DraftCard({ card, site, approver, max }: { card: ApprovalCard; site: st
   );
 }
 
+/** A copy slot's fields as inputs: a line of text, or an image (an upload, with alt text). */
+function CopyInputs({ fields, values, setValues, assets }: { fields: CopyField[]; values: Record<string, FieldValue>; setValues: (v: Record<string, FieldValue>) => void; assets: Asset[] }) {
+  const set = (k: string, v: FieldValue | undefined) => {
+    const next = { ...values };
+    if (v === undefined || v === '') delete next[k];
+    else next[k] = v;
+    setValues(next);
+  };
+  return (
+    <div className="grid gap-3 md:col-span-3 md:grid-cols-2" data-testid="copy-inputs">
+      {fields.map((f) => {
+        const v = values[f.name];
+        if (f.type !== 'image') {
+          return (
+            <Field key={f.name} label={`${f.name}${f.required ? ' *' : ''}`} hint={`up to ${f.max}`}>
+              <input className={`${inputClass} w-full`} aria-label={f.name} maxLength={f.max} value={typeof v === 'string' ? v : ''} onChange={(e) => set(f.name, e.target.value)} />
+            </Field>
+          );
+        }
+        const img = typeof v === 'object' ? v : undefined;
+        return (
+          <Field key={f.name} label={`${f.name}${f.required ? ' *' : ''} (image)`}>
+            <div className="flex gap-2">
+              <select className={`${inputClass} w-1/2`} aria-label={`${f.name} image`} value={img?.asset ?? ''}
+                onChange={(e) => {
+                  const a = assets.find((x) => x.id === e.target.value);
+                  set(f.name, a ? { asset: a.id, alt: img?.alt ?? '', ...(a.width && a.height ? { width: a.width, height: a.height } : {}) } : undefined);
+                }}>
+                <option value="">Pick an upload</option>
+                {assets.map((a) => <option key={a.id} value={a.id}>{a.name ?? a.id.slice(0, 12)}</option>)}
+              </select>
+              <input className={`${inputClass} w-1/2`} aria-label={`${f.name} alt text`} placeholder="Alt text" value={img?.alt ?? ''} disabled={!img}
+                onChange={(e) => img && set(f.name, { ...img, alt: e.target.value })} />
+            </div>
+          </Field>
+        );
+      })}
+    </div>
+  );
+}
+
 function NewDraft({ site, slots, initial }: { site: string; slots: string[]; initial: string | null }) {
   const qc = useQueryClient();
   const [slot, setSlot] = useState(initial ?? slots[0] ?? '');
   const [key, setKey] = useState('');
   const [html, setHtml] = useState('');
+  const [values, setValues] = useState<Record<string, FieldValue>>({});
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!slot && slots[0]) setSlot(slots[0]);
   }, [slots, slot]);
+  const detail = useQuery({ queryKey: ['slot', site, slot], queryFn: () => api.get<SlotDetail>(`/sites/${site}/slots/${slot}`), enabled: !!slot });
+  const assets = useQuery({ queryKey: ['assets', site], queryFn: () => api.get<{ assets: Asset[] }>(`/sites/${site}/assets`) });
+  const fields = detail.data?.kind === 'copy' ? detail.data.fields : null;
+  const payload = fields ? JSON.stringify(values) : html;
   const create = useMutation({
-    mutationFn: () => api.post(`/sites/${site}/slots/${slot}/variants`, { key, html }),
+    mutationFn: () => api.post(`/sites/${site}/slots/${slot}/variants`, { key, html: payload }),
     onSuccess: () => {
       setKey('');
       setHtml('');
+      setValues({});
       setError(null);
       qc.invalidateQueries({ queryKey: ['approvals', site] });
       qc.invalidateQueries({ queryKey: ['sites'] });
@@ -235,16 +277,22 @@ function NewDraft({ site, slots, initial }: { site: string; slots: string[]; ini
         }}
       >
         <Field label="Slot">
-          <select className={`${inputClass} w-full w-full`} value={slot} onChange={(e) => setSlot(e.target.value)}>{slots.map((s) => <option key={s}>{s}</option>)}</select>
+          <select className={`${inputClass} w-full w-full`} value={slot} onChange={(e) => { setSlot(e.target.value); setValues({}); }}>{slots.map((s) => <option key={s}>{s}</option>)}</select>
         </Field>
         <Field label="Key" hint="lowercase, e.g. gift_v2">
           <input className={`${inputClass} w-full font-mono`} value={key} onChange={(e) => setKey(e.target.value)} placeholder="new_variant" />
         </Field>
-        <Field label="HTML">
-          <textarea className={`${inputClass} w-full h-24 py-2 font-mono text-[12.5px]`} value={html} onChange={(e) => setHtml(e.target.value)} placeholder="<h1>…</h1>" />
-        </Field>
+        {fields ? (
+          <div className="text-xs text-muted md:self-end">A copy slot: fill its fields; the page keeps its own for any left empty.</div>
+        ) : (
+          <Field label="HTML" hint="an image: <img src=&quot;/_prb/assets/…&quot; alt=&quot;…&quot;>">
+            <textarea className={`${inputClass} w-full h-24 py-2 font-mono text-[12.5px]`} value={html} onChange={(e) => setHtml(e.target.value)} placeholder="<h1>…</h1>" />
+          </Field>
+        )}
+        {fields && <CopyInputs fields={fields} values={values} setValues={setValues} assets={assets.data?.assets ?? []} />}
+        {!fields && html.trim() && <div className="md:col-span-3"><Preview html={html} label="draft preview" height={120} /></div>}
         <div className="md:col-span-3 flex items-center gap-3">
-          <Button type="submit" variant="ghost" disabled={!key || !html || !slot || create.isPending}>Save as draft</Button>
+          <Button type="submit" variant="ghost" disabled={!key || !slot || (fields ? Object.keys(values).length === 0 : !html) || create.isPending}>Save as draft</Button>
           {error && <span role="alert" className="text-[13px] text-pause-ink">{error}</span>}
         </div>
       </form>
@@ -305,6 +353,7 @@ function View() {
         </section>
       )}
       <NewDraft site={site} slots={slots} initial={initialSlot} />
+      <AssetShelf site={site} />
       {q.data.recent.length > 0 && (
         <section>
           <SectionTitle>Recent decisions</SectionTitle>

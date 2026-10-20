@@ -8,6 +8,8 @@ export function Preview({ html, label, height = 140, scale = 1 }: { html: string
       </div>
     );
   }
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><style>html{zoom:${scale}}body{margin:12px;font:15px/1.4 Georgia,serif;color:#1d1b16;background:#fcfaf5}h1{font-size:22px;margin:0 0 6px}a{color:#a4532a}</style></head><body>${html}</body></html>`;
+  // An uploaded image is /_prb/assets/... on the site; the dashboard is Core itself, at /assets/...
+  const body = html.replace(/(["'(\s])\/_prb\/assets\//g, '$1/assets/');
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><style>html{zoom:${scale}}body{margin:12px;font:15px/1.4 Georgia,serif;color:#1d1b16;background:#fcfaf5}h1{font-size:22px;margin:0 0 6px}a{color:#a4532a}img{max-width:100%;height:auto}</style></head><body>${body}</body></html>`;
   return <iframe title={label} loading="eager" sandbox="" srcDoc={doc} className="w-full rounded-md border border-line bg-white" style={{ height }} />;
 }

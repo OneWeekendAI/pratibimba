@@ -7,11 +7,12 @@ import { createColumnHelper, tableFeatures, useTable } from '@tanstack/react-tab
 import { Suspense, useMemo, useState } from 'react';
 import { LiftCurve, LiftPill } from '@/components/charts';
 import { Audiences } from '@/components/audiences';
+import { FieldView } from '@/components/assets';
 import { Preview } from '@/components/preview';
 import { ShareEditor } from '@/components/share-editor';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
-import { api, type DecisionRow, type ItemRow, type SlotDetail, type VariantRow } from '@/lib/api';
+import { api, type DecisionRow, type FieldValue, type ItemRow, type SlotDetail, type VariantRow } from '@/lib/api';
 import { ago, inWindow, int, pct, pp, seriesVar, shortId, when } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
@@ -23,9 +24,9 @@ const STATUS: Record<VariantRow['status'], [ChipTone, string]> = {
   retired: ['off', 'retired'],
 };
 
-/** A copy slot's variant (F4): its fields as labelled plain text, in the slot's declared order. */
-function CopyFields({ payload, fields }: { payload: string | null; fields: SlotDetail['fields'] }) {
-  let text: Record<string, string> = {};
+/** A copy slot's variant (F4): its fields in the slot's declared order, text as text and images as images (S11). */
+function CopyFields({ payload, fields, site }: { payload: string | null; fields: SlotDetail['fields']; site: string }) {
+  let text: Record<string, FieldValue> = {};
   try {
     text = JSON.parse(payload ?? '{}') ?? {};
   } catch {}
@@ -35,7 +36,7 @@ function CopyFields({ payload, fields }: { payload: string | null; fields: SlotD
       {names.map((n) => (
         <div key={n}>
           <dt className="font-mono text-[10.5px] text-muted">{n}</dt>
-          <dd className="text-ink">{text[n] ?? <span className="text-muted">—</span>}</dd>
+          <dd className="text-ink"><FieldView value={text[n]} site={site} compact /></dd>
         </div>
       ))}
     </dl>
@@ -65,7 +66,7 @@ function VariantCard({ v, index, champion, site, slot, fields }: { v: VariantRow
           {v.is_baseline && <span className="text-[11px] text-muted">baseline</span>}
         </div>
         {fields && !v.is_baseline ? (
-          <CopyFields payload={v.payload} fields={fields} />
+          <CopyFields payload={v.payload} fields={fields} site={site} />
         ) : (
           <Preview html={v.is_baseline ? null : v.payload} label={`preview of ${v.key}`} height={96} scale={0.62} />
         )}

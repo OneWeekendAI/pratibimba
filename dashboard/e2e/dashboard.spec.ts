@@ -871,3 +871,56 @@ test('results_card_with_no_closed_window_draws_no_empty_chart', async ({ page })
   await expect(page.getByTestId('curve-empty')).toHaveText('No closed windows yet.');
   expect((await page.getByTestId('curve-empty').boundingBox())!.height).toBeLessThan(40);
 });
+
+// S11: images. A site of its own (applied here), so nothing above sees it.
+const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+test('an_uploaded_image_becomes_a_draft_shown_as_an_image', async ({ page }) => {
+  const file = { site: 'banner', origin: 'http://localhost:3400', slots: [
+    { key: 'hero', selector: '#hero', kind: 'copy', copy: { fields: [{ name: 'headline', max: 40 }, { name: 'banner', type: 'image', required: true }] },
+      variants: [{ key: 'own', baseline: true }] },
+    { key: 'promo', selector: '#promo', variants: [{ key: 'own', baseline: true }] },
+  ] };
+  const tmp = path.join(mkdtempSync(path.join(tmpdir(), 'prb-s11-')), 'site.json');
+  writeFileSync(tmp, JSON.stringify(file));
+  execFileSync(path.resolve(import.meta.dirname, '../../target/debug/pratibimba'), ['apply', tmp], {
+    env: { ...process.env, PRB_DB: 'postgres://postgres@localhost:55440/prb_dash_e2e', RUST_LOG: 'warn' }, stdio: 'pipe',
+  });
+  await signIn(page);
+  await page.goto('/app/approvals/?site=banner');
+  const shelf = page.getByTestId('asset-shelf');
+  // A file that only says it is an image is refused, with the reason.
+  await shelf.getByTestId('asset-input').setInputFiles({ name: 'fake.png', mimeType: 'image/png', buffer: Buffer.from('<html>hi</html>') });
+  await expect(shelf.getByRole('alert')).toContainText("judged by the file's bytes");
+  await shelf.getByTestId('asset-input').setInputFiles({ name: 'autumn.png', mimeType: 'image/png', buffer: PNG_1x1 });
+  await expect(shelf.getByTestId('asset-list').locator('li')).toHaveCount(1);
+  await expect(shelf.getByTestId('asset-list').locator('li')).toContainText('autumn.png');
+  await expect(shelf.getByTestId('asset-list').locator('li')).toContainText('1×1');
+  const id = (await api('/sites/banner/assets')).assets[0].id as string;
+  expect(await shelf.locator('img').evaluate((i: HTMLImageElement) => i.naturalWidth)).toBe(1);
+
+  // A copy draft: text and an image picked from the uploads, with alt text; no HTML written.
+  await page.getByPlaceholder('new_variant').fill('autumn');
+  const inputs = page.getByTestId('copy-inputs');
+  await inputs.getByLabel('headline').fill('Autumn roast');
+  await inputs.getByLabel('banner image').selectOption({ label: 'autumn.png' });
+  await inputs.getByLabel('banner alt text').fill('A sack of autumn beans');
+  await page.getByRole('button', { name: 'Save as draft' }).click();
+  const card = page.getByTestId('card-autumn');
+  const img = card.getByTestId('copy-fields').getByTestId('field-image').locator('img');
+  await expect(img).toHaveAttribute('src', `/assets/banner/${id}`);
+  await expect(img).toHaveAttribute('alt', 'A sack of autumn beans');
+  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.naturalWidth)).toBe(1);
+  await expect(card.locator('iframe')).toHaveCount(0);
+  await expect(card).not.toContainText('{');
+
+  // A swap draft that shows the image through the site's /_prb door previews it in the sandbox.
+  await page.getByRole('combobox').filter({ hasText: 'hero' }).first().selectOption('promo');
+  await page.getByPlaceholder('new_variant').fill('wide');
+  await page.getByPlaceholder('<h1>…</h1>').fill(`<div style="display:flex;gap:8px"><img src="/_prb/assets/banner/${id}" alt="Beans" width="40" height="40"><h1>Autumn</h1></div>`);
+  await page.getByRole('button', { name: 'Save as draft' }).click();
+  const wide = page.getByTestId('card-wide');
+  // The champion is the page's own (no frame); the draft's frame runs nothing.
+  await expect(wide.locator('iframe')).toHaveCount(1);
+  await expect(wide.locator('iframe')).toHaveAttribute('sandbox', '');
+  await expect.poll(() => wide.frameLocator('iframe').locator('img').evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth)).toBe(1);
+});

@@ -2,7 +2,8 @@
 // stand-in owner site for the install probes, a seeded history, then the real worker.
 // Ready when http://localhost:3400/__ready answers 200. Stops everything on SIGTERM.
 import { execFileSync, spawn } from 'node:child_process';
-import { writeSync } from 'node:fs';
+import { mkdtempSync, writeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import path from 'node:path';
 
@@ -17,6 +18,8 @@ const VISITORS = Number(process.env.PRB_SEED_VISITORS ?? 8000);
 const env = {
   ...process.env, PRB_DB: DB, RUST_LOG: 'warn', PRB_ADMIN_TOKEN: TOKEN, PRB_BIND: '127.0.0.1:18083',
   PRB_DASHBOARD_DIR: path.resolve(here, '../out'), PRB_WORKER_TICK_MS: '300', PRB_DB_MAX_CONNECTIONS: '20',
+  // Uploaded images (S11) go to a fresh directory, not the working tree.
+  PRB_ASSETS_DIR: mkdtempSync(path.join(tmpdir(), 'prb-dash-assets-')),
 };
 const psql = (sql, db = ADMIN_DB) => execFileSync('psql', [db, '-qAt', '-c', sql], { stdio: 'pipe' }).toString().trim();
 // Core runs as children. They must die with this script however it ends: a crash here used

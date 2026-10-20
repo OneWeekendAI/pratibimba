@@ -36,7 +36,16 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return json as T;
 }
 
+/** S11: an image upload goes as its raw bytes; Core judges the type by them, not by the name. */
+async function upload(site: string, file: File): Promise<Asset> {
+  const res = await fetch(`/api/sites/${encodeURIComponent(site)}/assets?name=${encodeURIComponent(file.name)}`, { method: 'POST', credentials: 'same-origin', body: file });
+  const json = await res.json().catch(() => ({ error: res.status === 413 ? 'that file is over the upload limit' : res.statusText }));
+  if (!res.ok) throw new ApiError(res.status, json);
+  return json as Asset;
+}
+
 export const api = {
+  upload,
   get: <T>(p: string) => call<T>('GET', p),
   post: <T>(p: string, b: unknown) => call<T>('POST', p, b),
   del: (p: string) => call<void>('DELETE', p),
@@ -151,7 +160,7 @@ export interface SlotDetail {
   /** swap, picker, sorted or copy. */
   kind: string;
   /** A copy slot's declared fields (F4); null for other kinds. */
-  fields: { name: string; max: number; required?: boolean }[] | null;
+  fields: CopyField[] | null;
   selector: string;
   metric: string;
   attribution_window_secs: number;
@@ -292,10 +301,10 @@ export interface ApprovalCard {
     audit_id: number;
     tool: string;
   };
-  champion: { key: string; payload: string | null; is_baseline: boolean; copy?: Record<string, string> | null } | null;
-  /** A copy slot (F4): its declared fields, and this draft's text by field. */
-  fields?: { name: string; max: number; required: boolean }[] | null;
-  copy?: Record<string, string> | null;
+  champion: { key: string; payload: string | null; is_baseline: boolean; copy?: Record<string, FieldValue> | null } | null;
+  /** A copy slot (F4): its declared fields, and this draft's values by field. */
+  fields?: CopyField[] | null;
+  copy?: Record<string, FieldValue> | null;
   checks: Check[];
   comments: { action: string; actor: string; comment: string | null; at: string }[];
 }
@@ -378,4 +387,31 @@ export interface WebhookDelivery {
   next_attempt_at: string | null;
   delivered_at: string | null;
   created_at: string;
+}
+
+/** A copy slot's field (F4); `type` image (S11) holds an uploaded asset or a URL with alt text. */
+export interface CopyField {
+  name: string;
+  max: number;
+  required?: boolean;
+  type?: 'text' | 'image';
+}
+export interface ImageValue {
+  asset?: string;
+  url?: string;
+  alt: string;
+  width?: number;
+  height?: number;
+}
+export type FieldValue = string | ImageValue;
+/** S11: an uploaded image. */
+export interface Asset {
+  id: string;
+  mime: string;
+  bytes: number;
+  width: number | null;
+  height: number | null;
+  name?: string | null;
+  in_use?: boolean;
+  path: string;
 }
