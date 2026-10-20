@@ -283,8 +283,9 @@ prebuilt image is published yet.
 ```sh
 git clone https://github.com/OneWeekendAI/pratibimba && cd pratibimba
 export PRB_ADMIN_TOKEN=$(openssl rand -hex 32)      # keep it: it is the dashboard password
-docker compose -f examples/compose.yml up -d        # first run builds the image: several minutes
-curl -s localhost:8080/health                        # -> ok
+export COMPOSE_FILE=examples/compose.yml            # every `docker compose` below uses it
+docker compose up -d                                # first run builds the image: several minutes
+curl -s localhost:8080/health                       # -> ok
 ```
 
 `serve` and `worker` run the database migrations on start. Copy the compose file next to your
@@ -297,15 +298,15 @@ A site, its slots and its approved variants come from a JSON file you keep in yo
 URL (the install wizard probes it) and `site` is the id your pages name.
 
 ```sh
-docker compose -f examples/compose.yml run --rm --no-deps \
-  -v "$PWD/examples/plain/site.json:/site.json:ro" serve apply /site.json
+docker compose run --rm --no-deps -v "$PWD/examples/plain/site.json:/site.json:ro" serve apply /site.json
 
 curl -s localhost:8080/decide -H 'content-type: application/json' \
   -d '{"site":"demo","slot":"hero","subject":"visitor-1"}'      # -> {"decision_id":…,"variant":…}
 ```
 
 Re-run `apply` after every edit. Variants in the file count as approved by you; new ones an agent
-or a teammate drafts wait in the dashboard's approval queue.
+or a teammate drafts wait in the dashboard's approval queue. A copy slot answers with its fields
+in `copy` (`payload` is for swap HTML).
 
 ### 3. Sign in to the dashboard
 
@@ -315,10 +316,21 @@ Open `http://localhost:8080/app/` and sign in with `PRB_ADMIN_TOKEN`. Without th
 | Token | Who uses it | How you get one |
 |---|---|---|
 | admin (`PRB_ADMIN_TOKEN`) | you, in the dashboard (cookie) or as `Authorization: Bearer` on `/api` | you choose it; rotate by changing the variable and restarting `serve` |
-| MCP (`prb_mcp_…`, one per site) | your coding agent on `POST /mcp` | dashboard: a site's page, "Connect your coding agent", or `pratibimba mcp-token <site> <name>`; shown once, only its hash is stored |
+| MCP (`prb_mcp_…`, per site) | your coding agent on `POST /mcp` | the site's page in the dashboard, "Connect your coding agent", or `docker compose run --rm --no-deps serve mcp-token <site> <name>`; shown once, only its hash is stored |
 | edge (`PRB_EDGE_TOKEN`) | the optional edge Worker | you choose it, set on both sides |
 
 Pages need no token: a site id is public, like an analytics key.
+
+**See it on a page.** [`examples/plain`](examples/plain) calls Core at `localhost:8080` from
+`localhost:5173`, so Core must allow that origin:
+
+```sh
+PRB_SITE_ORIGIN=http://localhost:5173 docker compose up -d serve
+python3 -m http.server 5173 -d examples/plain       # open http://localhost:5173
+```
+
+Each fresh visitor (a private window) may get another hero or banner; the dashboard's site page
+shows the decisions arrive.
 
 ### 4. Put it behind HTTPS
 
@@ -403,21 +415,22 @@ writes one to `examples/backups/` on start and then daily.
 newer server `backup` stops with an error naming both versions.
 
 ```sh
-C="docker compose -f examples/compose.yml"
-$C run --rm --no-deps --entrypoint pratibimba backup backup /backups            # one now
-$C exec db createdb -U postgres restored                                          # an empty database
-$C run --rm --no-deps --entrypoint pratibimba -e PRB_DB=postgres://postgres:pratibimba@db:5432/restored \
-  -v pratibimba_restored_assets:/var/lib/pratibimba/assets backup restore /backups/<file>.sql
+docker compose run --rm --no-deps --entrypoint pratibimba backup backup /backups   # one now
+
+# Restore onto a new host, or one you wipe first (`down -v` DELETES the database and images).
+docker compose down -v && docker compose up -d --wait db
+docker compose run --rm --no-deps -v "$PWD/examples/backups:/backups:ro" serve restore /backups/<file>.sql
+docker compose up -d
 ```
 
-Point `PRB_DB` (and the assets volume) of `serve` and `worker` at the restored copy to switch.
-`down` stops the stack; `down -v` also deletes the database and image volumes.
+`restore` refuses a database that is not empty, so a running `serve` (which migrates on start)
+must not come up first. `down` stops the stack and keeps the volumes.
 
 ### Upgrades
 
 ```sh
-$C run --rm --no-deps --entrypoint pratibimba backup backup /backups     # back up first
-git pull && $C build && $C up -d
+docker compose run --rm --no-deps --entrypoint pratibimba backup backup /backups   # back up first
+git pull && docker compose build && docker compose up -d
 ```
 
 Migrations run when `serve` or `worker` starts, under a lock, so replicas starting together
