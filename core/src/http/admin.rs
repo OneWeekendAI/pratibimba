@@ -106,7 +106,18 @@ struct Login {
     token: String,
 }
 
-async fn login(State(state): State<Arc<AppState>>, Json(body): Json<Login>) -> Response {
+/// `; Secure` when the request reached the proxy over HTTPS (`X-Forwarded-Proto: https`), so the
+/// session cookie is never sent back over plain HTTP. A direct `http://localhost` login gets none.
+fn secure_attr(headers: &HeaderMap) -> &'static str {
+    let https = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"));
+    if https { "; Secure" } else { "" }
+}
+
+async fn login(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<Login>) -> Response {
     let Some(expected) = state.admin_token.as_deref() else {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "the dashboard API is off: set PRB_ADMIN_TOKEN to turn it on" })))
             .into_response();
@@ -115,12 +126,12 @@ async fn login(State(state): State<Arc<AppState>>, Json(body): Json<Login>) -> R
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "wrong token" }))).into_response();
     }
     // SameSite=Strict: no other site can make the browser send it, so no CSRF token is needed.
-    let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000", body.token);
+    let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000{}", body.token, secure_attr(&headers));
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
 }
 
-async fn logout() -> Response {
-    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, format!("{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"))]).into_response()
+async fn logout(headers: HeaderMap) -> Response {
+    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, format!("{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}", secure_attr(&headers)))]).into_response()
 }
 
 #[derive(Deserialize)]

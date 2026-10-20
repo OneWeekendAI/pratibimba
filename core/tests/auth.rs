@@ -42,6 +42,27 @@ async fn api_accepts_session_cookie(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn session_cookie_is_secure_only_behind_https(pool: PgPool) {
+    setup_demo(&pool).await;
+    let app = admin_app(&pool);
+    let login = |proto: Option<&str>| {
+        let mut b = Request::post("/api/session").header("content-type", "application/json");
+        if let Some(p) = proto {
+            b = b.header("x-forwarded-proto", p);
+        }
+        b.body(Body::from(json!({ "token": TOKEN }).to_string())).unwrap()
+    };
+    let cookie = |r: &Resp| r.headers.get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let behind = send(&app, login(Some("https"))).await;
+    assert_eq!(behind.status, StatusCode::NO_CONTENT, "{}", behind.text);
+    assert!(cookie(&behind).ends_with("; Secure"), "{}", cookie(&behind));
+    let plain = send(&app, login(None)).await;
+    assert!(!cookie(&plain).contains("Secure"), "{}", cookie(&plain));
+    let http = send(&app, login(Some("http"))).await;
+    assert!(!cookie(&http).contains("Secure"), "{}", cookie(&http));
+}
+
+#[sqlx::test(migrations = false)]
 async fn session_refuses_a_wrong_token(pool: PgPool) {
     setup_demo(&pool).await;
     let r = post(&admin_app(&pool), "/api/session", json!({ "token": "nope" })).await;
