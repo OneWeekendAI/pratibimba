@@ -360,9 +360,8 @@ Every SDK takes your Core URL; see [Install on your site](#install-on-your-site)
 | Any origin behind a Worker (Cloudflare, Deno Deploy, Vercel Edge) | `@pratibimba/edge` | `createEdge({ core, site })` |
 | Anything else, static HTML included | script tag | the `/_prb/*` proxy above; or `src="https://core.example.com/sdk.js"` plus `PRB_SITE_ORIGIN` |
 
-The TypeScript packages will be published to npm as `@pratibimba/next`, `@pratibimba/edge`,
-`@pratibimba/client` and `@pratibimba/agent`; until then see
-[Package status](#package-status). The script tag needs no package: Core serves it.
+Install from npm: `npm i @pratibimba/next`, `npm i @pratibimba/edge`; see
+[Packages](#packages). The script tag needs no package: Core serves it.
 
 ### Configuration
 
@@ -608,14 +607,18 @@ Then mint a per-site MCP token in the dashboard and point your agent at `POST /m
 Core. The agent reads results and drafts variants in real components; a human still has to
 approve every draft before it is served.
 
-### Package status
+### Packages
 
-The TypeScript packages (`@pratibimba/next`, `@pratibimba/edge`, `@pratibimba/client`,
-`@pratibimba/agent`) are **not yet published to npm**; they will be, under those names. The examples in this repo depend on
-them with `file:` paths and need `install-links=true` in `.npmrc` (Turbopack does not resolve
-a symlinked package outside the app). To consume them in your own project today, build from
-this repo and copy `packages/<name>/dist` into your tree, or point your `package.json` at a
-Git ref.
+```sh
+npm i @pratibimba/next      # Next.js 16
+npm i @pratibimba/edge      # Cloudflare Workers, Deno Deploy, Vercel Edge, Node
+npm i @pratibimba/client    # the script-tag fallback, to self-host a pinned copy
+npx @pratibimba/agent install
+```
+
+The examples in this repo depend on the packages with `file:` paths, so they run against the
+working tree, and need `install-links=true` in `.npmrc` (Turbopack does not resolve a
+symlinked package outside the app).
 
 ## Repo layout
 

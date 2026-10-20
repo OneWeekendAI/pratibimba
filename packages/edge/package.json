@@ -3,8 +3,30 @@
   "version": "0.1.0",
   "description": "Pratibimba at the edge: rewrite marked slots in your origin's HTML as it streams, before the browser sees a byte",
   "license": "MIT",
+  "homepage": "https://github.com/OneWeekendAI/pratibimba/tree/main/packages/edge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OneWeekendAI/pratibimba.git",
+    "directory": "packages/edge"
+  },
+  "bugs": {
+    "url": "https://github.com/OneWeekendAI/pratibimba/issues"
+  },
+  "keywords": [
+    "pratibimba",
+    "personalization",
+    "ab-testing",
+    "experimentation",
+    "bandit",
+    "edge",
+    "cloudflare-workers",
+    "deno",
+    "vercel-edge",
+    "html-rewriter"
+  ],
   "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -14,17 +36,25 @@
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter=spec test/*.test.ts",
-    "e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.e2e.ts"
+    "e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.e2e.ts",
+    "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

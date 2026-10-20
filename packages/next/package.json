@@ -3,8 +3,29 @@
   "version": "0.1.0",
   "description": "Pratibimba for Next.js: decide during SSR, so the first byte already carries the variant",
   "license": "MIT",
+  "homepage": "https://github.com/OneWeekendAI/pratibimba/tree/main/packages/next#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OneWeekendAI/pratibimba.git",
+    "directory": "packages/next"
+  },
+  "bugs": {
+    "url": "https://github.com/OneWeekendAI/pratibimba/issues"
+  },
+  "keywords": [
+    "pratibimba",
+    "personalization",
+    "ab-testing",
+    "experimentation",
+    "bandit",
+    "nextjs",
+    "react",
+    "ssr",
+    "server-components"
+  ],
   "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -14,22 +35,33 @@
     "./beacon": {
       "types": "./dist/beacon.d.ts",
       "default": "./dist/beacon.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "sideEffects": false,
+  "engines": {
+    "node": ">=20.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter=spec test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "tsc -p tsconfig.json",
-    "e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.e2e.ts"
+    "e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.e2e.ts",
+    "prepublishOnly": "npm run build && npm test"
   },
   "peerDependencies": {
     "next": ">=16",
     "react": ">=19"
+  },
+  "dependencies": {
+    "undici": "^7.30.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
@@ -40,8 +72,5 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "undici": "^7.30.0"
   }
 }

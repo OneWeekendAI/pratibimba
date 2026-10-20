@@ -1,11 +1,48 @@
 {
   "name": "@pratibimba/client",
   "version": "0.1.0",
-  "private": true,
   "description": "Pratibimba script-tag fallback: hides only the slots, decides, swaps, reveals within a hard timeout",
   "license": "MIT",
+  "homepage": "https://github.com/OneWeekendAI/pratibimba/tree/main/packages/client#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OneWeekendAI/pratibimba.git",
+    "directory": "packages/client"
+  },
+  "bugs": {
+    "url": "https://github.com/OneWeekendAI/pratibimba/issues"
+  },
+  "keywords": [
+    "pratibimba",
+    "personalization",
+    "ab-testing",
+    "experimentation",
+    "bandit",
+    "script-tag",
+    "browser",
+    "flicker-free"
+  ],
+  "main": "./sdk.js",
+  "browser": "./sdk.js",
+  "unpkg": "./sdk.js",
+  "jsdelivr": "./sdk.js",
+  "exports": {
+    ".": "./sdk.js",
+    "./sdk.js": "./sdk.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "sdk.js"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "test": "node --test --test-reporter=tap test/*.test.mjs"
+    "test": "node --test --test-reporter=tap test/*.test.mjs",
+    "prepublishOnly": "npm test"
   },
   "devDependencies": {
     "jsdom": "^27.0.0"
