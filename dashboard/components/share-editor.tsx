@@ -37,6 +37,7 @@ export function ShareEditor({ site, slot, v }: { site: string; slot: string; v: 
         <span className="tabular font-semibold">{share}%</span>
       </div>
       <ShareSlider value={share} onChange={setShare} label={`new traffic share for ${v.key}`} />
+      <p className="text-[11px] text-muted" data-testid="share-rule">Re-applying the site file keeps your value until the file's own value changes.</p>
       {error && <p role="alert" className="text-[11.5px] text-pause-ink">{error}</p>}
       <div className="flex items-center gap-2">
         <Button onClick={() => save.mutate()} disabled={!actor.trim() || save.isPending}>Save {share}%</Button>

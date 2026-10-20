@@ -42,6 +42,17 @@ function CopyFields({ payload, fields }: { payload: string | null; fields: SlotD
   );
 }
 
+/** S9: the planned share and where it came from, e.g. "planned share 20% · edited by Ritwik". */
+function plannedShare(v: VariantRow) {
+  const p = (x: number) => `${Math.round(x * 100)}%`;
+  let from = '';
+  if (v.share_source === 'file') from = ' · site file';
+  else if (v.share_source === 'edited') from = ` · edited by ${v.share_set_by}`;
+  else if (v.share_source === 'approval') from = ` · set at approval by ${v.share_set_by}`;
+  const file = v.share_source !== 'file' && v.file_share != null && v.file_share !== v.traffic_share ? ` (file says ${p(v.file_share)})` : '';
+  return `planned share ${p(v.traffic_share!)}${from}${file}`;
+}
+
 function VariantCard({ v, index, champion, site, slot, fields }: { v: VariantRow; index: number; champion: boolean; site: string; slot: string; fields: SlotDetail['fields'] }) {
   const [tone, label] = STATUS[v.status];
   return (
@@ -66,8 +77,10 @@ function VariantCard({ v, index, champion, site, slot, fields }: { v: VariantRow
         <div className="mt-1 text-[11px] text-muted tabular">
           {int(v.counts.n)} closed · {credited(v.counts.credit ?? v.counts.conversions)} converted
           {(v.pending?.decisions ?? 0) > 0 && ` · ${int(v.pending!.decisions)} in window`}
-          {v.traffic_share !== null && ` · planned share ${Math.round(v.traffic_share * 100)}%`}
         </div>
+        {v.traffic_share !== null && (
+          <div className="mt-1 text-[11px] text-muted tabular" data-testid="planned-share">{plannedShare(v)}</div>
+        )}
         {!v.is_baseline && (v.status === 'approved' || v.status === 'paused') && <ShareEditor site={site} slot={slot} v={v} />}
         {v.pause_reason && (
           <div className="mt-2 rounded-md bg-surface-2 p-2 text-[11.5px] leading-snug text-ink-2" data-testid="death-certificate">

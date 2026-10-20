@@ -1,6 +1,10 @@
 // The dashboard, driven in Chromium against real Core and a seeded history. One test per
 // behaviour; the gate tests run last because they change data.
 import { test, expect, request as pwRequest, type Page } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const CORE = 'http://127.0.0.1:18083';
 const TOKEN = 'dash-admin-token';
@@ -754,7 +758,7 @@ test('a_live_variants_share_is_changed_on_its_card', async ({ page }) => {
   for (let i = 0; i < 19; i++) await page.keyboard.press('ArrowRight');
   await card.getByRole('button', { name: 'Save 20%' }).click();
   await expect.poll(async () => Math.round((await giftShare()) * 100)).toBe(20);
-  await expect(card).toContainText('planned share 20%');
+  await expect(card.getByTestId('planned-share')).toHaveText('planned share 20% · edited by Ritwik');
   const a = await api('/sites/shop/approvals');
   expect(a.recent[0]).toMatchObject({ action: 'share', actor: 'Ritwik', variant: 'gift' });
 });
@@ -774,6 +778,24 @@ test('an_agents_share_proposal_is_accepted_in_approvals', async ({ page }) => {
   await row.getByRole('button', { name: 'Accept' }).click();
   await expect.poll(async () => Math.round((await giftShare()) * 100)).toBe(35);
   await expect(row).toHaveCount(0);
+});
+
+// S9: a share the site file set says so, and the editor states the re-apply rule. Re-applies
+// shop's file (which approves every listed variant again), so it runs after the shop tests.
+test('a_share_from_the_site_file_says_so_on_its_card', async ({ page }) => {
+  const file = JSON.parse(readFileSync(path.join(import.meta.dirname, 'site.json'), 'utf8'));
+  file.slots[0].variants.find((v: any) => v.key === 'gift').traffic_share = 0.4;
+  const tmp = path.join(mkdtempSync(path.join(tmpdir(), 'prb-s9-')), 'site.json');
+  writeFileSync(tmp, JSON.stringify(file));
+  execFileSync(path.resolve(import.meta.dirname, '../../target/debug/pratibimba'), ['apply', tmp], {
+    env: { ...process.env, PRB_DB: 'postgres://postgres@localhost:55440/prb_dash_e2e', RUST_LOG: 'warn' }, stdio: 'pipe',
+  });
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  const card = page.getByTestId('variant-gift');
+  await expect(card.getByTestId('planned-share')).toHaveText('planned share 40% · site file');
+  await card.getByRole('button', { name: 'Change share' }).click();
+  await expect(card.getByTestId('share-rule')).toHaveText("Re-applying the site file keeps your value until the file's own value changes.");
 });
 
 test('sorted_slot_shows_a_row_per_item', async ({ page }) => {

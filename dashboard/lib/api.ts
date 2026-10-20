@@ -113,6 +113,12 @@ export interface VariantRow {
   status: 'draft' | 'approved' | 'paused' | 'rejected' | 'retired';
   is_baseline: boolean;
   traffic_share: number | null;
+  /** S9: where the share came from (null without one): the site file, a person's later edit, or approval. */
+  share_source?: 'file' | 'edited' | 'approval' | null;
+  /** Who set it, for an edit or an approval. */
+  share_set_by?: string | null;
+  /** The share the site file stated at its last apply, if it stated one. */
+  file_share?: number | null;
   /** The audience that gates this variant, or null for everyone. */
   audience?: number | null;
   counts: Counts;

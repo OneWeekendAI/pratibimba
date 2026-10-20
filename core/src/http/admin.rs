@@ -273,6 +273,20 @@ async fn site_results(State(state): State<Arc<AppState>>, Path(site): Path<Strin
     })))
 }
 
+/// Where a variant's current share came from: "file" (the site file), "edited" (a person changed
+/// it after approval) or "approval" (set when a person approved it), with who; None without one.
+fn share_source(share: Option<f32>, file_share: Option<f32>, last: Option<String>, approver: Option<String>) -> (Option<&'static str>, Option<String>) {
+    if share.is_none() {
+        return (None, None);
+    }
+    match last {
+        Some(a) if a == crate::site_file::APPROVER => (Some("file"), None),
+        Some(a) => (Some("edited"), Some(a)),
+        None if file_share.is_some() => (Some("file"), None),
+        None => (Some("approval"), approver),
+    }
+}
+
 async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Path<(String, String)>) -> Result<Json<Value>, ApiError> {
     let now = Utc::now();
     let row: Option<(i64, String, String, i32, i32, i64, String, Option<Value>)> = sqlx::query_as(
@@ -293,6 +307,21 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
             .bind(slot_id)
             .fetch_all(&state.pool)
             .await?;
+    // S9: where each variant's share came from. The latest 'share' row says who last set it (the
+    // site file audits its own changes as cli:apply); with none, a file-stated share is the file's
+    // and any other was set by the person who approved it.
+    #[allow(clippy::type_complexity)]
+    let shares: HashMap<i64, (Option<f32>, Option<String>)> = sqlx::query_as::<_, (i64, Option<f32>, Option<String>)>(
+        "SELECT v.id, v.file_share,
+                (SELECT a.actor FROM approvals a WHERE a.variant_id = v.id AND a.action = 'share' ORDER BY a.id DESC LIMIT 1)
+           FROM variants v WHERE v.slot_id = $1",
+    )
+    .bind(slot_id)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|(id, f, last)| (id, (f, last)))
+    .collect();
     // Which audience gates each variant, and the site's promoted audiences an owner can pick from.
     let gates: HashMap<i64, i64> =
         sqlx::query_as::<_, (i64, i64)>("SELECT id, audience_id FROM variants WHERE slot_id = $1 AND audience_id IS NOT NULL")
@@ -326,6 +355,13 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
                 o.insert("pause_reason".into(), json!(reason));
                 o.insert("created_at".into(), json!(created));
             }
+            let (file_share, last) = shares.get(&v.id).cloned().unwrap_or_default();
+            let approver = e.and_then(|e| e.3.clone());
+            let (source, by) = share_source(v.traffic_share, file_share, last, approver);
+            let o = j.as_object_mut().unwrap();
+            o.insert("file_share".into(), json!(file_share));
+            o.insert("share_source".into(), json!(source));
+            o.insert("share_set_by".into(), json!(by));
             j.as_object_mut().unwrap().insert("audience".into(), json!(gates.get(&v.id)));
             j
         })

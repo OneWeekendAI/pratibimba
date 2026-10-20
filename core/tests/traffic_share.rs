@@ -541,3 +541,75 @@ async fn a_share_the_file_changes_sends_a_webhook_and_an_unchanged_file_does_not
     assert_eq!(e[0]["data"]["changed_by"], "cli:apply");
     assert_eq!(e[0]["data"]["traffic_share"].as_f64().map(|v| v as f32), Some(0.3));
 }
+
+// ---- where the share came from (S9) ----------------------------------------------------------
+//
+// The slot view tells an owner whether a variant's share is the site file's or a person's:
+// `share_source` is "file", "edited" or "approval" (null when there is no share), with
+// `share_set_by` naming who and `file_share` the value the file stated at the last apply.
+
+async fn card(app: &Router, key: &str) -> Value {
+    let r = api_get(app, "/api/sites/demo/slots/hero").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    r.json()["variants"].as_array().unwrap().iter().find(|v| v["key"] == key).cloned().unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_share_from_the_site_file_says_so(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    let g = card(&app, "gift").await;
+    assert_eq!(g["share_source"], json!("file"));
+    assert_eq!(g["file_share"].as_f64().map(|f| (f * 100.0).round()), Some(30.0));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_new_variants_file_share_says_file(pool: PgPool) {
+    pratibimba::db::migrate(&pool).await.unwrap();
+    apply(&pool, &demo_with_share(Some(0.25))).await;
+    assert_eq!(card(&admin_app(&pool), "gift").await["share_source"], json!("file"));
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_edited_share_says_who_and_keeps_the_files_value(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.2 })).await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    let g = card(&app, "gift").await;
+    assert_eq!(g["share_source"], json!("edited"));
+    assert_eq!(g["share_set_by"], json!("owner"));
+    assert_eq!(g["file_share"].as_f64().map(|f| (f * 100.0).round()), Some(30.0));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_changed_file_share_is_the_files_again(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    let gift = variant_id(&pool, "gift").await;
+    apply(&pool, &demo_with_share(Some(0.3))).await;
+    edit(&app, gift, json!({ "actor": "owner", "traffic_share": 0.2 })).await;
+    apply(&pool, &demo_with_share(Some(0.4))).await;
+    assert_eq!(card(&app, "gift").await["share_source"], json!("file"));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_share_set_at_approval_says_approval(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    insert_variant(&pool, "fresh", "draft").await;
+    let id = variant_id(&pool, "fresh").await;
+    let r = api_post(&app, &format!("/api/variants/{id}/approve"), json!({ "approver": "ann", "traffic_share": 0.1 })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let f = card(&app, "fresh").await;
+    assert_eq!(f["share_source"], json!("approval"));
+    assert_eq!(f["share_set_by"], json!("ann"));
+    assert_eq!(f["file_share"], Value::Null);
+}
+
+#[sqlx::test(migrations = false)]
+async fn no_share_has_no_source(pool: PgPool) {
+    let (app, _) = setup(&pool).await;
+    let g = card(&app, "gift").await;
+    assert_eq!(g["traffic_share"], Value::Null);
+    assert_eq!(g["share_source"], Value::Null);
+}
