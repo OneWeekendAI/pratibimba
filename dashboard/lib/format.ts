@@ -14,6 +14,11 @@ export function int(n: number) {
   return n.toLocaleString('en-US');
 }
 
+/** Decisions whose attribution window is still open: real traffic, not yet in any rate (S8). */
+export function inWindow(n: number) {
+  return `${int(n)} ${n === 1 ? 'decision' : 'decisions'} still in their window`;
+}
+
 export function compact(n: number) {
   return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 }

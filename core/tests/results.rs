@@ -82,3 +82,40 @@ async fn results_say_how_many_lessons_the_model_has(pool: PgPool) {
     assert_eq!(s["lessons"], 1, "{s}");
     assert_eq!(s["learned"], true, "{s}");
 }
+
+/// Decisions whose window is still open are not counted, but they are reported as pending, so
+/// the first half hour after real traffic does not read as no traffic at all.
+#[sqlx::test(migrations = false)]
+async fn results_report_decisions_still_in_their_window(pool: PgPool) {
+    setup_demo(&pool).await;
+    seed_decisions(&pool, "gift", false, 100, 10, 60).await; // closed
+    seed_decisions(&pool, "gift", false, 50, 50, 5).await; // open, all converted already
+    seed_decisions(&pool, "baseline", true, 20, 2, 5).await; // open, holdout
+    seed_decisions(&pool, "baseline", false, 10, 0, 5).await; // open, never shown yet
+    sqlx::query("UPDATE decisions SET exposed_at = NULL WHERE subject LIKE 'seed-baseline-false-%'").execute(&pool).await.unwrap();
+    let s = serde_json::to_value(hero(&pool).await).unwrap();
+    assert_eq!(s["treated"]["n"], 100, "pending decisions leaked into the counted ones: {s}");
+    assert_eq!(s["pending"], serde_json::json!({ "decisions": 80, "exposures": 70, "conversions": 52 }), "{s}");
+    let v = |k: &str| s["variants"].as_array().unwrap().iter().find(|v| v["key"] == k).unwrap()["pending"].clone();
+    assert_eq!(v("gift"), serde_json::json!({ "decisions": 50, "exposures": 50, "conversions": 50 }), "{s}");
+    // Per variant is treated only, like the counts beside it.
+    assert_eq!(v("baseline"), serde_json::json!({ "decisions": 10, "exposures": 0, "conversions": 0 }), "{s}");
+    let site = serde_json::to_value(results::site(&pool, "demo", results::ALL_TIME, Utc::now()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(site["pending"]["decisions"], 80, "{site}");
+}
+
+/// A closed window is never pending, and pending honours the period like the counts do.
+#[sqlx::test(migrations = false)]
+async fn pending_excludes_closed_windows_and_older_decisions(pool: PgPool) {
+    setup_demo(&pool).await;
+    seed_decisions(&pool, "gift", false, 100, 10, 60).await;
+    let s = serde_json::to_value(hero(&pool).await).unwrap();
+    assert_eq!(s["pending"]["decisions"], 0, "{s}");
+    seed_decisions(&pool, "baseline", false, 7, 1, 20).await;
+    let now = Utc::now();
+    let r = results::site(&pool, "demo", now - chrono::Duration::minutes(10), now).await.unwrap().unwrap();
+    let s = serde_json::to_value(r.slots.into_iter().find(|s| s.key == "hero").unwrap()).unwrap();
+    assert_eq!(s["pending"]["decisions"], 0, "a decision before the period was counted as pending: {s}");
+    let s = serde_json::to_value(hero(&pool).await).unwrap();
+    assert_eq!(s["pending"]["decisions"], 7, "{s}");
+}

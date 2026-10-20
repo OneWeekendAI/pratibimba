@@ -338,6 +338,8 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
         "fields": copy_spec.as_ref().map(|s| s["fields"].clone()),
         "attribution_window_secs": window, "decision_ttl_secs": ttl, "model_version": version,
         "treated": sr.treated, "holdout": sr.holdout, "lift": sr.lift, "champion": champion,
+        // Decisions still in their window: not in the counts above yet (S8).
+        "pending": sr.pending,
         "variants": variants, "curve": results::curve(&state.pool, slot_id, now).await?,
         "audiences": audiences, "items": sr.items,
     })))

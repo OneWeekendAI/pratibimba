@@ -12,7 +12,7 @@ import { ShareEditor } from '@/components/share-editor';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
 import { api, type DecisionRow, type ItemRow, type SlotDetail, type VariantRow } from '@/lib/api';
-import { ago, int, pct, pp, seriesVar, shortId, when } from '@/lib/format';
+import { ago, inWindow, int, pct, pp, seriesVar, shortId, when } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
 const STATUS: Record<VariantRow['status'], [ChipTone, string]> = {
@@ -65,6 +65,7 @@ function VariantCard({ v, index, champion, site, slot, fields }: { v: VariantRow
         <div className="mt-2"><LiftPill lift={v.lift} small /></div>
         <div className="mt-1 text-[11px] text-muted tabular">
           {int(v.counts.n)} closed · {credited(v.counts.credit ?? v.counts.conversions)} converted
+          {(v.pending?.decisions ?? 0) > 0 && ` · ${int(v.pending!.decisions)} in window`}
           {v.traffic_share !== null && ` · planned share ${Math.round(v.traffic_share * 100)}%`}
         </div>
         {!v.is_baseline && (v.status === 'approved' || v.status === 'paused') && <ShareEditor site={site} slot={slot} v={v} />}
@@ -237,6 +238,9 @@ function Workbench() {
           <div>Sticky for {s.decision_ttl_secs} s per visitor</div>
           <div>Model version <span className="font-mono text-ink">v{s.model_version}</span></div>
           <div className="tabular">Policy {int(s.treated.n)} · holdout {int(s.holdout.n)} closed decisions</div>
+          {(s.pending?.decisions ?? 0) > 0 && (
+            <div className="tabular" data-testid="slot-pending">{inWindow(s.pending!.decisions)}, counted when it closes</div>
+          )}
         </Card>
       </aside>
     </div>

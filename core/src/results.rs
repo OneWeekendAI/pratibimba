@@ -9,6 +9,10 @@
 //! slice of visitors. A per-variant number is not: the bandit chose who saw the variant by
 //! context. The dashboard labels per-variant lift as descriptive.
 //!
+//! Decisions still inside an open window are reported beside the counts as [`Pending`], never
+//! inside them: for the first window after real traffic every count is zero, and without this an
+//! agent or owner could not tell an idle site from a busy one whose windows have not closed.
+//!
 //! Each group also carries the revenue credited to its decisions (F1, [`crate::commerce`]) and
 //! revenue per visitor (per closed exposed decision) with its sequence ([`stats::mean_cs`]), and
 //! each slot and variant its revenue lift against the holdout.
@@ -80,6 +84,27 @@ const CREDIT: &str = "coalesce(sum(CASE WHEN d.outcome = 1 THEN coalesce(d.credi
 /// A group's revenue and its sum of squares (per decision).
 const REVENUE: &str = "coalesce(sum(d.revenue), 0)::float8, coalesce(sum(d.revenue * d.revenue), 0)::float8";
 
+/// Decisions created in the period whose attribution window is still open: not counted in any
+/// rate or lift yet. A conversion is known at once, so `conversions` can already be non-zero; a
+/// miss is not known until the window closes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Pending {
+    /// Every decision in an open window, shown or not.
+    pub decisions: u64,
+    /// Those the visitor has been shown (the ones that will count when the window closes).
+    pub exposures: u64,
+    /// Exposed decisions that took any share of a conversion so far.
+    pub conversions: u64,
+}
+
+impl Pending {
+    fn add(&mut self, o: Pending) {
+        self.decisions += o.decisions;
+        self.exposures += o.exposures;
+        self.conversions += o.conversions;
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct VariantResult {
     pub id: i64,
@@ -95,6 +120,8 @@ pub struct VariantResult {
     pub lift: Option<Interval>,
     /// This variant's revenue per visitor against the holdout's. Descriptive, not causal.
     pub revenue_lift: Option<Interval>,
+    /// Treated decisions that showed this variant and are still in their window.
+    pub pending: Pending,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -119,6 +146,8 @@ pub struct SlotResult {
     pub lessons: u64,
     /// `lessons > 0`. While `false` the model has learned nothing and still holds its prior.
     pub learned: bool,
+    /// Decisions on this slot (treated and holdout) still in their window.
+    pub pending: Pending,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -134,6 +163,8 @@ pub struct SiteResult {
     pub currency: String,
     /// Orders in the period in another currency: stored, not summed.
     pub other_currency_orders: u64,
+    /// Decisions on the site still in their window.
+    pub pending: Pending,
     pub slots: Vec<SlotResult>,
 }
 
@@ -149,6 +180,28 @@ async fn counts(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime<U
             AND d.created_at + make_interval(secs => s.attribution_window_secs) < $3
           GROUP BY 1, 2, 3"
     ))
+    .bind(site)
+    .bind(since)
+    .bind(now)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// One row per (slot, variant, holdout flag): decisions created in `[since, now)` whose window is
+/// still open at `now`, with how many were exposed and how many of those took a conversion.
+type PendingRow = (i64, i64, bool, i64, i64, i64);
+
+async fn pending(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime<Utc>) -> Result<Vec<PendingRow>> {
+    Ok(sqlx::query_as(
+        "SELECT d.slot_id, d.variant_id, d.in_holdout, count(*),
+                count(*) FILTER (WHERE d.exposed_at IS NOT NULL),
+                count(*) FILTER (WHERE d.exposed_at IS NOT NULL AND d.outcome = 1)
+           FROM decisions d JOIN slots s ON s.id = d.slot_id
+          WHERE d.site_id = $1
+            AND d.created_at >= $2 AND d.created_at < $3
+            AND d.created_at + make_interval(secs => s.attribution_window_secs) >= $3
+          GROUP BY 1, 2, 3",
+    )
     .bind(site)
     .bind(since)
     .bind(now)
@@ -187,6 +240,16 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
     .fetch_all(pool)
     .await?;
     let rows = counts(pool, site, since, now).await?;
+    let mut pending_by_variant: BTreeMap<i64, Pending> = BTreeMap::new();
+    let mut pending_by_slot: BTreeMap<i64, Pending> = BTreeMap::new();
+    for (slot, variant, held, n, exposed, converted) in pending(pool, site, since, now).await? {
+        let p = Pending { decisions: n as u64, exposures: exposed as u64, conversions: converted as u64 };
+        pending_by_slot.entry(slot).or_default().add(p);
+        if !held {
+            pending_by_variant.entry(variant).or_default().add(p);
+        }
+    }
+    let mut site_pending = Pending::default();
 
     let mut treated_by_variant: BTreeMap<i64, Counts> = BTreeMap::new();
     let mut by_slot: BTreeMap<i64, (Counts, Counts)> = BTreeMap::new();
@@ -206,6 +269,8 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
         let (treated, holdout) = by_slot.get(&slot_id).copied().unwrap_or_default();
         site_t.merge(treated);
         site_h.merge(holdout);
+        let slot_pending = pending_by_slot.get(&slot_id).copied().unwrap_or_default();
+        site_pending.add(slot_pending);
         let vs = variants
             .iter()
             .filter(|v| v.1 == slot_id)
@@ -221,6 +286,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
                     share: if treated.n > 0 { c.n as f64 / treated.n as f64 } else { 0.0 },
                     lift: stats::lift_cs_credit(c.pair(), holdout.pair(), ALPHA),
                     revenue_lift: stats::mean_lift_cs(c.money(), holdout.money(), ALPHA),
+                    pending: pending_by_variant.get(id).copied().unwrap_or_default(),
                 }
             })
             .collect();
@@ -237,6 +303,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
             items: if kind == "sorted" { crate::sorted::item_results(pool, slot_id, since, now).await? } else { None },
             lessons: lessons.max(0) as u64,
             learned: lessons > 0,
+            pending: slot_pending,
         });
     }
     Ok(Some(SiteResult {
@@ -249,6 +316,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
         revenue_lift: stats::mean_lift_cs(site_t.money(), site_h.money(), ALPHA),
         currency,
         other_currency_orders: other_currency_orders as u64,
+        pending: site_pending,
         slots: out,
     }))
 }

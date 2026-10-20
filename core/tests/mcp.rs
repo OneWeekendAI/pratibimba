@@ -521,3 +521,31 @@ async fn list_audiences_shows_status_and_the_variants_each_gates(pool: PgPool) {
     assert_eq!(a["predicate"], json!({ "returning": true }));
     assert_eq!(a["gates"], json!([{ "slot": "hero", "variant": "gift" }]));
 }
+
+/// An agent reading results in the first half hour can tell traffic exists: pending counts per
+/// slot and per variant, a note in the text, and a description that says what they are.
+#[sqlx::test(migrations = false)]
+async fn get_results_reports_decisions_still_in_their_window(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    seed_decisions(&pool, "gift", false, 9, 2, 5).await;
+    let r = data(&call(&app, &t, "get_results", why(json!({ "slot": "hero" }))).await);
+    let hero = &r["slots"][0];
+    assert_eq!(hero["treated"]["n"], 0, "{r}");
+    assert_eq!(hero["pending"]["decisions"], 9, "{r}");
+    let gift = hero["variants"].as_array().unwrap().iter().find(|v| v["key"] == "gift").unwrap().clone();
+    assert_eq!(gift["pending"]["conversions"], 2, "{gift}");
+    let note = r["note"].as_str().unwrap_or_default();
+    assert!(note.contains("hero: 9 decisions still in their attribution window"), "{r}");
+    let list = rpc(&app, Some(&t), json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).await.json();
+    let d = list["result"]["tools"].as_array().unwrap().iter().find(|x| x["name"] == "get_results").unwrap()["description"].as_str().unwrap().to_string();
+    assert!(d.contains("`pending`"), "{d}");
+}
+
+/// With nothing in an open window there is no note to read past.
+#[sqlx::test(migrations = false)]
+async fn get_results_has_no_note_when_nothing_is_pending(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    seed_decisions(&pool, "gift", false, 9, 2, 60).await;
+    let r = data(&call(&app, &t, "get_results", why(json!({}))).await);
+    assert!(r.get("note").is_none(), "{r}");
+}

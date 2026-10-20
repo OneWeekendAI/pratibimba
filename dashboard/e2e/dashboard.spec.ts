@@ -152,6 +152,21 @@ test('counterfactual_before_any_lesson_says_nothing_was_learned', async ({ page 
   await expect(page.getByTestId('counterfactual')).not.toContainText('%');
 });
 
+test('results_and_slot_say_how_many_decisions_are_still_in_their_window', async ({ page }) => {
+  await signIn(page);
+  // Fresh decisions: their windows are open, so they are pending, not counted.
+  for (let i = 0; i < 3; i++) {
+    await (await pwRequest.newContext()).post(`${CORE}/decide`, { data: { site: 'shop', slot: 'hero', subject: `pending-${Date.now()}-${i}` } });
+  }
+  const r = await api('/sites/shop/results');
+  const n = r.results.slots.find((s: any) => s.key === 'hero').pending.decisions;
+  expect(n).toBeGreaterThanOrEqual(3);
+  await page.goto('/app/results/?site=shop');
+  await expect(page.getByTestId('pending-hero')).toContainText(`${n.toLocaleString('en-US')} decisions still in their window`);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await expect(page.getByTestId('slot-pending')).toContainText(`${n.toLocaleString('en-US')} decisions still in their window`);
+});
+
 test('results_headline_matches_the_api', async ({ page }) => {
   await signIn(page);
   await page.goto('/app/results/?site=shop');

@@ -211,7 +211,7 @@ fn catalogue() -> Vec<Value> {
         tool("list_slots", "Every slot: selector, success metric, current champion and variant counts by status.", json!({}), &[]),
         tool("list_variants", "A slot's variants (any status) with their HTML, approval details and the reviewer comment thread.",
              json!({ "slot": slot }), &["slot"]),
-        tool("get_results", "Per-slot and per-variant results over closed attribution windows: conversion rate and revenue per visitor (each with a 95% always-valid interval), lift and revenue lift against the holdout, the slot's goal (conversion or revenue), the site's currency, and each slot's `lessons` (observations its model has absorbed) with `learned`: while `learned` is false nothing has been learned and the model still holds its prior. Revenue comes from purchase events with a value; each slot gets its attributor's share of every order in its window.",
+        tool("get_results", "Per-slot and per-variant results over closed attribution windows: conversion rate and revenue per visitor (each with a 95% always-valid interval), lift and revenue lift against the holdout, the slot's goal (conversion or revenue), the site's currency, and each slot's `lessons` (observations its model has absorbed) with `learned`: while `learned` is false nothing has been learned and the model still holds its prior. Only decisions whose window has closed are counted, so right after traffic starts every `n` can be 0: `pending` (per site, slot and variant; variant is treated only) gives the decisions, exposures and conversions still inside an open window, and `note` names each slot with any. Pending traffic is real but not yet evidence: do not read a rate from it. Revenue comes from purchase events with a value; each slot gets its attributor's share of every order in its window.",
              json!({ "slot": { "type": "string", "description": "Optional: one slot only." },
                      "days": { "type": "integer", "minimum": 1, "description": "Optional: only the last N days (default: all time)." } }), &[]),
         tool("list_decisions", "Recent decisions, newest first.",
@@ -1076,7 +1076,20 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
                     return Err(ApiError::NotFound(format!("unknown slot {slot:?} on site {site:?}")));
                 }
             }
-            Ok(json!(r))
+            let pending: Vec<String> = r
+                .slots
+                .iter()
+                .filter(|s| s.pending.decisions > 0)
+                .map(|s| {
+                    let p = s.pending;
+                    format!("{}: {} decisions still in their attribution window ({} shown, {} converted so far), not counted yet", s.key, p.decisions, p.exposures, p.conversions)
+                })
+                .collect();
+            let mut v = json!(r);
+            if !pending.is_empty() {
+                v["note"] = json!(pending.join("; "));
+            }
+            Ok(v)
         }
         "list_decisions" => {
             let a: DecisionsArgs = parse(args)?;

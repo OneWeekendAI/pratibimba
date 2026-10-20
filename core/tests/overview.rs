@@ -96,3 +96,20 @@ async fn results_endpoint_has_learnings(pool: PgPool) {
     assert_eq!(r["learnings"][0]["sentence"], "gift wins");
     assert!(r["curves"]["hero"].is_array());
 }
+
+/// The slot page and the results page both carry the decisions still in their window.
+#[sqlx::test(migrations = false)]
+async fn slot_detail_and_results_carry_pending(pool: PgPool) {
+    setup_demo(&pool).await;
+    seed_decisions(&pool, "gift", false, 12, 3, 5).await;
+    let app = admin_app(&pool);
+    let s = api_get(&app, "/api/sites/demo/slots/hero").await.json();
+    assert_eq!(s["treated"]["n"], 0, "{s}");
+    assert_eq!(s["pending"]["decisions"], 12, "{s}");
+    assert_eq!(s["pending"]["conversions"], 3, "{s}");
+    let gift = s["variants"].as_array().unwrap().iter().find(|v| v["key"] == "gift").unwrap().clone();
+    assert_eq!(gift["pending"]["exposures"], 12, "{gift}");
+    let r = api_get(&app, "/api/sites/demo/results").await.json();
+    let hero = r["results"]["slots"].as_array().unwrap().iter().find(|s| s["key"] == "hero").unwrap().clone();
+    assert_eq!(hero["pending"]["decisions"], 12, "{hero}");
+}

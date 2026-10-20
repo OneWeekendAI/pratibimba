@@ -59,6 +59,14 @@ export interface Counts {
   conversion_rate?: Interval | null;
   revenue_per_visitor?: Interval | null;
 }
+/** Decisions still inside an open attribution window: not counted in any rate or lift yet (S8). */
+export interface Pending {
+  decisions: number;
+  /** Of those, shown to the visitor. */
+  exposures: number;
+  /** Of the shown, converted so far (a miss is only known when the window closes). */
+  conversions: number;
+}
 export interface Check {
   name: string;
   status: 'pass' | 'warn' | 'fail' | 'not_applicable';
@@ -110,6 +118,8 @@ export interface VariantRow {
   counts: Counts;
   share: number;
   lift: Interval | null;
+  /** Treated decisions showing this variant still in their window. */
+  pending?: Pending;
   payload: string | null;
   author: string;
   approved_by: string | null;
@@ -144,6 +154,8 @@ export interface SlotDetail {
   treated: Counts;
   holdout: Counts;
   lift: Interval | null;
+  /** Decisions on the slot still in their window. */
+  pending?: Pending;
   champion: string | null;
   variants: VariantRow[];
   curve: CurvePoint[];
@@ -237,6 +249,8 @@ export interface SlotResult {
   /** Observations the slot's model has absorbed; `learned` false means it still holds its prior. */
   lessons?: number;
   learned?: boolean;
+  /** Decisions on the slot (treated and holdout) still in their window. */
+  pending?: Pending;
 }
 export interface Results {
   results: {
@@ -247,6 +261,7 @@ export interface Results {
     holdout: Counts;
     lift: Interval | null;
     currency?: string;
+    pending?: Pending;
     slots: SlotResult[];
   };
   curves: Record<string, CurvePoint[]>;

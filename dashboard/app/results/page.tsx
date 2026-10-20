@@ -7,7 +7,7 @@ import { LiftCurve, LiftPill } from '@/components/charts';
 import { Shell } from '@/components/shell';
 import { Card, Chip, Empty, Loading, Prose, SectionTitle } from '@/components/ui';
 import { api, type Results } from '@/lib/api';
-import { ago, compact, int, pp } from '@/lib/format';
+import { ago, compact, inWindow, int, pp } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
 function money(i: { estimate: number } | null | undefined, currency = 'USD') {
@@ -32,6 +32,7 @@ function View() {
           {headline
             ? <>conversion vs holdout, 95% confidence sequence {pp(headline.lo)} to {pp(headline.hi)}, over {compact(r.treated.n + r.holdout.n)} closed decisions ({compact(decisions_total)} in all). {headline.lo > 0 ? 'Personalisation is beating showing everyone the baseline.' : headline.hi < 0 ? 'Personalisation is losing to the baseline.' : 'Not yet distinguishable from the baseline; the band narrows as windows close.'}</>
             : 'No attribution window has closed yet.'}
+          {(r.pending?.decisions ?? 0) > 0 && <> {inWindow(r.pending!.decisions)}.</>}
         </p>
         <p className="mt-2 text-xs text-muted">A confidence sequence stays valid however often you look, so this number is as honest at 3 pm as at 9 am.</p>
       </Card>
@@ -49,6 +50,11 @@ function View() {
                   <span className="text-xs text-muted tabular">{int(s.treated.n)} policy · {int(s.holdout.n)} holdout</span>
                 </div>
                 <div className="mb-3"><LiftPill lift={s.lift} /></div>
+                {(s.pending?.decisions ?? 0) > 0 && (
+                  <p className="mb-3 text-xs text-ink-2 tabular" data-testid={`pending-${s.key}`}>
+                    {inWindow(s.pending!.decisions)} ({int(s.pending!.exposures)} shown, {int(s.pending!.conversions)} converted so far), counted when it closes
+                  </p>
+                )}
                 {(s.treated.revenue ?? 0) + (s.holdout.revenue ?? 0) > 0 && (
                   <p className="mb-3 text-xs text-ink-2 tabular" data-testid={`revenue-${s.key}`}>
                     Revenue per visitor {money(s.treated.revenue_per_visitor, r.currency)} vs {money(s.holdout.revenue_per_visitor, r.currency)} holdout
