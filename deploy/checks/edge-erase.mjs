@@ -6,11 +6,11 @@
 // non-410 answer after that, and the 410's source (edge KV/PoP hint vs Core). The stored-rows
 // check is separate (rows for the subject must be zero once the queue drains): this prints the
 // subject and the erase time for it.
-// Usage: PRB_ADMIN_TOKEN=... node deploy/edge-erase.mjs <base-url> [site] [slot]
+// Usage: PRB_ADMIN_TOKEN=... node deploy/checks/edge-erase.mjs <base-url> [site] [slot]
 import { randomUUID } from 'node:crypto';
 const [base, site = 'shop', slot = 'hero'] = process.argv.slice(2);
 const token = process.env.PRB_ADMIN_TOKEN;
-if (!base || !token) throw new Error('usage: PRB_ADMIN_TOKEN=... node deploy/edge-erase.mjs <base-url> [site] [slot]');
+if (!base || !token) throw new Error('usage: PRB_ADMIN_TOKEN=... node deploy/checks/edge-erase.mjs <base-url> [site] [slot]');
 const WORKERS = Number(process.env.WORKERS || 6), WARM_S = Number(process.env.WARM_S || 15), AFTER_S = Number(process.env.AFTER_S || 75);
 const tag = `ec4-erase-${Date.now()}`;
 const victim = `${tag}-v0`;

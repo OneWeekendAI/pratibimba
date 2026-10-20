@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "pratibimba": {
-      "url": "https://pratibimbaapi.meetdev.in/mcp",
+      "url": "http://localhost:8080/mcp",
       "headers": {
         "Authorization": "Bearer ${env:PRATIBIMBA_MCP_TOKEN}"
       }

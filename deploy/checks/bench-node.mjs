@@ -1,13 +1,13 @@
 // /decide latency as the Next SDK sees it: Node's fetch with keep-alive, N sequential calls,
 // the first call dropped (it pays the TLS handshake).
-// Usage: node deploy/bench-node.mjs <base-url> [n] [tag]
+// Usage: node deploy/checks/bench-node.mjs <base-url> [n] [tag]
 // Env (EC2): CONSENT=1 sends ctx.consent=true (an identified visitor, which the edge can decide
 // at once); POOL=k reuses k subjects instead of a fresh one per call (a cookieless visitor the
 // edge has seen); GAP_MS waits between calls (past the 60 s sticky TTL needs a long gap or a
 // fresh subject); SITE / SLOT pick the target (default shop / hero).
 // Reports who decided (x-prb-decided-by) and why the edge did not (x-prb-edge-fallback).
 const [base, n = '20', tag = String(Date.now())] = process.argv.slice(2);
-if (!base) throw new Error('usage: node deploy/bench-node.mjs <base-url> [n] [tag]');
+if (!base) throw new Error('usage: node deploy/checks/bench-node.mjs <base-url> [n] [tag]');
 const { CONSENT, POOL, GAP_MS, SITE = 'shop', SLOT = 'hero' } = process.env;
 const times = [];
 const by = {};

@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process';
 
 const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
 const BASE = arg('base', 'http://localhost:3202');
-const CORE = arg('core', 'https://pratibimbaapi.meetdev.in');
+const CORE = arg('core', 'http://localhost:8080');
 const OUT = arg('out', `scripts/out/history-${Date.now()}.jsonl`);
 const PER = Number(arg('per', '10'));
 const RENDERS = Number(arg('renders', '3'));

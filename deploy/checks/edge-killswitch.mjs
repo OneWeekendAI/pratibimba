@@ -3,11 +3,11 @@
 // it pauses and resumes a site through the admin API, and reports, per toggle, the lag from the
 // admin call's return to the first response that shows the new state, plus any response that
 // still showed the old state more than 5 s later.
-// Usage: PRB_ADMIN_TOKEN=... node deploy/edge-killswitch.mjs <base-url> [site] [slot] [cycles]
+// Usage: PRB_ADMIN_TOKEN=... node deploy/checks/edge-killswitch.mjs <base-url> [site] [slot] [cycles]
 // A response "shows paused" when only the baseline was scored (a paused site scores nothing else).
 const [base, site = 'demo', slot = 'hero', cycles = '3'] = process.argv.slice(2);
 const token = process.env.PRB_ADMIN_TOKEN;
-if (!base || !token) throw new Error('usage: PRB_ADMIN_TOKEN=... node deploy/edge-killswitch.mjs <base-url> [site] [slot] [cycles]');
+if (!base || !token) throw new Error('usage: PRB_ADMIN_TOKEN=... node deploy/checks/edge-killswitch.mjs <base-url> [site] [slot] [cycles]');
 const POLL_MS = Number(process.env.POLL_MS || 200);
 const tag = Date.now();
 let n = 0;

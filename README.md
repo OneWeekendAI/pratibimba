@@ -227,7 +227,7 @@ the box ticks on `main`. Representative recent runs:
 **Measured latency work.** We cut `/decide` from ~17 round trips to **4**, measured through
 a counting TCP proxy in `core/tests/decide_fast.rs` (14 round trips in full mode and 18 in
 cookieless/pick mode before; 4 and 4 after; 1 for a sticky reuse). All numbers below are
-measured on the live service after the cut (Cloud Run Seoul + Supabase Seoul, 2026-10-08):
+measured on our test deployment after the cut (Cloud Run + managed Postgres in the same region, Seoul, 2026-10-08):
 
 | Measurement | Before the cut | After the cut |
 |---|---|---|
@@ -426,7 +426,7 @@ Git ref.
 | `examples/plain/` | script-tag example with a declared `site.json` |
 | `examples/shop/` | a Next.js store with commerce events, an agent-drafted hero and sorted grid |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
-| `deploy/` | optional edge Worker (`proxy-worker/`), Cloud Run deploy scripts, latency benches |
+| `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
 | `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |
 | `Dockerfile` | one image, several entry points (`serve`, `worker`, `migrate`, `apply`, `backup`, `restore`, `erase`) |
 

@@ -16,7 +16,7 @@ const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : dflt;
 };
-const CORE = process.env.PRB_CORE_URL ?? 'https://pratibimbaapi.meetdev.in';
+const CORE = process.env.PRB_CORE_URL ?? 'http://localhost:8080';
 const TOKEN = process.env.PRB_ADMIN_TOKEN;
 if (!TOKEN) throw new Error('set PRB_ADMIN_TOKEN');
 const LOGS = arg('logs', 'scripts/out/run1.jsonl').split(',');

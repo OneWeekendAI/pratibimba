@@ -1,5 +1,5 @@
-// Proxies every path on the public API hostname to Core on Cloud Run (asia-northeast3, which
-// has no Cloud Run domain mappings). Method, query, headers and body pass through; request and
+// Proxies every path on the public API hostname to Core (env.ORIGIN, e.g. a Cloud Run
+// service). Method, query, headers and body pass through; request and
 // response bodies stream, so SSE (/api/sites/*/stream) and /mcp work. Nothing is cached except
 // /sdk.js, which keeps whatever Cache-Control Core sends.
 //
@@ -58,7 +58,7 @@
 // erase republishes the snapshot, and Core still refuses the records of an erase newer than it.
 //
 // Rollback: EDGE_DECIDE=off (deploy/proxy-worker/edge-decide.sh off) puts every decide back on
-// Core; deleting the route (switch.sh off) takes the Worker out entirely.
+// Core; deleting the Worker's route takes it out entirely.
 
 import { decide as kernelDecide, identified as isIdentified, FORMAT } from './kernel.js';
 import { inErased } from './erased.js';

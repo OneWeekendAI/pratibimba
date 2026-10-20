@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-time: Cloud Scheduler runs the worker job every minute. Idempotent.
+# One-time, optional example: Cloud Scheduler runs the worker job (deploy.sh) every minute,
+# as the default compute service account. Idempotent. Same environment as deploy.sh.
 set -euo pipefail
 . "$(dirname "$0")/config.sh"
 PN=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')

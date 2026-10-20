@@ -15,7 +15,7 @@ import { GRID_TRUTH } from './truth.mjs';
 
 const file = process.argv[2];
 const i = process.argv.indexOf('--core');
-const CORE = i > 0 ? process.argv[i + 1] : 'https://pratibimbaapi.meetdev.in';
+const CORE = i > 0 ? process.argv[i + 1] : 'http://localhost:8080';
 const DEFAULT = JSON.parse(readFileSync(new URL('../site.json', import.meta.url))).slots.find((s) => s.key === 'grid').variants.map((v) => v.key);
 
 const rows = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((r) => !r.header && r.grid);

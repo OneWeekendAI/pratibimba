@@ -3,15 +3,18 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
-  // Core on Cloud Run in asia-northeast3 (Seoul), next to Supabase.
+  // Fill in the two placeholders before `wrangler deploy`: ORIGIN (where Core runs, e.g. a
+  // Cloud Run URL or your own host) and the KV namespace id (wrangler kv namespace create
+  // SNAPSHOTS). The queues named below must exist (wrangler queues create ...). For a custom
+  // hostname, add a route (see the note at the bottom).
   // EDGE_DECIDE: "on" answers /decide at the edge (EC2); "off" forwards every decide to Core.
   // Switch it with deploy/proxy-worker/edge-decide.sh on|off. EDGE_TOKEN is a secret (wrangler
   // secret put EDGE_TOKEN), the same value as Core's PRB_EDGE_TOKEN.
   // QUEUE_WRITES (EC3): "on" puts /e and the edge's decision records on the events queue;
   // "off" sends them to Core directly. Switch it with deploy/proxy-worker/queue.sh on|off.
-  "vars": { "ORIGIN": "https://pratibimba-core-7i7wb4r5qa-du.a.run.app", "EDGE_DECIDE": "on", "QUEUE_WRITES": "on" },
+  "vars": { "ORIGIN": "https://core.example.com", "EDGE_DECIDE": "on", "QUEUE_WRITES": "on" },
   // EC1: Core writes each site's edge snapshot here (key site/<id>); the Worker reads it.
-  "kv_namespaces": [{ "binding": "SNAPSHOTS", "id": "b30829cd168e42768f85c882fca47ac0" }],
+  "kv_namespaces": [{ "binding": "SNAPSHOTS", "id": "<your-kv-namespace-id>" }],
   // EC2: the version beacon, one Durable Object per site, strongly consistent.
   "durable_objects": { "bindings": [{ "name": "BEACON", "class_name": "SiteBeacon" }] },
   "migrations": [{ "tag": "ec2-beacon", "new_sqlite_classes": ["SiteBeacon"] }],
@@ -26,6 +29,6 @@
                     "dead_letter_queue": "pratibimba-events-dlq", "max_concurrency": 5 }]
   },
   "observability": { "enabled": true }
-  // The live route is added by deploy/proxy-worker/switch.sh (on|off), not here, so a plain
-  // `wrangler deploy` never moves production traffic.
+  // No route here, so a plain `wrangler deploy` never moves traffic. To serve your API hostname
+  // add one, e.g. "routes": [{ "pattern": "api.example.com/*", "zone_name": "example.com" }].
 }

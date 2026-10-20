@@ -1,12 +1,12 @@
 // Gates the `comeback` slot's offer on visitor history: "last order 30+ days ago". Run once after
 // the site file is applied; running it again changes nothing.
 //
-//   PRB_ADMIN_TOKEN=... node scripts/audiences.mjs [--core https://pratibimbaapi.meetdev.in]
+//   PRB_ADMIN_TOKEN=... node scripts/audiences.mjs [--core http://localhost:8080]
 //
 // History needs an identified visitor (full mode, or consent_aware with consent). Anyone else,
 // and every cookieless visitor, matches nobody and keeps the baseline line.
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
-const CORE = arg('--core', process.env.PRB_CORE_URL ?? 'https://pratibimbaapi.meetdev.in');
+const CORE = arg('--core', process.env.PRB_CORE_URL ?? 'http://localhost:8080');
 const TOKEN = process.env.PRB_ADMIN_TOKEN;
 if (!TOKEN) throw new Error('set PRB_ADMIN_TOKEN');
 const SITE = 'shop';

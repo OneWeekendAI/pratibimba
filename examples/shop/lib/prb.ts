@@ -7,7 +7,7 @@ import { createPratibimba } from '@pratibimba/next';
 // `returning`. A real store sets this only behind a consent banner; the cohort script
 // (scripts/cohort.mjs) turns it on to have returning visitors at all.
 export const prb = createPratibimba({
-  core: process.env.PRB_CORE_URL ?? 'https://pratibimbaapi.meetdev.in',
+  core: process.env.PRB_CORE_URL ?? 'http://localhost:8080',
   site: 'shop',
   timeoutMs: process.env.PRB_TIMEOUT_MS ? Number(process.env.PRB_TIMEOUT_MS) : undefined,
   persist: process.env.PRB_PERSIST === '1',
