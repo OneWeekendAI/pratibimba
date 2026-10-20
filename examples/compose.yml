@@ -25,6 +25,9 @@ services:
     environment:
       PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
       PRB_ADMIN_TOKEN: ${PRB_ADMIN_TOKEN:?set PRB_ADMIN_TOKEN}
+      # Only when a page calls Core from another origin (a local test page); behind your own
+      # /_prb proxy leave it empty.
+      PRB_SITE_ORIGIN: ${PRB_SITE_ORIGIN:-}
     # Uploaded images. For S3/R2/MinIO instead, set PRB_ASSETS_S3_ENDPOINT, _BUCKET, _ACCESS_KEY
     # and _SECRET_KEY on serve and worker, and drop this volume.
     volumes:

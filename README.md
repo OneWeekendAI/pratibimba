@@ -262,71 +262,213 @@ the policy version and the random seed. The simulator and the dashboard's replay
 record directly; the counterfactual lets you ask "what would the next-best arm have done" on
 the stored sample.
 
-## Quickstart
+## Self-hosting
 
-### Self-hosted stack (Docker Compose)
+Pratibimba is one Docker image and a Postgres database. You run it next to your product; your
+pages ask it what to show. Nothing calls home and nothing here needs a cloud account.
 
-The compose file at [`examples/compose.yml`](examples/compose.yml) runs Postgres, Core
-(serve), the worker and a nightly backup:
+| Piece | What it does | How many |
+|---|---|---|
+| `pratibimba serve` | HTTP: `/decide`, `/e`, `/manifest`, `/sdk.js`, `/assets`, the dashboard at `/app`, its API at `/api`, MCP at `/mcp` | one or more |
+| `pratibimba worker` | the learning loop: credits events, settles attribution windows, updates models, sends webhooks, deletes unused images | one (two is safe) |
+| Postgres 16 or 17 | all state | one |
+| `pratibimba backup` | a daily SQL dump (optional, in the compose file) | one |
+
+[`examples/compose.yml`](examples/compose.yml) is the reference install: all four, with a
+volume for the database and one for uploaded images. The image is built from this repo; no
+prebuilt image is published yet.
+
+### 1. Start it
 
 ```sh
-export PRB_ADMIN_TOKEN=change-me
-docker compose -f examples/compose.yml up -d     # first run builds the image: several minutes
+git clone https://github.com/OneWeekendAI/pratibimba && cd pratibimba
+export PRB_ADMIN_TOKEN=$(openssl rand -hex 32)      # keep it: it is the dashboard password
+docker compose -f examples/compose.yml up -d        # first run builds the image: several minutes
+curl -s localhost:8080/health                        # -> ok
+```
 
-# Declare a site, its slots and its variants (re-run after every edit to the file).
+`serve` and `worker` run the database migrations on start. Copy the compose file next to your
+own infrastructure and change what you need (the Postgres password, the port, the volumes).
+
+### 2. Declare your site
+
+A site, its slots and its approved variants come from a JSON file you keep in your repo.
+[`examples/plain/site.json`](examples/plain/site.json) is a small one; `origin` is your site's
+URL (the install wizard probes it) and `site` is the id your pages name.
+
+```sh
 docker compose -f examples/compose.yml run --rm --no-deps \
   -v "$PWD/examples/plain/site.json:/site.json:ro" serve apply /site.json
 
-# Ask for a decision.
 curl -s localhost:8080/decide -H 'content-type: application/json' \
-  -d '{"site":"demo","slot":"hero","subject":"visitor-1"}'
+  -d '{"site":"demo","slot":"hero","subject":"visitor-1"}'      # -> {"decision_id":…,"variant":…}
 ```
 
-Open `http://localhost:8080/app/` and sign in with `PRB_ADMIN_TOKEN`. Events go to
-`POST /e` with the `decision_id` (see [HTTP API](#http-api-summary)); the worker credits them
-at once and updates the model when the slot's `attribution_window_secs` closes.
+Re-run `apply` after every edit. Variants in the file count as approved by you; new ones an agent
+or a teammate drafts wait in the dashboard's approval queue.
 
-The backup service writes a plain-SQL dump to `examples/backups/` (next to the compose file)
-on start and then once a day; the salts are left out of the dump by design, so a backup cannot
-link one day's cookieless visitors to the next. To take one now, or restore one into a new,
-empty database:
+### 3. Sign in to the dashboard
+
+Open `http://localhost:8080/app/` and sign in with `PRB_ADMIN_TOKEN`. Without the variable
+`/api` answers 503 and the dashboard cannot sign in; the public endpoints still run.
+
+| Token | Who uses it | How you get one |
+|---|---|---|
+| admin (`PRB_ADMIN_TOKEN`) | you, in the dashboard (cookie) or as `Authorization: Bearer` on `/api` | you choose it; rotate by changing the variable and restarting `serve` |
+| MCP (`prb_mcp_…`, one per site) | your coding agent on `POST /mcp` | dashboard: a site's page, "Connect your coding agent", or `pratibimba mcp-token <site> <name>`; shown once, only its hash is stored |
+| edge (`PRB_EDGE_TOKEN`) | the optional edge Worker | you choose it, set on both sides |
+
+Pages need no token: a site id is public, like an analytics key.
+
+### 4. Put it behind HTTPS
+
+Run Core on a private port and put a TLS-terminating reverse proxy in front. Two shapes, often
+both:
+
+- **Core on its own host** (`core.example.com`) for the dashboard, MCP and server-side SDKs.
+  With [Caddy](https://caddyserver.com): `core.example.com { reverse_proxy 127.0.0.1:8080 }`.
+  The proxy must send `X-Forwarded-Proto: https` (Caddy does; in nginx add
+  `proxy_set_header X-Forwarded-Proto $scheme;`); the dashboard cookie is then marked `Secure`.
+- **`/_prb/*` on your site's own origin**, forwarded to Core with the prefix stripped (nginx:
+  `location /_prb/ { proxy_pass http://127.0.0.1:8080/; }`). The browser then only talks to
+  your domain: no CORS, first-party cookie. The Next.js SDK does this itself (its `/_prb`
+  route); the script tag and the edge SDK expect you to.
+
+`/api`, `/app` and `/mcp` are token-gated, but you can keep them off the public internet
+entirely and expose only `/decide`, `/e`, `/manifest`, `/sdk.js` and `/assets`. Set
+`PRB_SITE_ORIGIN` only when a page calls Core from another origin (local testing).
+
+### 5. Connect your site
+
+Every SDK takes your Core URL; see [Install on your site](#install-on-your-site) for each.
+
+| Your site | Install | Core URL goes in |
+|---|---|---|
+| Next.js 16 | `@pratibimba/next` | `createPratibimba({ core: process.env.PRB_CORE_URL, site })`; can be the private address |
+| Any origin behind a Worker (Cloudflare, Deno Deploy, Vercel Edge) | `@pratibimba/edge` | `createEdge({ core, site })` |
+| Anything else, static HTML included | script tag | the `/_prb/*` proxy above; or `src="https://core.example.com/sdk.js"` plus `PRB_SITE_ORIGIN` |
+
+The TypeScript packages will be published to npm as `@pratibimba/next`, `@pratibimba/edge`,
+`@pratibimba/client` and `@pratibimba/agent`; until then see
+[Package status](#package-status). The script tag needs no package: Core serves it.
+
+### Configuration
+
+Core is configured entirely from the environment. Set the same values on `serve` and `worker`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PRB_DB` (or `DATABASE_URL`) | required | Postgres URL |
+| `PRB_ADMIN_TOKEN` | — | turns on the dashboard and `/api`; without it `/api` answers 503 |
+| `PRB_BIND` | `0.0.0.0:8080` | listen address for `serve` |
+| `PRB_SITE_ORIGIN` | — | comma-separated CORS origins; only when the page is not same-origin with Core |
+| `PRB_DB_MAX_CONNECTIONS` | `10` | pool size, per process |
+| `PRB_WORKER_TICK_MS` | `1000` | how often `worker` closes attribution windows (events wake it at once) |
+| `PRB_DASHBOARD_DIR` | set in the image | the built dashboard (`dashboard/out`), served at `/app` |
+| `PRB_PG_BIN` | `PATH` | directory holding `pg_dump` and `psql`, for `backup` and `restore` |
+| `PRB_ERASE_PURGE_AFTER_SECS` | 1 day (max 30 days) | how long erased events sit tombstoned before deletion |
+| `PRB_ASSETS_DIR` | `prb-assets` (`/var/lib/pratibimba/assets` in the image) | where uploaded images live, as `<site>/<sha256>` |
+| `PRB_ASSETS_S3_BUCKET`, `_ENDPOINT`, `_ACCESS_KEY`, `_SECRET_KEY` | — | store images in an S3-compatible bucket instead; set the bucket and the rest are required |
+| `PRB_ASSETS_S3_REGION` | `us-east-1` | the bucket's signing region (`auto` for R2 also works) |
+| `PRB_ASSET_MAX_BYTES` | 5 MiB (max 50 MiB) | the largest image an upload may be |
+| `PRB_ASSET_GC_GRACE_SECS` | 7 days (min 1 hour) | how long an image no live variant names is kept before the worker deletes it |
+| `PRB_EDGE_KV_ACCOUNT`, `_NAMESPACE`, `_TOKEN` | — | Cloudflare Workers KV for the edge snapshot; all three or none (see [Edge](#optional-the-edge-worker)) |
+| `PRB_EDGE_KV_API` | Cloudflare's API | override the KV API base (tests) |
+| `PRB_EDGE_BEACON_URL` | — | optional per-visitor beacon endpoint on the edge Worker |
+| `PRB_EDGE_TOKEN` | — | shared secret the edge Worker uses to talk to Core |
+| `RUST_LOG` | `info` | log filter |
+
+### Image storage
+
+Images a variant shows can be a URL you host (`{"url": "/img/a.webp"}`) or an upload to Core
+(`{"asset": "<sha256>"}`; see [Images and layout](#images-and-layout)). Uploads go to:
+
+| Store | Set | Use when |
+|---|---|---|
+| local directory (default) | `PRB_ASSETS_DIR`; mount a volume on it, shared by `serve` and `worker` | one host |
+| S3-compatible bucket (AWS S3, Cloudflare R2, MinIO; path-style, SigV4) | `PRB_ASSETS_S3_*` on `serve` and `worker`; drop the volume | several `serve` replicas, or you want the bucket's own durability |
+
+Core serves both at `/assets/<site>/<sha256>`, cached a year, so a CDN in front is safe.
+
+### Backups and restore
+
+`pratibimba backup [dir-or-file]` writes a timestamped plain-SQL dump with `pg_dump`. The
+privacy salts are left out by design, so a backup cannot link one day's cookieless visitors to
+the next. With images in a local directory it also copies them to `<dump>.assets/`; a bucket is
+not copied, so back it up with its own versioning or replication. The compose `backup` service
+writes one to `examples/backups/` on start and then daily.
+
+`pratibimba restore <file>` loads a dump into an **empty** `PRB_DB` in one transaction and copies
+`<dump>.assets/` back into `PRB_ASSETS_DIR`. The image's `pg_dump` is Debian's 17; against a
+newer server `backup` stops with an error naming both versions.
 
 ```sh
-docker compose -f examples/compose.yml run --rm --no-deps --entrypoint pratibimba backup backup /backups
-docker compose -f examples/compose.yml exec db createdb -U postgres restored
-docker compose -f examples/compose.yml run --rm --no-deps --entrypoint pratibimba \
-  -e PRB_DB=postgres://postgres:pratibimba@db:5432/restored backup restore /backups/<file>.sql
+C="docker compose -f examples/compose.yml"
+$C run --rm --no-deps --entrypoint pratibimba backup backup /backups            # one now
+$C exec db createdb -U postgres restored                                          # an empty database
+$C run --rm --no-deps --entrypoint pratibimba -e PRB_DB=postgres://postgres:pratibimba@db:5432/restored \
+  -v pratibimba_restored_assets:/var/lib/pratibimba/assets backup restore /backups/<file>.sql
 ```
 
-`docker compose -f examples/compose.yml down` stops the stack (keep `PRB_ADMIN_TOKEN` set);
-`down -v` also deletes the database volume.
+Point `PRB_DB` (and the assets volume) of `serve` and `worker` at the restored copy to switch.
+`down` stops the stack; `down -v` also deletes the database and image volumes.
 
-### Self-hosted (plain Docker)
+### Upgrades
+
+```sh
+$C run --rm --no-deps --entrypoint pratibimba backup backup /backups     # back up first
+git pull && $C build && $C up -d
+```
+
+Migrations run when `serve` or `worker` starts, under a lock, so replicas starting together
+are safe. They only go forward: to roll back, run the old image against a restore of the
+backup you took. Expect breaking changes until 1.0.
+
+### Scaling
+
+- **`serve` is stateless**: run as many as you like behind the proxy. Use the S3 store for
+  images when replicas do not share a disk. Each holds `PRB_DB_MAX_CONNECTIONS` connections.
+- **`worker`**: one is enough. A second is safe, not faster: event and webhook rows are claimed
+  with `FOR UPDATE SKIP LOCKED` and each model row is locked around its update, so no event is
+  credited twice and no update is lost.
+- **Postgres** holds everything; size it for your event volume. The dashboard reads rollups,
+  not raw events.
+
+### Privacy modes
+
+Set per site in the site file (`"privacy_mode"`):
+
+| Mode | Subject | `returning` feature |
+|---|---|---|
+| `consent_aware` (default) | `full` for a request with consent (`_prb_consent`, IAB TCF v2 purpose 1, OneTrust C0002), `cookieless` otherwise | with consent |
+| `cookieless` | stored only as a hash with a salt that rotates daily, so days cannot be joined | never |
+| `full` | stored as the SDK sends it (the first-party `_prb_subject` cookie, or your user id) | yes |
+
+`fields_allowed` limits which optional context fields are stored, and `pratibimba erase <site>
+<subject> --by <you>` (or the dashboard) is the right-to-erase. See [Privacy](#privacy).
+
+### Optional: the edge Worker
+
+Not needed to self-host. For decisions at the CDN, [`deploy/proxy-worker`](deploy/proxy-worker)
+is a Cloudflare Worker that reads a per-site snapshot Core writes to Workers KV and decides at
+the edge for consented visitors, falling back to Core otherwise. Set the `PRB_EDGE_*` variables
+on Core; [`deploy/README.md`](deploy/README.md) has the steps.
+
+### Without Compose
 
 ```sh
 docker build -t pratibimba .
 export PRB_DB=postgres://user:pass@your-db:5432/pratibimba
-
-# 1. Declare a site, its slots and its variants.
-docker run --rm -e PRB_DB -v $PWD/examples/plain/site.json:/site.json:ro pratibimba apply /site.json
-
-# 2. Run the server and the learning worker.
-docker run -d -e PRB_DB -e PRB_ADMIN_TOKEN=change-me -p 8080:8080 pratibimba   # serve
-docker run -d -e PRB_DB pratibimba worker
+docker run --rm -e PRB_DB -v $PWD/site.json:/site.json:ro pratibimba apply /site.json
+docker run -d -e PRB_DB -e PRB_ADMIN_TOKEN -v prb-assets:/var/lib/pratibimba/assets -p 8080:8080 pratibimba   # serve
+docker run -d -e PRB_DB -v prb-assets:/var/lib/pratibimba/assets pratibimba worker
 ```
 
-### Self-hosted (cargo)
+Or from source: `cargo build --release`, then `./target/release/pratibimba apply|serve|worker`
+with the same variables (`PRB_DASHBOARD_DIR=dashboard/out` after `cd dashboard && npm ci && npm
+run build`).
 
-```sh
-cargo build --release
-export PRB_DB=postgres://…/pratibimba
-./target/release/pratibimba apply examples/plain/site.json
-PRB_ADMIN_TOKEN=change-me ./target/release/pratibimba serve &
-./target/release/pratibimba worker &
-```
-
-Both `serve` and `worker` run the migrations on start. Without `PRB_ADMIN_TOKEN`, `/api`
-answers 503 and only the public endpoints run.
+## Install on your site
 
 ### Install on a Next.js page
 
@@ -456,7 +598,7 @@ approve every draft before it is served.
 ### Package status
 
 The TypeScript packages (`@pratibimba/next`, `@pratibimba/edge`, `@pratibimba/client`,
-`@pratibimba/agent`) are **not yet published to npm**. The examples in this repo depend on
+`@pratibimba/agent`) are **not yet published to npm**; they will be, under those names. The examples in this repo depend on
 them with `file:` paths and need `install-links=true` in `.npmrc` (Turbopack does not resolve
 a symlinked package outside the app). To consume them in your own project today, build from
 this repo and copy `packages/<name>/dist` into your tree, or point your `package.json` at a
@@ -483,31 +625,6 @@ Git ref.
 | `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |
 | `Dockerfile` | one image, several entry points (`serve`, `worker`, `migrate`, `apply`, `backup`, `restore`, `erase`) |
 
-## Configuration
-
-Core is configured entirely from the environment.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `PRB_DB` (or `DATABASE_URL`) | required | Postgres URL |
-| `PRB_BIND` | `0.0.0.0:8080` | listen address for `serve` |
-| `PRB_SITE_ORIGIN` | — | comma-separated CORS origins; set only when the page is not same-origin with Core |
-| `PRB_WORKER_TICK_MS` | `1000` | how often `worker` closes attribution windows (events wake it immediately) |
-| `PRB_DB_MAX_CONNECTIONS` | `10` | pool size |
-| `PRB_ADMIN_TOKEN` | — | turns on the dashboard API at `/api`; without it `/api` answers 503 |
-| `PRB_DASHBOARD_DIR` | set in the Docker image | the built dashboard (`dashboard/out`), served at `/app` |
-| `PRB_PG_BIN` | `PATH` | directory holding `pg_dump` and `psql`, for `backup` and `restore` |
-| `PRB_ERASE_PURGE_AFTER_SECS` | 1 day (max 30) | how long erased events sit tombstoned before deletion |
-| `PRB_EDGE_KV_ACCOUNT`, `PRB_EDGE_KV_NAMESPACE`, `PRB_EDGE_KV_TOKEN` | — | Cloudflare Workers KV for the edge snapshot; set all three or none |
-| `PRB_EDGE_BEACON_URL` | — | optional per-visitor beacon endpoint on the edge Worker |
-| `PRB_EDGE_TOKEN` | — | shared secret the edge Worker uses to talk to Core |
-| `PRB_ASSETS_DIR` | `prb-assets` (`/var/lib/pratibimba/assets` in the image) | where uploaded images live, as `<site>/<sha256>` |
-| `PRB_ASSETS_S3_ENDPOINT`, `PRB_ASSETS_S3_BUCKET`, `PRB_ASSETS_S3_ACCESS_KEY`, `PRB_ASSETS_S3_SECRET_KEY` | — | store images in an S3-compatible bucket instead (AWS S3, Cloudflare R2, MinIO; path-style, SigV4); set the bucket and the rest are required |
-| `PRB_ASSETS_S3_REGION` | `us-east-1` | the bucket's signing region (`auto` for R2 also works) |
-| `PRB_ASSET_MAX_BYTES` | 5 MiB (max 50 MiB) | the largest image an upload may be |
-| `PRB_ASSET_GC_GRACE_SECS` | 7 days (min 1 hour) | how long an image no live variant names is kept before the worker deletes it |
-| `RUST_LOG` | `info` | log filter |
-
 ## HTTP API (summary)
 
 | Method and path | What it does |
@@ -527,15 +644,6 @@ Core is configured entirely from the environment.
 A late platform webhook can **correct a settled miss** inside the attribution window: the
 decision flips, the model is updated exactly (`+w·x` on log-likelihood, covariance unchanged),
 and a `conversion` webhook refires with `late: true`.
-
-## Backups
-
-`pratibimba backup [dir-or-file]` writes a timestamped plain-SQL dump with `pg_dump`,
-leaving the privacy salts out by design. With images on a local directory (`PRB_ASSETS_DIR`)
-it also copies that directory to `<dump>.assets/`, and `restore` copies it back; a bucket
-(`PRB_ASSETS_S3_*`) is not copied, so back it up with its own versioning or replication. `pratibimba restore <file>` loads a dump into an
-**empty** `PRB_DB` in one transaction. The Docker image includes `pg_dump` and `psql`
-(Debian's 17); against a newer server, `backup` stops with an error naming both versions.
 
 ## Running the tests
 
