@@ -1,7 +1,8 @@
 # A self-hosted install: Postgres, Core (serve), the learning worker, and a nightly backup.
 #   PRB_ADMIN_TOKEN=... docker compose -f examples/compose.yml up
 # The backup service writes a timestamped SQL dump to examples/backups (next to this file) once a
-# day; restore one into an empty database with `pratibimba restore <file>` (see the README).
+# day, with a copy of the uploaded images beside it (`<dump>.assets/`); restore one into an empty
+# database with `pratibimba restore <file>` (see the README).
 services:
   db:
     image: postgres:17
@@ -24,6 +25,10 @@ services:
     environment:
       PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
       PRB_ADMIN_TOKEN: ${PRB_ADMIN_TOKEN:?set PRB_ADMIN_TOKEN}
+    # Uploaded images. For S3/R2/MinIO instead, set PRB_ASSETS_S3_ENDPOINT, _BUCKET, _ACCESS_KEY
+    # and _SECRET_KEY on serve and worker, and drop this volume.
+    volumes:
+      - assets:/var/lib/pratibimba/assets
     ports:
       - "8080:8080"
     depends_on:
@@ -37,6 +42,9 @@ services:
     command: worker
     environment:
       PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
+    # The worker deletes images no variant has named for a week.
+    volumes:
+      - assets:/var/lib/pratibimba/assets
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +64,7 @@ services:
       PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
     volumes:
       - ./backups:/backups
+      - assets:/var/lib/pratibimba/assets:ro
     depends_on:
       db:
         condition: service_healthy
@@ -63,3 +72,4 @@ services:
 
 volumes:
   pgdata:
+  assets:

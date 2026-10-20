@@ -559,7 +559,23 @@ pub async fn run_loop(pool: PgPool, tick: Duration) -> Result<()> {
 /// [`EDGE_EVERY`]: Workers KV takes one write per key per second, and a learning site changes
 /// its snapshot on almost every pass.
 pub async fn run_loop_edge(pool: PgPool, tick: Duration, edge: crate::edge::Edge) -> Result<()> {
-    run_loop_full(pool, tick, GUARD_EVERY, edge).await
+    run_loop_full(pool, tick, GUARD_EVERY, edge, None).await
+}
+
+/// [`run_loop_edge`] that also garbage-collects the asset store ([`crate::assets::gc`]) every
+/// [`ASSET_GC_EVERY`].
+pub async fn run_loop_assets(pool: PgPool, tick: Duration, edge: crate::edge::Edge, assets: crate::assets::Assets) -> Result<()> {
+    run_loop_full(pool, tick, GUARD_EVERY, edge, Some(assets)).await
+}
+
+pub const ASSET_GC_EVERY: Duration = Duration::from_secs(3600);
+
+async fn asset_gc(pool: &PgPool, assets: &crate::assets::Assets) {
+    match crate::assets::gc(pool, assets, Utc::now()).await {
+        Ok(g) if g != crate::assets::Gc::default() => tracing::info!(marked = g.marked, revived = g.revived, deleted = g.deleted.len(), "asset gc"),
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, "asset gc failed"),
+    }
 }
 
 pub const EDGE_EVERY: Duration = Duration::from_secs(10);
@@ -569,11 +585,12 @@ pub const EDGE_EVERY: Duration = Duration::from_secs(10);
 pub const GUARD_EVERY: Duration = Duration::from_secs(30);
 
 pub async fn run_loop_with(pool: PgPool, tick: Duration, guard_every: Duration) -> Result<()> {
-    run_loop_full(pool, tick, guard_every, crate::edge::Edge::off()).await
+    run_loop_full(pool, tick, guard_every, crate::edge::Edge::off(), None).await
 }
 
-async fn run_loop_full(pool: PgPool, tick: Duration, guard_every: Duration, edge: crate::edge::Edge) -> Result<()> {
+async fn run_loop_full(pool: PgPool, tick: Duration, guard_every: Duration, edge: crate::edge::Edge, assets: Option<crate::assets::Assets>) -> Result<()> {
     let mut last_edge: Option<std::time::Instant> = None;
+    let mut last_gc: Option<std::time::Instant> = None;
     let mut listener = PgListener::connect_with(&pool).await?;
     listener.listen(CHANNEL).await?;
     let mut last_guard: Option<std::time::Instant> = None;
@@ -587,6 +604,12 @@ async fn run_loop_full(pool: PgPool, tick: Duration, guard_every: Duration, edge
         }
         if guard {
             last_guard = Some(std::time::Instant::now());
+        }
+        if let Some(a) = &assets
+            && last_gc.is_none_or(|t| t.elapsed() >= ASSET_GC_EVERY)
+        {
+            asset_gc(&pool, a).await;
+            last_gc = Some(std::time::Instant::now());
         }
         tokio::select! {
             r = listener.recv() => if let Err(e) = r {
@@ -649,6 +672,13 @@ pub async fn run_drain(pool: &PgPool) -> Result<()> {
 pub async fn run_drain_edge(pool: &PgPool, edge: &crate::edge::Edge) -> Result<()> {
     let r = pass(pool, &webhooks::client(), true).await;
     publish_edge(pool, edge).await;
+    r
+}
+
+/// [`run_drain_edge`], then one asset garbage-collection pass.
+pub async fn run_drain_assets(pool: &PgPool, edge: &crate::edge::Edge, assets: &crate::assets::Assets) -> Result<()> {
+    let r = run_drain_edge(pool, edge).await;
+    asset_gc(pool, assets).await;
     r
 }
 

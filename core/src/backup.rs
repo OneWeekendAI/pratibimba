@@ -13,6 +13,11 @@
 //!   `public`, and runs the whole file in one transaction (`--single-transaction`,
 //!   `ON_ERROR_STOP`): it lands completely or not at all.
 //!
+//! - **Local assets travel with it.** With the asset store on a local directory
+//!   (`PRB_ASSETS_DIR`), `pratibimba backup` also copies that directory to `<dump>.assets/`, and
+//!   `restore` copies it back. An S3 bucket is not copied: back it up with the bucket's own
+//!   versioning or replication.
+//!
 //! The tools come from `PRB_PG_BIN` (a directory) when set, else from `PATH`. `pg_dump` must be
 //! at least the server's major version; the Docker image carries Debian's client.
 
@@ -114,6 +119,60 @@ pub async fn restore(url: &str, file: &Path, pg_bin: Option<&Path>) -> Result<()
     Ok(())
 }
 
+/// Where a backup's copy of the local asset directory goes: beside the dump, `<dump>.assets/`.
+pub fn assets_dir_for(dump: &Path) -> PathBuf {
+    let mut name = dump.file_name().unwrap_or_default().to_os_string();
+    name.push(".assets");
+    dump.with_file_name(name)
+}
+
+/// Copy a directory tree (the local asset store, S11) to `to`, which must not exist yet.
+/// Returns the number of files copied. Temporary `.part` files are skipped.
+pub fn copy_tree(from: &Path, to: &Path) -> Result<u64> {
+    if to.exists() {
+        bail!("{} already exists; a backup never overwrites one", to.display());
+    }
+    fn walk(from: &Path, to: &Path, n: &mut u64) -> Result<()> {
+        std::fs::create_dir_all(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            let name = e.file_name();
+            if name.to_string_lossy().ends_with(".part") {
+                continue;
+            }
+            let ty = e.file_type()?;
+            if ty.is_dir() {
+                walk(&e.path(), &to.join(&name), n)?;
+            } else if ty.is_file() {
+                std::fs::copy(e.path(), to.join(&name))?;
+                *n += 1;
+            }
+        }
+        Ok(())
+    }
+    let mut n = 0;
+    walk(from, to, &mut n)?;
+    Ok(n)
+}
+
+/// Copy a backup's assets into the (local) store directory, keeping files already there: an
+/// asset's name is its hash, so a file of the same name holds the same bytes.
+pub fn merge_tree(from: &Path, to: &Path) -> Result<u64> {
+    let mut n = 0;
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let dest = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            n += merge_tree(&e.path(), &dest)?;
+        } else if !dest.exists() {
+            std::fs::copy(e.path(), &dest)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +204,27 @@ mod tests {
     #[test]
     fn unreadable_pg_dump_version_is_an_error() {
         assert!(check_versions("garbage", 170006).is_err());
+    }
+
+    #[test]
+    fn assets_go_beside_the_dump() {
+        assert_eq!(assets_dir_for(Path::new("/b/pratibimba-backup-1.sql")), PathBuf::from("/b/pratibimba-backup-1.sql.assets"));
+    }
+
+    #[test]
+    fn copy_tree_copies_files_and_refuses_an_existing_target() {
+        let root = std::env::temp_dir().join(format!("prb-copytree-{}", uuid::Uuid::new_v4().simple()));
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("demo")).unwrap();
+        std::fs::write(src.join("demo").join("a"), b"1").unwrap();
+        std::fs::write(src.join("demo").join(".x.part"), b"half").unwrap();
+        assert_eq!(copy_tree(&src, &root.join("out")).unwrap(), 1);
+        assert_eq!(std::fs::read(root.join("out").join("demo").join("a")).unwrap(), b"1");
+        assert!(!root.join("out").join("demo").join(".x.part").exists());
+        assert!(copy_tree(&src, &root.join("out")).is_err());
+        assert_eq!(merge_tree(&root.join("out"), &root.join("store")).unwrap(), 1);
+        assert_eq!(merge_tree(&root.join("out"), &root.join("store")).unwrap(), 0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

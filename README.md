@@ -448,6 +448,11 @@ Core is configured entirely from the environment.
 | `PRB_EDGE_KV_ACCOUNT`, `PRB_EDGE_KV_NAMESPACE`, `PRB_EDGE_KV_TOKEN` | — | Cloudflare Workers KV for the edge snapshot; set all three or none |
 | `PRB_EDGE_BEACON_URL` | — | optional per-visitor beacon endpoint on the edge Worker |
 | `PRB_EDGE_TOKEN` | — | shared secret the edge Worker uses to talk to Core |
+| `PRB_ASSETS_DIR` | `prb-assets` (`/var/lib/pratibimba/assets` in the image) | where uploaded images live, as `<site>/<sha256>` |
+| `PRB_ASSETS_S3_ENDPOINT`, `PRB_ASSETS_S3_BUCKET`, `PRB_ASSETS_S3_ACCESS_KEY`, `PRB_ASSETS_S3_SECRET_KEY` | — | store images in an S3-compatible bucket instead (AWS S3, Cloudflare R2, MinIO; path-style, SigV4); set the bucket and the rest are required |
+| `PRB_ASSETS_S3_REGION` | `us-east-1` | the bucket's signing region (`auto` for R2 also works) |
+| `PRB_ASSET_MAX_BYTES` | 5 MiB (max 50 MiB) | the largest image an upload may be |
+| `PRB_ASSET_GC_GRACE_SECS` | 7 days (min 1 hour) | how long an image no live variant names is kept before the worker deletes it |
 | `RUST_LOG` | `info` | log filter |
 
 ## HTTP API (summary)
@@ -460,6 +465,7 @@ Core is configured entirely from the environment.
 | `GET /manifest/:site` | slots and approved variant keys (`.js` for the script form); edge-cacheable |
 | `GET /sdk.js` | the client script |
 | `GET /health` | 200 when the database answers |
+| `GET /assets/:site/:sha256` | an uploaded image; cached a year (`immutable`), served with `nosniff` and a CSP that cannot run script |
 | `POST /mcp` | the MCP server (JSON-RPC), per-site `prb_mcp_…` token |
 | `POST /webhook/stripe/:site` | Stripe Checkout conversions, verified with the site's signing secret |
 | `POST /webhook/conversion/:site` | generic signed conversions |
@@ -472,7 +478,9 @@ and a `conversion` webhook refires with `late: true`.
 ## Backups
 
 `pratibimba backup [dir-or-file]` writes a timestamped plain-SQL dump with `pg_dump`,
-leaving the privacy salts out by design. `pratibimba restore <file>` loads a dump into an
+leaving the privacy salts out by design. With images on a local directory (`PRB_ASSETS_DIR`)
+it also copies that directory to `<dump>.assets/`, and `restore` copies it back; a bucket
+(`PRB_ASSETS_S3_*`) is not copied, so back it up with its own versioning or replication. `pratibimba restore <file>` loads a dump into an
 **empty** `PRB_DB` in one transaction. The Docker image includes `pg_dump` and `psql`
 (Debian's 17); against a newer server, `backup` stops with an error naming both versions.
 

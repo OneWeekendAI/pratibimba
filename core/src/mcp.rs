@@ -22,6 +22,10 @@
 //!   (`POST /api/plugin-requests/{id}/confirm`) before anything is installed.
 //! - **Experiments, read-only:** `list_experiments` reads the site's experiments and their results
 //!   per arm. Creating and stopping one is the owner's, in the dashboard API.
+//! - **Assets:** `upload_asset` stores an image (base64 in the call; judged by its bytes,
+//!   capped, SVG script refused) in the site's asset store and returns its id; `list_assets`
+//!   reads the site's uploads. An upload changes nothing a visitor sees until a variant that
+//!   names it is approved. The audit row keeps the upload's size and hash, not its bytes.
 //! - **Audiences:** `list_audiences` reads the site's segments and what each gates;
 //!   `create_audience` writes a DRAFT segment. Promotion (the permission to gate a decision) is
 //!   the owner's, in the dashboard, exactly like approval.
@@ -167,7 +171,7 @@ recorded and shown to the reviewer. Reviewer comments come back on list_variants
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 19] = [
+const TOOLS: [&str; 21] = [
     "list_sites",
     "get_site",
     "list_slots",
@@ -187,6 +191,8 @@ const TOOLS: [&str; 19] = [
     "list_plugins",
     "install_plugin",
     "list_experiments",
+    "upload_asset",
+    "list_assets",
 ];
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
@@ -225,19 +231,23 @@ fn catalogue() -> Vec<Value> {
                      "html": { "type": "string", "description": "The HTML fragment that replaces the slot's content. No scripts or event handlers." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "html"]),
-        tool("propose_copy", "Submit new text for a copy slot (kind copy): one value per declared field, each within its max length, plain text with no < or > and no newlines; every required field filled. Lands as a DRAFT like propose_variant; list_slots shows the fields.",
+        tool("propose_copy", "Submit new text and images for a copy slot (kind copy): one value per declared field. A text field takes plain text within its max length, no < or > and no newlines. An image field takes {asset (an id from upload_asset) or url, alt (required, plain text), width?, height?}: this is how to change a picture without writing HTML. Every required field filled. Lands as a DRAFT like propose_variant; list_slots shows the fields.",
              json!({ "slot": slot, "key": { "type": "string", "description": "A new lowercase slug for the variant (a-z, 0-9, - and _)." },
-                     "copy": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Field name to text, e.g. {\"headline\": \"...\"}." },
+                     "copy": { "type": "object", "additionalProperties": { "oneOf": [ { "type": "string" },
+                                   { "type": "object", "properties": { "asset": { "type": "string", "description": "An id upload_asset returned." }, "url": { "type": "string", "description": "https://... or a root-relative /path." },
+                                     "alt": { "type": "string", "description": "Required: what the image shows, plain text." }, "width": { "type": "integer" }, "height": { "type": "integer" } }, "required": ["alt"] } ] },
+                               "description": "Field name to value: text for a text field, e.g. {\"headline\": \"...\"}; for an image field {\"hero\": {\"asset\": \"<id from upload_asset>\", \"alt\": \"...\"}} (or \"url\" instead of \"asset\")." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "copy"]),
         tool("create_slot", "Declare a new slot: swap (HTML variants, the default), copy (named plain-text fields with max lengths) or sorted (an order of items). It lands as a DRAFT: its baseline (the page's own content; a sorted slot's first item) is a draft, so the slot is in no manifest and decides nothing until a person approves that baseline in the dashboard, which activates it. The kind's options are checked as the site file checks them. Then propose variants (propose_variant, or propose_copy on a copy slot).",
              json!({ "key": { "type": "string", "description": "A new lowercase slug for the slot (a-z, 0-9, - and _), e.g. \"promo\"." },
                      "selector": { "type": "string", "description": "The CSS selector of the element the slot replaces, e.g. \"#promo\"." },
                      "kind": { "type": "string", "enum": ["swap", "copy", "sorted"], "description": "Optional (default swap)." },
-                     "copy": { "type": "object", "description": "Required for kind copy, refused otherwise: {\"fields\": [{\"name\": \"headline\", \"max\": 60, \"required\": true}]}, 1-8 fields, each max 1-500.",
+                     "copy": { "type": "object", "description": "Required for kind copy, refused otherwise: {\"fields\": [{\"name\": \"headline\", \"max\": 60, \"required\": true}, {\"name\": \"hero\", \"type\": \"image\"}]}, 1-8 fields; a text field's max is 1-500; an image field's value is an uploaded asset or URL with alt text.",
                                "properties": { "fields": { "type": "array", "items": { "type": "object",
-                                   "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500 }, "required": { "type": "boolean" } },
-                                   "required": ["name", "max"] } } }, "required": ["fields"] },
+                                   "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Text: required, the value's max length. Image: optional, the alt text's max (default 250)." }, "required": { "type": "boolean" },
+                                                  "type": { "type": "string", "enum": ["text", "image"], "description": "Optional (default text). An image field's value is {asset or url, alt, width?, height?}." } },
+                                   "required": ["name"] } } }, "required": ["fields"] },
                      "items": { "type": "array", "items": { "type": "string" }, "description": "Required for kind sorted, refused otherwise: 2-50 unique item keys (slugs) in the default order; the first is the baseline." },
                      "sorted": { "type": "object", "properties": { "visible": { "type": "integer", "minimum": 1 } }, "description": "Optional for kind sorted: how many positions a visitor reads (default 4)." },
                      "metric": { "type": "string", "description": "Optional: the event that counts as success (default \"click\")." },
@@ -251,8 +261,9 @@ fn catalogue() -> Vec<Value> {
                      "attribution_window_secs": { "type": "integer", "minimum": 1 }, "decision_ttl_secs": { "type": "integer", "minimum": 0 },
                      "copy": { "type": "object", "description": "Draft copy slot only: the new {\"fields\": [{\"name\", \"max\", \"required\"}]} (replaces the old list).",
                                "properties": { "fields": { "type": "array", "items": { "type": "object",
-                                   "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500 }, "required": { "type": "boolean" } },
-                                   "required": ["name", "max"] } } }, "required": ["fields"] },
+                                   "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Text: required, the value's max length. Image: optional, the alt text's max (default 250)." }, "required": { "type": "boolean" },
+                                                  "type": { "type": "string", "enum": ["text", "image"], "description": "Optional (default text). An image field's value is {asset or url, alt, width?, height?}." } },
+                                   "required": ["name"] } } }, "required": ["fields"] },
                      "sorted": { "type": "object", "properties": { "visible": { "type": "integer", "minimum": 1 } }, "description": "Draft sorted slot only: how many positions a visitor reads." },
                      "items": { "type": "array", "items": { "type": "string" }, "description": "Draft sorted slot only: the new item keys in the default order (2-50); the first becomes the head. Dropped items are removed, new ones arrive as drafts." },
                      "traffic_share": { "type": "object", "description": "PROPOSE a new share for one live (approved) variant: {\"variant\": \"gift\", \"share\": 0.3}, above 0 and at most 0.5.",
@@ -268,6 +279,11 @@ fn catalogue() -> Vec<Value> {
              json!({ "plugin": { "type": "string", "description": "The plugin name from list_plugins, e.g. \"attribution.linear\"." },
                      "config": { "type": "object", "description": "Optional: the plugin's config, e.g. {\"url\": \"https://...\"} for an event sink." } }),
              &["plugin"]),
+        tool("upload_asset", "Upload an image to this site's asset store (png, jpeg, webp, avif, gif or svg; judged by its bytes, not its name; size-capped; an SVG with script, event handlers or outside links is refused). Returns its id (the SHA-256 of the bytes). Use it in an image field of a copy slot as {\"asset\": id, \"alt\": \"...\"} (propose_copy), or in swap HTML as <img src=\"/_prb/assets/<site>/<id>\" alt=\"...\"> (propose_variant). Uploading changes nothing a visitor sees; an asset no draft or live variant names is deleted after a grace period.",
+             json!({ "data": { "type": "string", "description": "The file's bytes, base64-encoded." },
+                     "name": { "type": "string", "description": "Optional: the file name, for people reading the asset list." } }),
+             &["data"]),
+        tool("list_assets", "This site's uploaded images: id, type, size, pixel size where known, name, and whether a variant uses it.", json!({}), &[]),
         tool("list_audiences", "The site's segments (draft, active, audience) with their predicates, and the variants each promoted audience restricts.", json!({}), &[]),
         tool("create_audience", "Draft a segment from a predicate over behaviour and situation features (returning, mobile, from_ad, is_night_local, is_weekend_local, is_business_hours_local, hour_local: [from, to]) and the visitor's own history (days_since_last_purchase: {gte, lte}, purchase_count: {gte, lte}, lifetime_value: none|low|mid|high, cart_abandoned: bool, viewed: {item or category, days 1-90}; these match identified visitors only and nobody in cookieless mode). It lands as a DRAFT: a person promotes it to an audience in the dashboard before it can restrict any variant. Demographic attributes are refused.",
              json!({ "predicate": { "type": "object", "description": "e.g. {\"returning\": true, \"is_night_local\": true} or {\"days_since_last_purchase\": {\"gte\": 30}}" },
@@ -301,6 +317,16 @@ fn text_arg(args: &Map<String, Value>, key: &str) -> Option<String> {
     args.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
+/// The arguments as the audit log keeps them: an upload's bytes become their length and hash,
+/// so the log holds what was sent without holding the file.
+fn redacted(args: &Value) -> Value {
+    let mut a = args.clone();
+    if let Some(d) = a.get("data").and_then(Value::as_str).map(String::from) {
+        a["data"] = json!(format!("<{} base64 characters, sha256 of the text {}>", d.len(), crate::assets::sha256_hex(d.as_bytes())));
+    }
+    a
+}
+
 struct Audit<'a> {
     caller: &'a Caller,
     call_id: &'a Value,
@@ -324,7 +350,7 @@ impl Audit<'_> {
         .bind(self.agent.as_deref().unwrap_or(""))
         .bind(&self.on_behalf_of)
         .bind(&self.justification)
-        .bind(self.arguments)
+        .bind(redacted(self.arguments))
         .bind(outcome)
         .bind(error)
         .fetch_one(pool)
@@ -391,7 +417,7 @@ async fn tools_call(state: &AppState, caller: &Caller, id: &Value, params: &Valu
         }
         Err(e) => {
             let msg = match e {
-                ApiError::NotFound(m) | ApiError::BadRequest(m) | ApiError::Conflict(m) | ApiError::Gone(m) => m,
+                ApiError::NotFound(m) | ApiError::BadRequest(m) | ApiError::Conflict(m) | ApiError::Gone(m) | ApiError::TooLarge(m) => m,
                 ApiError::Unauthorized => "unauthorized".into(),
                 ApiError::Internal(e) => {
                     tracing::error!(error = %e, tool = name, "mcp tool failed");
@@ -466,6 +492,13 @@ struct CopyProposal {
     key: String,
     copy: crate::copy::Text,
     note: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadArgs {
+    data: String,
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1135,6 +1168,20 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
             parse::<NoArgs>(args)?;
             crate::experiments::listing(pool, site).await
         }
+        "upload_asset" => {
+            let a: UploadArgs = parse(args)?;
+            use base64::Engine;
+            let clean: String = a.data.chars().filter(|c| !c.is_whitespace()).collect();
+            let clean = clean.split_once("base64,").map(|(_, d)| d.to_string()).unwrap_or(clean);
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(clean.as_bytes())
+                .map_err(|_| ApiError::BadRequest("data must be the file's bytes, base64-encoded".into()))?;
+            crate::assets::upload(pool, &state.assets, site, &bytes, a.name.as_deref(), agent, Some(call_row)).await
+        }
+        "list_assets" => {
+            parse::<NoArgs>(args)?;
+            crate::assets::list(pool, site).await
+        }
         _ => unreachable!("tools/call checks the catalogue first"),
     }
 }
@@ -1260,7 +1307,11 @@ async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &
     match (&spec, as_copy) {
         (Some(_), false) => return Err(ApiError::BadRequest(format!("slot {:?} is a copy slot: use propose_copy with its fields, not html", p.slot))),
         (None, true) => return Err(ApiError::BadRequest(format!("slot {:?} is not a copy slot; use propose_variant", p.slot))),
-        (Some(spec), true) => crate::copy::check_stored(spec, Some(&p.html)).map_err(ApiError::BadRequest)?,
+        (Some(spec), true) => {
+            crate::copy::check_stored(spec, Some(&p.html)).map_err(ApiError::BadRequest)?;
+            let text = crate::copy::read_text(Some(&p.html)).map_err(ApiError::BadRequest)?;
+            crate::assets::check_refs(pool, site, &crate::copy::asset_refs(&text)).await?;
+        }
         (None, false) => {}
     }
     let mut tx = pool.begin().await?;

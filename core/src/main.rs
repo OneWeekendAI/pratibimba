@@ -12,6 +12,10 @@
 //! - `PRB_DASHBOARD_DIR`: the dashboard's static export, served at `/app`.
 //! - `PRB_PG_BIN`: the directory holding `pg_dump` and `psql` for `backup` / `restore`;
 //!   default: `PATH`.
+//! - `PRB_ASSETS_DIR` (default `prb-assets`), or `PRB_ASSETS_S3_ENDPOINT`, `_BUCKET`,
+//!   `_ACCESS_KEY`, `_SECRET_KEY`, `_REGION`: where uploaded images live (see `assets`).
+//!   `PRB_ASSET_MAX_BYTES` (default 5 MiB) caps an upload; `PRB_ASSET_GC_GRACE_SECS` (default
+//!   7 days) is how long an unreferenced one is kept.
 
 use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
@@ -54,12 +58,24 @@ async fn main() -> Result<()> {
             let out = std::path::PathBuf::from(args.get(1).map(String::as_str).unwrap_or("."));
             let file = pratibimba::backup::backup(&url, &out, pratibimba::backup::pg_bin_from_env().as_deref(), chrono::Utc::now()).await?;
             println!("{}", file.display());
+            if let Some(dir) = pratibimba::assets::Assets::from_env()?.store.local_dir().filter(|d| d.is_dir()) {
+                let to = pratibimba::backup::assets_dir_for(&file);
+                let n = pratibimba::backup::copy_tree(&dir, &to)?;
+                println!("{} ({n} asset files)", to.display());
+            }
             return Ok(());
         }
         Some("restore") => {
             let file = args.get(1).context(USAGE)?;
             pratibimba::backup::restore(&url, std::path::Path::new(file), pratibimba::backup::pg_bin_from_env().as_deref()).await?;
             println!("restored {file}");
+            let saved = pratibimba::backup::assets_dir_for(std::path::Path::new(file));
+            if saved.is_dir() {
+                match pratibimba::assets::Assets::from_env()?.store.local_dir() {
+                    Some(dir) => println!("restored {} asset files into {}", pratibimba::backup::merge_tree(&saved, &dir)?, dir.display()),
+                    None => eprintln!("{} holds local assets but the store is S3: copy them to the bucket yourself", saved.display()),
+                }
+            }
             return Ok(());
         }
         _ => {}
@@ -88,7 +104,9 @@ async fn main() -> Result<()> {
             }
             let edge = pratibimba::edge::Edge::from_env()?;
             tracing::info!(on = edge.is_on(), "edge snapshot publisher");
-            let app = http::router(http::AppState::configured_with_edge(pool, None, admin, dashboard, edge), &origins);
+            let assets = pratibimba::assets::Assets::from_env()?;
+            tracing::info!(store = %assets.store.describe(), max_bytes = assets.max_bytes, "asset store");
+            let app = http::router(http::AppState::configured_full(pool, None, admin, dashboard, edge, assets), &origins);
             let bind = std::env::var("PRB_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
             let listener = tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("cannot bind {bind}"))?;
             tracing::info!(%bind, "serving");
@@ -97,14 +115,14 @@ async fn main() -> Result<()> {
         Some("worker") => {
             db::migrate(&pool).await?;
             if args.get(1).map(String::as_str) == Some("--once") {
-                worker::run_drain_edge(&pool, &pratibimba::edge::Edge::from_env()?).await?;
+                worker::run_drain_assets(&pool, &pratibimba::edge::Edge::from_env()?, &pratibimba::assets::Assets::from_env()?).await?;
                 tracing::info!("worker pass done (--once)");
                 return Ok(());
             }
             let tick = std::env::var("PRB_WORKER_TICK_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
             tracing::info!(tick_ms = tick, "worker running");
             tokio::select! {
-                r = worker::run_loop_edge(pool, Duration::from_millis(tick), pratibimba::edge::Edge::from_env()?) => r?,
+                r = worker::run_loop_assets(pool, Duration::from_millis(tick), pratibimba::edge::Edge::from_env()?, pratibimba::assets::Assets::from_env()?) => r?,
                 _ = shutdown() => {}
             }
         }

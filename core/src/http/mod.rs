@@ -58,6 +58,8 @@ pub struct AppState {
     pub salts: Mutex<std::collections::HashMap<String, String>>,
     /// The edge snapshot publisher ([`crate::edge`]); off unless configured.
     pub edge: crate::edge::Edge,
+    /// The asset store (S11, [`crate::assets`]); in memory unless configured.
+    pub assets: crate::assets::Assets,
 }
 
 impl AppState {
@@ -71,6 +73,7 @@ impl AppState {
             stream_every: Duration::from_secs(3),
             salts: Mutex::new(std::collections::HashMap::new()),
             edge: crate::edge::Edge::off(),
+            assets: crate::assets::Assets::memory(),
         }
     }
 
@@ -95,11 +98,24 @@ impl AppState {
         dashboard_dir: Option<PathBuf>,
         edge: crate::edge::Edge,
     ) -> Arc<Self> {
+        Self::configured_full(pool, seed, admin_token, dashboard_dir, edge, crate::assets::Assets::memory())
+    }
+
+    /// [`Self::configured_with_edge`] with an asset store.
+    pub fn configured_full(
+        pool: PgPool,
+        seed: Option<u64>,
+        admin_token: Option<String>,
+        dashboard_dir: Option<PathBuf>,
+        edge: crate::edge::Edge,
+        assets: crate::assets::Assets,
+    ) -> Arc<Self> {
         let rng = seed.map(ChaCha8Rng::seed_from_u64).unwrap_or_else(ChaCha8Rng::from_os_rng);
         let mut s = Self::build(pool, rng);
         s.admin_token = admin_token.filter(|t| !t.is_empty());
         s.dashboard_dir = dashboard_dir;
         s.edge = edge;
+        s.assets = assets;
         Arc::new(s)
     }
 }
@@ -116,7 +132,9 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
         .route("/webhook/conversion/{site}", post(webhooks::conversion))
         .route("/sdk.js", get(sdk_js))
         .route("/health", get(health))
-        .route("/mcp", post(crate::mcp::handler))
+        .route("/assets/{site}/{hash}", get(crate::assets::serve))
+        // An MCP upload carries the image base64-encoded in its JSON: a third larger, plus the call.
+        .route("/mcp", post(crate::mcp::handler).layer(axum::extract::DefaultBodyLimit::max((state.assets.max_bytes / 3 * 4 + 64 * 1024).max(2 * 1024 * 1024))))
         .nest("/api", admin::router(state.clone()));
     if let Some(dir) = state.dashboard_dir.clone() {
         // The export uses trailing slashes, so /app/slot/ is slot/index.html. Unknown paths get
@@ -166,6 +184,8 @@ pub enum ApiError {
     Gone(String),
     /// A route behind a shared token was called without it.
     Unauthorized,
+    /// A body over its limit (an asset upload).
+    TooLarge(String),
     Internal(anyhow::Error),
 }
 
@@ -188,6 +208,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::Gone(m) => (StatusCode::GONE, m),
+            ApiError::TooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, m),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "edge token required".to_string()),
             ApiError::Internal(e) => {
                 tracing::error!(error = %e, "internal error");

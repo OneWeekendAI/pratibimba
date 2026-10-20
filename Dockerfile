@@ -34,12 +34,14 @@ FROM debian:trixie-slim
 # postgresql-client: pg_dump and psql for `pratibimba backup` / `restore`.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --no-create-home pratibimba
+ && useradd --system --uid 10001 --no-create-home pratibimba \
+ && mkdir -p /var/lib/pratibimba/assets && chown pratibimba /var/lib/pratibimba/assets
 COPY --from=build /src/target/release/pratibimba /usr/local/bin/pratibimba
 COPY --from=dashboard /dash/out /usr/share/pratibimba/dashboard
 USER pratibimba
 # The dashboard API stays off (503) until PRB_ADMIN_TOKEN is set.
-ENV PRB_BIND=0.0.0.0:8080 PRB_DASHBOARD_DIR=/usr/share/pratibimba/dashboard
+# Uploaded images (S11) live here unless PRB_ASSETS_S3_BUCKET is set; mount a volume on it.
+ENV PRB_BIND=0.0.0.0:8080 PRB_DASHBOARD_DIR=/usr/share/pratibimba/dashboard PRB_ASSETS_DIR=/var/lib/pratibimba/assets
 EXPOSE 8080
 ENTRYPOINT ["pratibimba"]
 CMD ["serve"]

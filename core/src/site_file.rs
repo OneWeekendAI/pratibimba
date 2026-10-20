@@ -295,6 +295,18 @@ fn file_share(baseline: bool, stated: Option<f32>, prev: Option<(Option<f32>, Op
 
 pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     file.validate()?;
+    // An image field names an upload of this site (S11): the site must exist and hold it.
+    for slot in &file.slots {
+        for v in &slot.variants {
+            let refs = v.copy.as_ref().map(crate::copy::asset_refs).unwrap_or_default();
+            if let Err(e) = crate::assets::check_refs(pool, &file.site, &refs).await {
+                bail!("slot {:?}: variant {:?}: {}", slot.key, v.key, match e {
+                    crate::http::ApiError::BadRequest(m) => m,
+                    other => format!("{other:?}"),
+                });
+            }
+        }
+    }
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed, attribution, currency)

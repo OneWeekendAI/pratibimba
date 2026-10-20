@@ -41,6 +41,11 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/sites/{site}/mcp-tokens", post(issue_mcp_token))
         .route("/sites/{site}/mcp-calls", get(mcp_calls))
         .route("/sites/{site}/pause", post(pause_site))
+        .route(
+            "/sites/{site}/assets",
+            // One byte over the cap gets through, so the upload's own check answers 413 with a reason.
+            get(list_assets).post(upload_asset).layer(axum::extract::DefaultBodyLimit::max(state.assets.max_bytes + 1)),
+        )
         .route("/mcp-calls/{id}", get(mcp_call))
         .route("/decisions/{id}", get(decision))
         .route("/variants/{id}/approve", post(approve))
@@ -116,6 +121,30 @@ async fn login(State(state): State<Arc<AppState>>, Json(body): Json<Login>) -> R
 
 async fn logout() -> Response {
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, format!("{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"))]).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadQuery {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// `POST /api/sites/{site}/assets?name=banner.png`: the raw bytes as the body. The declared
+/// content type and the name are not trusted; [`crate::assets::upload`] reads the bytes.
+async fn upload_asset(
+    State(state): State<Arc<AppState>>,
+    Path(site): Path<String>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let v = crate::assets::upload(&state.pool, &state.assets, &site, &body, q.name.as_deref(), "dashboard", None).await?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+async fn list_assets(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
+    site_origin(&state, &site).await?;
+    Ok(Json(crate::assets::list(&state.pool, &site).await?))
 }
 
 async fn site_origin(state: &AppState, site: &str) -> Result<String, ApiError> {
@@ -474,6 +503,8 @@ async fn create_draft(
     // A copy slot's draft is its fields as a JSON object (F4), checked as an agent's would be.
     if let Some(spec) = &spec {
         crate::copy::check_stored(spec, Some(&b.html)).map_err(|e| ApiError::BadRequest(format!("copy slot: {e}")))?;
+        let text = crate::copy::read_text(Some(&b.html)).map_err(ApiError::BadRequest)?;
+        crate::assets::check_refs(&state.pool, &site, &crate::copy::asset_refs(&text)).await?;
     }
     let mut tx = state.pool.begin().await?;
     let id: Option<i64> = sqlx::query_scalar(
@@ -668,6 +699,14 @@ async fn approve(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b
         && let Err(e) = crate::copy::check_stored(spec, payload.as_deref())
     {
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": format!("the copy no longer fits this slot: {e}") }))).into_response());
+    }
+    // An image field must still name one of this slot's site's uploads (S11).
+    if let (false, Some(_)) = (is_baseline, &copy_spec) {
+        let site: String = sqlx::query_scalar("SELECT site_id FROM slots WHERE id = $1").bind(slot_id).fetch_one(&mut *tx).await?;
+        let refs = crate::copy::read_text(payload.as_deref()).map(|t| crate::copy::asset_refs(&t)).unwrap_or_default();
+        if let Err(ApiError::BadRequest(e)) = crate::assets::check_refs(&state.pool, &site, &refs).await {
+            return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": e }))).into_response());
+        }
     }
     let report = if is_baseline {
         vec![]
