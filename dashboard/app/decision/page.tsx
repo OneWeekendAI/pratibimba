@@ -27,6 +27,7 @@ function ScoreBars({ d }: { d: DecisionDetail }) {
         );
       })}
       <p className="pt-1 text-xs text-muted">One Thompson draw per arm with seed <Mono>{d.seed}</Mono>; the highest score wins{d.in_holdout ? ' (a holdout visitor gets the baseline regardless)' : ''}.</p>
+      {d.learned === false && <p className="text-xs text-muted" data-testid="scores-unlearned">Nothing learned yet: no attribution window had closed, so these are draws from the prior, not estimates.</p>}
     </div>
   );
 }
@@ -45,8 +46,15 @@ function Counterfactual({ d }: { d: DecisionDetail }) {
         <div data-testid="counterfactual">
           <p className="mb-3 text-[13px] text-ink-2">
             Same seed, holdout flag flipped: <b className="font-mono text-ink">{c.variant}</b>
-            {c.kind === 'baseline' ? ' (the baseline).' : ' (the policy’s pick).'} The model at v{d.policy_version} expected{' '}
-            <b className="text-ink">{pct(c.inferred_rate)}</b> conversion for this visitor there, against <b className="text-ink">{pct(c.shown_inferred_rate)}</b> for <span className="font-mono">{d.variant}</span>.
+            {c.kind === 'baseline' ? ' (the baseline).' : ' (the policy’s pick).'}{' '}
+            {c.learned === false || c.shown_learned === false ? (
+              <>The model at v{d.policy_version} had learned nothing yet about {c.learned === false && c.shown_learned === false ? 'either variant' : <span className="font-mono">{c.learned === false ? c.variant : d.variant}</span>}, so it has no estimate of how this visitor would convert there.</>
+            ) : (
+              <>
+                The model at v{d.policy_version} expected <b className="text-ink">{pct(c.inferred_rate)}</b> conversion for this visitor there, against <b className="text-ink">{pct(c.shown_inferred_rate)}</b> for{' '}
+                <span className="font-mono">{d.variant}</span>.
+              </>
+            )}
           </p>
           <div className="grid gap-3 md:grid-cols-2">
             <div><div className="mb-1 text-xs text-muted">Shown: {d.variant}</div><Preview html={d.is_baseline ? null : d.payload} label={`shown ${d.variant}`} /></div>

@@ -131,6 +131,27 @@ test('counterfactual_reveals_the_other_variant', async ({ page }) => {
   await expect(page.getByTestId('counterfactual')).toContainText(`${d.counterfactual.variant} (the policy’s pick)`);
 });
 
+test('counterfactual_before_any_lesson_says_nothing_was_learned', async ({ page }) => {
+  await signIn(page);
+  // A decision scored by a model with no lessons (the seed's first half, so the oldest listed):
+  // its inferred rates are the prior's 50%.
+  const rows = await api('/sites/shop/decisions?slot=hero&limit=5000');
+  let d: any = null;
+  for (const r of rows.reverse().slice(0, 40)) {
+    const x = await api(`/decisions/${r.id}`);
+    if (x.learned === false && x.counterfactual) {
+      d = x;
+      break;
+    }
+  }
+  expect(d, 'no decision scored before the model learned anything').not.toBeNull();
+  await page.goto(`/app/decision/?id=${d.id}&site=shop`);
+  await expect(page.getByTestId('scores-unlearned')).toContainText('Nothing learned yet');
+  await page.getByRole('button', { name: /What would/ }).click();
+  await expect(page.getByTestId('counterfactual')).toContainText('had learned nothing yet');
+  await expect(page.getByTestId('counterfactual')).not.toContainText('%');
+});
+
 test('results_headline_matches_the_api', async ({ page }) => {
   await signIn(page);
   await page.goto('/app/results/?site=shop');

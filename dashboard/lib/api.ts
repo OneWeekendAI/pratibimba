@@ -206,6 +206,9 @@ export interface DecisionDetail {
   audiences?: { id: number; name: string; matched: boolean }[];
   scores: { variant: string; variant_id: number; score: number }[];
   replay_matches: boolean | null;
+  /** Observations the scoring model had absorbed; 0 means nothing was learned yet. */
+  lessons?: number | null;
+  learned?: boolean;
   counterfactual: null | {
     kind: 'baseline' | 'policy';
     variant: string;
@@ -213,6 +216,9 @@ export interface DecisionDetail {
     is_baseline: boolean;
     inferred_rate: number | null;
     shown_inferred_rate: number | null;
+    /** Whether the model had learned about that variant; `false` means `inferred_rate` is the prior's 50%. */
+    learned?: boolean;
+    shown_learned?: boolean;
   };
   timeline: { at: string; name: string }[];
   review: { action: 'approve' | 'reject' | 'comment'; actor: string; comment: string | null; at: string }[];
@@ -228,6 +234,9 @@ export interface SlotResult {
   revenue_lift?: Interval | null;
   goal?: 'conversion' | 'revenue';
   variants: VariantRow[];
+  /** Observations the slot's model has absorbed; `learned` false means it still holds its prior. */
+  lessons?: number;
+  learned?: boolean;
 }
 export interface Results {
   results: {

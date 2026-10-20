@@ -27,6 +27,10 @@ export interface Decision {
   explanation: {
     policy: string;
     policy_version: number;
+    /** Observations the model had absorbed when it scored this; `null` when unknown. */
+    lessons?: number | null;
+    /** `false` until a slot's first attribution window closes: the scores are prior draws, not estimates. */
+    learned?: boolean | null;
     features: Record<string, number>;
     scores: Record<string, number>;
     seed: string;

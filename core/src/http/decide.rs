@@ -647,6 +647,9 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let experiment = if paused || sorted_order.is_some() { None } else { slot.experiment };
     let experiment_id = experiment.as_ref().map(|e| e.id);
 
+    // The model's lesson count, by version: a sticky decision reports it only when it was scored
+    // with the model that is current now (a rollback can lower the count, so no other is known).
+    let current_lessons: Option<(i64, u64)> = slot.model.as_ref().map(|(v, s)| (*v, s.get("n").and_then(Value::as_u64).unwrap_or(0)));
     // Sticky: a reload inside the TTL gets the same decision, so the hero does not reroll.
     if let Some((id, variant_id, features, scores, seed, version, held, policy, auds, cold, exp_id, allocation, created)) = slot.sticky {
         // A visitor who has stated something new since gets a fresh decision, and so does one
@@ -663,7 +666,8 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
             let rec = record(id, variant_id, &features, &scores, seed as u64, &policy, version, held, &auds, &cold, exp_id, &allocation, created);
             let alloc = Allocation { kind: &allocation, experiment: experiment.as_ref() };
             let made = Made { subject: req.subject.clone(), at, record: rec };
-            let resp = response(id, &req.slot, key, payload, &policy, version, features, &scores, seed as u64, held, &arms, auds, cold, alloc);
+            let lessons = current_lessons.filter(|(v, _)| *v == version).map(|(_, n)| n);
+            let resp = response(id, &req.slot, key, payload, &policy, version, lessons, features, &scores, seed as u64, held, &arms, auds, cold, alloc);
             let ranking = if sorted_order.is_some() { slot.sticky_ranking.as_deref() } else { None };
             return Ok((with_copy(with_order(resp, ranking, &arms), is_copy), made));
         }
@@ -791,7 +795,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let rec = record(id, chosen, &features, &scores_json, seed, policy, version, in_holdout, &audiences, &cold, experiment_id, allocation, at);
     let made = Made { subject: req.subject.clone(), at, record: rec };
     let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
-    let resp = response(id, &req.slot, key, payload, policy, version, features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc);
+    let resp = response(id, &req.slot, key, payload, policy, version, Some(model.n), features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc);
     Ok((with_copy(with_order(resp, ranking.as_deref(), &arms), is_copy), made))
 }
 
@@ -828,6 +832,7 @@ fn response(
     payload: Option<String>,
     policy: &str,
     version: i64,
+    lessons: Option<u64>,
     features: Value,
     scores_by_id: &Value,
     seed: u64,
@@ -852,6 +857,11 @@ fn response(
         explanation: json!({
             "policy": policy,
             "policy_version": version,
+            // Observations the model had absorbed when it scored this; `null` when unknown (a
+            // sticky decision scored by an older model). With none, every score is a draw from
+            // the prior: `learned: false` says nothing has been learned yet.
+            "lessons": lessons,
+            "learned": lessons.map(|n| n > 0),
             "features": features,
             "scores": scores,
             // A string: a u64 does not survive a JavaScript number.

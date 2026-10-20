@@ -66,3 +66,19 @@ async fn curve_is_cumulative(pool: PgPool) {
     // Cumulative: (10+30)/200 - (5+5)/200 = 0.15, not the last bucket's 0.25.
     assert!((last.estimate - 0.15).abs() < 1e-9, "{last:?}");
 }
+
+/// Results carry whether the slot's model has learned anything, so an agent reading them does
+/// not take the prior for a finding.
+#[sqlx::test(migrations = false)]
+async fn results_say_how_many_lessons_the_model_has(pool: PgPool) {
+    setup_demo(&pool).await;
+    let s = serde_json::to_value(hero(&pool).await).unwrap();
+    assert_eq!(s["lessons"], 0, "{s}");
+    assert_eq!(s["learned"], false, "{s}");
+    let mut m = pratibimba::bandit::LinTs::default();
+    m.update(variant_id(&pool, "gift").await, &[1.0, 0.0, 0.0, 0.0], true);
+    sqlx::query("UPDATE models SET state = $1").bind(serde_json::to_value(&m).unwrap()).execute(&pool).await.unwrap();
+    let s = serde_json::to_value(hero(&pool).await).unwrap();
+    assert_eq!(s["lessons"], 1, "{s}");
+    assert_eq!(s["learned"], true, "{s}");
+}

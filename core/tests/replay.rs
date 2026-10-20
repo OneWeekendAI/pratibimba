@@ -170,3 +170,53 @@ async fn manual_rollback_restores_a_version(pool: PgPool) {
     assert_eq!(v, before + 1);
     assert_eq!(state, v1, "the model was not restored");
 }
+
+/// Until a slot's first window closes the model is its prior, so every rate it "infers" is 50%:
+/// the explanation must say nothing was learned, not present the prior as an estimate.
+#[sqlx::test(migrations = false)]
+async fn a_decision_scored_before_any_lesson_says_nothing_was_learned(pool: PgPool) {
+    let (app, id) = learned_then_moved(&pool).await;
+    let d = detail(&app, &id).await;
+    assert_eq!(d["policy_version"], 0);
+    assert_eq!(d["lessons"], 0, "{d}");
+    assert_eq!(d["learned"], false, "{d}");
+    assert_eq!(d["counterfactual"]["learned"], false, "{d}");
+    assert_eq!(d["counterfactual"]["shown_learned"], false, "{d}");
+    let s = d["sentence"].as_str().unwrap();
+    assert!(s.contains("The model had learned nothing yet"), "{s}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_decision_scored_after_lessons_says_how_many(pool: PgPool) {
+    let (app, _) = learned_then_moved(&pool).await;
+    let lessons: i64 = count(&pool, "SELECT (state->>'n')::bigint FROM models").await;
+    assert!(lessons > 0);
+    let o = decide(&app, "late", true).await.json();
+    let d = detail(&app, o["decision_id"].as_str().unwrap()).await;
+    assert_eq!(d["lessons"], lessons, "{d}");
+    assert_eq!(d["learned"], true, "{d}");
+    assert_eq!(d["counterfactual"]["learned"], true, "{d}");
+    assert_eq!(d["counterfactual"]["shown_learned"], true, "{d}");
+    assert!(!d["sentence"].as_str().unwrap().contains("learned nothing"), "{d}");
+}
+
+/// The decide response's explanation says the same thing, fresh and sticky.
+#[sqlx::test(migrations = false)]
+async fn decide_explanation_says_whether_anything_was_learned(pool: PgPool) {
+    setup_learning(&pool).await;
+    let app = admin_app(&pool);
+    let first = decide(&app, "e1", true).await.json();
+    assert_eq!(first["explanation"]["lessons"], 0, "{first}");
+    assert_eq!(first["explanation"]["learned"], false, "{first}");
+    let again = decide(&app, "e1", true).await.json();
+    assert_eq!(again["decision_id"], first["decision_id"], "not sticky");
+    assert_eq!(again["explanation"]["learned"], false, "{again}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn decide_explanation_counts_lessons_once_learned(pool: PgPool) {
+    let (app, _) = learned_then_moved(&pool).await;
+    let late = decide(&app, "e2", true).await.json();
+    assert_eq!(late["explanation"]["learned"], true, "{late}");
+    assert!(late["explanation"]["lessons"].as_u64().unwrap() > 0, "{late}");
+}

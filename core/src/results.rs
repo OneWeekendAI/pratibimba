@@ -114,6 +114,11 @@ pub struct SlotResult {
     /// A sorted slot's per-item results ([`crate::sorted::item_results`]); null for other kinds.
     /// The rollups above count a sorted decision under its top item.
     pub items: Option<Vec<crate::sorted::ItemResult>>,
+    /// Observations the slot's current model has absorbed (each closed attribution window of a
+    /// treated, exposed decision is one).
+    pub lessons: u64,
+    /// `lessons > 0`. While `false` the model has learned nothing and still holds its prior.
+    pub learned: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -167,8 +172,13 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
     .bind(now)
     .fetch_one(pool)
     .await?;
-    let slots: Vec<(i64, String, String, String, String)> =
-        sqlx::query_as("SELECT id, key, metric, goal, kind FROM slots WHERE site_id = $1 ORDER BY key").bind(site).fetch_all(pool).await?;
+    let slots: Vec<(i64, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT s.id, s.key, s.metric, s.goal, s.kind, COALESCE((m.state->>'n')::bigint, 0)
+           FROM slots s LEFT JOIN models m ON m.slot_id = s.id WHERE s.site_id = $1 ORDER BY s.key",
+    )
+    .bind(site)
+    .fetch_all(pool)
+    .await?;
     let variants: Vec<(i64, i64, String, String, bool, Option<f32>)> = sqlx::query_as(
         "SELECT v.id, v.slot_id, v.key, v.status, v.is_baseline, v.traffic_share
            FROM variants v JOIN slots s ON s.id = v.slot_id WHERE s.site_id = $1 ORDER BY v.id",
@@ -192,7 +202,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
 
     let (mut site_t, mut site_h) = (Counts::default(), Counts::default());
     let mut out = vec![];
-    for (slot_id, key, metric, goal, kind) in slots {
+    for (slot_id, key, metric, goal, kind, lessons) in slots {
         let (treated, holdout) = by_slot.get(&slot_id).copied().unwrap_or_default();
         site_t.merge(treated);
         site_h.merge(holdout);
@@ -225,6 +235,8 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
             goal,
             variants: vs,
             items: if kind == "sorted" { crate::sorted::item_results(pool, slot_id, since, now).await? } else { None },
+            lessons: lessons.max(0) as u64,
+            learned: lessons > 0,
         });
     }
     Ok(Some(SiteResult {

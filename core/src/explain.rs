@@ -51,6 +51,8 @@ pub struct Facts {
     pub experiment: Option<String>,
     /// A sorted slot's served order (item keys, first shown first); `None` for any other kind.
     pub order: Option<Vec<String>>,
+    /// Observations the scoring model had absorbed; `Some(0)` means nothing was learned yet.
+    pub lessons: Option<u64>,
 }
 
 fn short(subject: &str) -> String {
@@ -127,6 +129,9 @@ pub fn sentence(f: &Facts) -> String {
         }
         out += " They were not in the holdout.";
     }
+    if f.lessons == Some(0) {
+        out += " The model had learned nothing yet (no attribution window had closed), so every score is a draw from its prior, not an estimate.";
+    }
     out += &match &f.outcome {
         Outcome::Converted { after } => match f.share {
             Some(share) => {
@@ -167,9 +172,15 @@ pub struct Counterfactual {
     pub payload: Option<String>,
     pub is_baseline: bool,
     /// The model's posterior-mean conversion rate for this visitor's features under that variant.
+    /// Read it with `learned`: until the model has learned about the variant it is the prior's 50%.
     pub inferred_rate: Option<f64>,
     /// The same for the variant actually shown.
     pub shown_inferred_rate: Option<f64>,
+    /// Whether the model had learned anything about that variant; `false` means `inferred_rate`
+    /// is the prior, not an estimate.
+    pub learned: bool,
+    /// The same for the variant actually shown.
+    pub shown_learned: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -221,6 +232,11 @@ pub struct Detail {
     pub order: Option<Vec<String>>,
     /// Re-running the policy on the stored version, seed and pool gives the stored scores.
     pub replay_matches: Option<bool>,
+    /// Observations the model at `policy_version` had absorbed; `None` when that version is gone.
+    pub lessons: Option<u64>,
+    /// `lessons > 0`. While `false` nothing has been learned: the scores and every inferred rate
+    /// are draws from, or the mean of, the prior.
+    pub learned: bool,
     pub counterfactual: Option<Counterfactual>,
     pub timeline: Vec<TimelineEvent>,
     /// What reviewers wrote on the shown variant at the gate: approval, comments, rejection.
@@ -365,6 +381,8 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         let mean = m.arm(vid).mean;
         Some(sigmoid(mean.iter().zip(&x).map(|(a, b)| a * b).sum()))
     };
+    let knows = |vid: i64| model.as_ref().is_some_and(|m| m.arms.contains_key(&vid));
+    let lessons = model.as_ref().map(|m| m.n);
     let counterfactual = if held {
         policy_pick.and_then(|p| variants.iter().find(|v| v.0 == p)).map(|v| Counterfactual {
             kind: "policy",
@@ -373,6 +391,8 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
             is_baseline: v.3,
             inferred_rate: rate(v.0),
             shown_inferred_rate: rate(variant_id),
+            learned: knows(v.0),
+            shown_learned: knows(variant_id),
         })
     } else {
         variants.iter().find(|v| v.3).map(|v| Counterfactual {
@@ -382,6 +402,8 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
             is_baseline: true,
             inferred_rate: rate(v.0),
             shown_inferred_rate: rate(variant_id),
+            learned: knows(v.0),
+            shown_learned: knows(variant_id),
         })
     };
 
@@ -444,6 +466,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         share,
         experiment,
         order: order.clone(),
+        lessons,
     };
     let is_copy: bool = sqlx::query_scalar("SELECT copy IS NOT NULL FROM slots WHERE id = $1").bind(slot_id).fetch_one(pool).await?;
     let copy = if is_copy { crate::copy::parse(shown.2.as_deref()) } else { None };
@@ -476,6 +499,8 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         scores,
         order,
         replay_matches,
+        lessons,
+        learned: lessons.is_some_and(|n| n > 0),
         counterfactual,
         timeline,
         review,
@@ -508,6 +533,7 @@ mod tests {
             share: None,
             experiment: None,
             order: None,
+            lessons: Some(4),
         }
     }
 
@@ -519,6 +545,17 @@ mod tests {
         assert!(s.contains("The LinTS v12 policy scored it 0.63 against 0.41 for `baseline`."), "{s}");
         assert!(s.contains("They were not in the holdout."), "{s}");
         assert!(s.contains("They converted (`click`) 4 minutes later, and the model learned from it."), "{s}");
+    }
+
+    #[test]
+    fn sentence_before_any_lesson_says_nothing_was_learned() {
+        let mut f = facts(Outcome::Missed, false);
+        assert!(!sentence(&f).contains("learned nothing"), "{}", sentence(&f));
+        f.lessons = Some(0);
+        let s = sentence(&f);
+        assert!(s.contains("The model had learned nothing yet (no attribution window had closed), so every score is a draw from its prior, not an estimate."), "{s}");
+        f.in_holdout = true;
+        assert!(sentence(&f).contains("learned nothing yet"));
     }
 
     #[test]
