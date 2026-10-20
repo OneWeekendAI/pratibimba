@@ -46,7 +46,8 @@ When the user asks where to personalise, or wants a new slot, start here. Run:
     npx @pratibimba/agent scan
 
 It reads the repo (JSX/TSX, Vue, Svelte, Astro and plain HTML) and lists candidate slots, best first: hero
-headlines, calls to action, product lists, promo lines and returning-visitor spots. Each line
+headlines, calls to action, product lists, promo lines, image banners and returning-visitor
+spots. A hero or banner with a picture comes with an image field (see "Images and layout"). Each line
 gives `file:line`, the slot kind (`swap`, `copy` or `sorted`), a suggested key, audience and
 goal, and why. It also lists the slots the repo already has. It is a fixed set of rules, not
 a judgement: **scan points, you judge.** Open each candidate, drop the ones that make no
@@ -158,6 +159,30 @@ its text. Every required field must be filled; each value must fit its field's `
 characters, be one line, and contain no `<` or `>`. `propose_variant` is refused on a copy slot.
 The reviewer sees your text beside the champion's, field by field.
 
+**Images and layout.** Personalisation is not only words. Two ways to change what a visitor
+sees:
+
+- **An image field** (the simple way, no HTML). A copy slot may declare a field with
+  `"type": "image"`; its value is `{"asset": "<id>", "alt": "..."}` (or `"url"` instead of
+  `"asset"`, an `https://` address or a root-relative `/path`), with optional `width` and
+  `height`. `alt` is required: say what the picture shows, in plain words, as you would to
+  someone who cannot see it; the safety and grounding checks read it like any other copy. To
+  use a new picture, call `upload_asset` with the file's bytes base64-encoded in `data` (and a
+  `name`); it returns the `id`. Use only images the user gave you or that are already in the
+  repo (`public/`, `assets/`); never invent or fetch one from the web. `list_assets` shows
+  what is already uploaded. The page marks the `<img>` with `data-prb-field="<name>"` (script
+  tag and edge), or renders it with `<prb.Image image={t.<name>} />` inside `<prb.Copy>`
+  (Next.js), so only `src`, `alt` and size change.
+- **A swap variant** (layout). Swap HTML can rearrange a region: put the image beside the
+  headline instead of above it, a two-column banner, a shorter hero for mobile. Refer to an
+  upload as `<img src="/_prb/assets/<site>/<id>" alt="...">`. Give every `<img>` an `alt`, and
+  `width` and `height` so the page does not jump. Use the site's own CSS classes (read them in
+  step 2) rather than inline styles where you can; no `<script>`, no handlers.
+
+Choose an image field when only the picture should change, and a swap when the arrangement
+should. Uploading changes nothing a visitor sees: the variant that names an upload still goes
+through approval, and an upload no variant uses is deleted after a while.
+
 Then read the `checks` in the result:
 
 - If any check is `fail`, the draft **cannot be approved** as it is. Fix the problem and
@@ -196,7 +221,8 @@ A person approves. You do not, and you cannot.
 - **`create_slot` makes a draft slot.** Give it a new `key`, the `selector` of the element it
   replaces and, if it is not `click`, the success `metric`. Its `kind` is `swap` (the default:
   HTML variants), `copy` (give `copy: {"fields": [{"name": "headline", "max": 60, "required":
-  true}]}`, 1-8 fields, each max 1-500; then use `propose_copy`) or `sorted` (give `items`, 2-50
+  true}, {"name": "hero_image", "type": "image"}]}`, 1-8 fields, a text field's max 1-500; then
+  use `propose_copy`) or `sorted` (give `items`, 2-50
   item keys in the default order; the first is the head and the baseline). The server checks
   these exactly as it checks the site file. Its baseline (the page's own
   content) starts as a draft, so the slot is in no manifest and reaches no visitor until a

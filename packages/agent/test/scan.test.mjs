@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { scan, writeDrafts, DRAFTS_PATH } from '../src/scan.mjs';
+import { scan, writeDrafts, createSlotArgs, DRAFTS_PATH } from '../src/scan.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -318,4 +318,83 @@ test('--write refuses a drafts file it cannot parse and leaves it alone', async 
   const dir = await fixture({ 'app/page.tsx': PAGE, [DRAFTS_PATH]: '{oops' });
   await assert.rejects(run(process.execPath, [CLI, 'scan', '--dir', dir, '--write']));
   assert.equal(await readFile(join(dir, DRAFTS_PATH), 'utf8'), '{oops');
+});
+
+// ---- S11: images ----
+
+const IMG_PAGE = `export default function Home() {
+  return (
+    <main>
+      <section className="hero">
+        <img src="/hero.jpg" alt="Candles on a shelf" />
+        <h1>Hand-poured candles</h1>
+        <a href="/shop" className="btn">Shop candles</a>
+      </section>
+      <div className="banner">
+        <Image src="/sale.webp" alt="Autumn sale" width={1200} height={300} />
+      </div>
+      <picture>
+        <source srcSet="/wide.avif" type="image/avif" />
+        <img src="/wide.jpg" alt="The workshop" />
+      </picture>
+      <figure className="team"><img src="/team.jpg" alt="Our team" /><figcaption>Our team</figcaption></figure>
+    </main>
+  );
+}
+`;
+
+test('a hero with an image gets an image field beside its words', async () => {
+  const dir = await fixture({ 'app/page.tsx': IMG_PAGE });
+  const hero = (await scan({ dir })).candidates.find((c) => c.key === 'hero');
+  assert.equal(hero.kind, 'copy');
+  assert.deepEqual(hero.fields.map((f) => [f.name, f.type ?? 'text']), [['headline', 'text'], ['cta_label', 'text'], ['hero_image', 'image']]);
+  const img = hero.fields.find((f) => f.name === 'hero_image');
+  assert.deepEqual(img.baseline, { src: '/hero.jpg', alt: 'Candles on a shelf' });
+  assert.equal(img.required, true);
+  assert.match(hero.why, /image/);
+  assert.match(hero.mark, /prb\.Image/);
+});
+
+test('a banner that is only an image, and a picture, are image slots; a captioned figure is not', async () => {
+  const dir = await fixture({ 'app/page.tsx': IMG_PAGE });
+  const r = await scan({ dir });
+  const banner = r.candidates.find((c) => c.line === 9);
+  assert.equal(banner?.kind, 'copy', JSON.stringify(r.candidates.map((c) => [c.line, c.key])));
+  assert.equal(banner.key, 'banner');
+  assert.deepEqual(banner.fields, [{ name: 'image', type: 'image', required: true, baseline: { src: '/sale.webp', alt: 'Autumn sale' } }]);
+  assert.match(banner.why, /without writing HTML/);
+  const pic = r.candidates.find((c) => c.line === 12);
+  assert.equal(pic?.kind, 'copy');
+  assert.equal(pic.fields[0].baseline.src, '/wide.jpg');
+  assert.ok(!r.candidates.some((c) => c.line === 16 && c.fields?.some((f) => f.type === 'image')), 'a figure with a caption is not an image-only banner');
+  // Nothing inside the hero is offered again.
+  assert.ok(!r.candidates.some((c) => c.line === 5));
+});
+
+test('an image slot in plain HTML says to mark the img', async () => {
+  const dir = await fixture({ 'index.html': '<html><body><div class="promo-art"><img src="/a.png" alt="A"></div></body></html>' });
+  const [c] = (await scan({ dir })).candidates;
+  assert.equal(c.kind, 'copy');
+  assert.match(c.mark, /data-prb-field="image"/);
+});
+
+test('a dynamic image source still makes an image field, with no baseline src', async () => {
+  const dir = await fixture({ 'app/page.tsx': IMG_PAGE.replace('src="/hero.jpg"', 'src={heroUrl}') });
+  const hero = (await scan({ dir })).candidates.find((c) => c.key === 'hero');
+  assert.deepEqual(hero.fields.find((f) => f.name === 'hero_image').baseline, { src: null, alt: 'Candles on a shelf' });
+});
+
+test('create_slot arguments give an image field its type and no max', async () => {
+  const dir = await fixture({ 'app/page.tsx': IMG_PAGE });
+  const hero = (await scan({ dir })).candidates.find((c) => c.key === 'hero');
+  const args = createSlotArgs(hero);
+  assert.deepEqual(args.copy.fields.find((f) => f.name === 'hero_image'), { name: 'hero_image', type: 'image', required: true });
+  assert.ok(args.copy.fields.find((f) => f.name === 'headline').max > 0);
+});
+
+test('a banner with words beside its image stays a swap slot (layout and words change together)', async () => {
+  const dir = await fixture({ 'index.html': '<html><body><div class="banner"><img src="/a.png" alt="A"><p>Autumn sale ends Sunday</p></div></body></html>' });
+  const [c] = (await scan({ dir })).candidates;
+  assert.equal(c.kind, 'swap');
+  assert.equal(c.fields, undefined);
 });

@@ -25,6 +25,7 @@ const KINDS = {
   grid: { score: 80 },
   returning: { score: 70 },
   promo: { score: 65 },
+  banner: { score: 60 },
   cta: { score: 55 },
   headline: { score: 45 },
 };
@@ -144,12 +145,14 @@ function classify(el, f) {
     if (p) fields.subhead = literal(text(p, f));
     if (action && literalOnly(action, f)) fields.cta_label = literal(text(action, f));
     const copy = fields.headline !== undefined;
+    const img = kids.find(isImage);
+    const all = copy ? [...copyFields(fields), ...(img ? [imageField('hero_image', img)] : [])] : undefined;
     return {
-      type: 'hero', kind: copy ? 'copy' : 'swap', key: 'hero', ...(copy ? { fields: copyFields(fields) } : {}),
+      type: 'hero', kind: copy ? 'copy' : 'swap', key: 'hero', ...(copy ? { fields: all } : {}),
       audience: 'everyone first; then new vs returning visitors', goal: 'conversion',
       why: copy
-        ? 'the first thing a visitor reads, with static words: a copy slot lets an agent test headline, subhead and button label as plain text'
-        : 'the first thing a visitor sees, built from dynamic content: a swap slot lets variants change the markup',
+        ? `the first thing a visitor reads, with static words: a copy slot lets an agent test headline, subhead and button label as plain text${img ? ', and swap the hero image (an upload or URL with alt text)' : ''}`
+        : `the first thing a visitor sees, built from dynamic content: a swap slot lets variants change the markup${img ? ', image and layout included' : ''}`,
     };
   }
 
@@ -180,6 +183,19 @@ function classify(el, f) {
         why: `${n} repeated <${tag}> cards: a sorted slot learns which order gets clicked; give each card a stable item key`,
       };
     }
+  }
+
+  // An image-only banner: a picture, or a banner/promo/hero container whose one content is an
+  // image. A copy slot with one image field changes it without writing HTML.
+  const imgs = kids.filter(isImage);
+  if ((el.name === 'picture' || ((isContainer || el.name === 'figure') && (has(PROMO_TOKENS) || has(HERO_TOKENS))))
+      && imgs.length === 1 && !lit && el.closeStart !== undefined) {
+    return {
+      type: 'banner', kind: 'copy', key: toks.find((t) => PROMO_TOKENS.test(t) || HERO_TOKENS.test(t))?.toLowerCase() ?? 'banner',
+      fields: [imageField('image', imgs[0])],
+      audience: 'everyone; then a history audience', goal: 'conversion',
+      why: 'a banner that is only an image: a copy slot with an image field swaps the picture (an upload or URL with alt text) without writing HTML',
+    };
   }
 
   // A spot for returning visitors.
@@ -506,6 +522,13 @@ function matches(selector, el) {
 function copyFields(fields) {
   return Object.entries(fields).map(([name, value]) => ({ name, max: Math.min(500, Math.max(40, Math.ceil((value.length * 1.5) / 10) * 10)), required: true, baseline: value }));
 }
+function isImage(el) {
+  return el.name === 'img' || el.name === 'Image';
+}
+/** An image field, with the page's own src (null when it is an expression) and alt as its baseline. */
+function imageField(name, el) {
+  return { name, type: 'image', required: true, baseline: { src: attr(el.attrs, 'src') ?? null, alt: attr(el.attrs, 'alt') ?? '' } };
+}
 function slug(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').split('_').slice(0, 3).join('_') || 'text';
 }
@@ -525,13 +548,19 @@ function mark(c, key, id, file) {
     // The script tag's markup: there is no Vue, Svelte or Astro component, and the script acts
     // on the markup the server sends (a client-only mount is not there yet when it runs).
     let m = id ? `selector #${id} (already unique)` : `add data-prb-slot="${key}" to the element`;
-    if (c.kind === 'copy') m += `; inside it, put each field's words in an element marked data-prb-field="<name>" (${c.fields.map((x) => x.name).join(', ')})`;
+    const words = c.kind === 'copy' ? c.fields.filter((x) => x.type !== 'image') : [];
+    if (words.length) m += `; inside it, put each field's words in an element marked data-prb-field="<name>" (${words.map((x) => x.name).join(', ')})`;
+    for (const x of c.kind === 'copy' ? c.fields.filter((x) => x.type === 'image') : []) m += `; mark the <img> data-prb-field="${x.name}"`;
     if (c.kind === 'sorted') m += '; mark each repeated item, directly inside it, data-prb-item="<its key>"';
     if (!/\.html?$/.test(file)) m += '; this is the script tag\'s markup (no component exists for this framework), and it acts on server-rendered markup only';
     return m;
   }
   if (c.kind === 'sorted') return `wrap the mapped items in <prb.Sorted id="${key}">, each with its item key`;
-  if (c.kind === 'copy') return `render the words through <prb.Copy id="${key}" fallback={...}>`;
+  if (c.kind === 'copy') {
+    const imgs = c.fields.filter((x) => x.type === 'image').map((x) => `<prb.Image image={t.${x.name}} />`);
+    const words = c.fields.some((x) => x.type !== 'image') ? 'the words' : '';
+    return `render ${[words, imgs.length ? 'the image' : ''].filter(Boolean).join(' and ')} through <prb.Copy id="${key}" fallback={...}>${imgs.length ? `, each image as ${imgs.join(', ')} (fallback {src, alt})` : ''}`;
+  }
   return `wrap it in <prb.Slot id="${key}">; the current markup is the baseline`;
 }
 
@@ -585,7 +614,7 @@ export function formatText({ candidates, existing }) {
  */
 export function createSlotArgs(c) {
   const args = { key: c.key, selector: c.selector, metric: c.metric, kind: c.kind };
-  if (c.kind === 'copy') args.copy = { fields: c.fields.map(({ name, max, required }) => ({ name, max, required })) };
+  if (c.kind === 'copy') args.copy = { fields: c.fields.map(({ name, max, required, type }) => (type === 'image' ? { name, type, required } : { name, max, required })) };
   return args;
 }
 
