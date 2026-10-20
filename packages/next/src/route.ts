@@ -9,9 +9,12 @@ const ALLOWED: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^e$/ },
   { method: 'POST', pattern: /^decide$/ },
   { method: 'POST', pattern: /^decide\/batch$/ },
+  // S11: an uploaded image, by site and SHA-256. Nothing else under assets/ goes through.
+  { method: 'GET', pattern: /^assets\/[a-z0-9_-]{1,64}\/[0-9a-f]{64}$/ },
 ];
 
-const FORWARDED_RESPONSE_HEADERS = ['content-type', 'cache-control'];
+// An asset's own safety headers travel with it (Core sets them so nothing it serves can run).
+const FORWARDED_RESPONSE_HEADERS = ['content-type', 'cache-control', 'etag', 'content-security-policy', 'x-content-type-options', 'content-disposition', 'cross-origin-resource-policy'];
 
 export function createRoute(opts: { core: string; fetch?: Fetch }) {
   async function handle(request: Request): Promise<Response> {

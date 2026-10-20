@@ -26,6 +26,11 @@ export interface SlotConfig {
   timeoutMs?: number;
   /** Where the browser posts events; the route file mounts it. */
   eventsPath?: string;
+  /**
+   * Where the browser fetches uploaded images (S11), without the site: default `/_prb/assets`,
+   * which the route file forwards to Core. Point it at a CDN in front of Core if you have one.
+   */
+  assetsPath?: string;
   /** Reads the request headers. Default: Next.js's `headers()`. */
   headers?: () => Promise<HeaderReader>;
   /** One object per request; slots that share it share a batch. Default: React's `cache`. */
@@ -59,28 +64,79 @@ export interface SortedProps {
   children?: ReactNode;
 }
 
-export interface CopyProps<F extends string = string> {
+/** An image a copy slot's image field shows (S11): a plain `<img>`'s attributes. */
+export interface CopyImage {
+  src: string;
+  alt: string;
+  width?: number;
+  height?: number;
+}
+
+/** A copy field's value: a line of text, or an image. */
+export type CopyValue = string | CopyImage;
+
+export interface CopyProps<T extends Record<string, CopyValue> = Record<string, string>> {
   /** The copy slot's key, as declared in the site file (`kind: "copy"`). */
   id: string;
-  /** The page's own text for every field: the baseline, and the value of any field a variant leaves out. */
-  fallback: Record<F, string>;
   /**
-   * Renders the text. Each value is a plain string; render it as a React text child (escaped),
-   * never as HTML.
+   * The page's own value for every field: the baseline, and the value of any field a variant
+   * leaves out. A text field's is a string; an image field's is `{ src, alt, width?, height? }`.
    */
-  children: (text: Record<F, string>) => ReactNode;
+  fallback: T;
+  /**
+   * Renders the fields. Each text value is a plain string; render it as a React text child
+   * (escaped), never as HTML. Each image is `{ src, alt, width?, height? }`; render it with
+   * `<prb.Image image={t.banner} />` or your own `<img>`.
+   */
+  children: (text: T) => ReactNode;
+}
+
+const ASSET_ID = /^[0-9a-f]{64}$/;
+const SAFE_URL = /^(https:\/\/[^/\s"'<>`\\]|\/(?!\/))[^\s"'<>`\\]*$/;
+
+/**
+ * A decided image value as `<img>` attributes, or `null` when it is not one Core would have
+ * accepted (no alt, an address that is not https or root-relative, an asset id that is not a
+ * SHA-256). `assets` is where the browser fetches uploads, e.g. `/_prb/assets/<site>`.
+ */
+export function imageOf(v: unknown, assets: string): CopyImage | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.alt !== 'string' || !o.alt) return null;
+  let src: string;
+  if (typeof o.asset === 'string' && ASSET_ID.test(o.asset)) src = `${assets.replace(/\/$/, '')}/${o.asset}`;
+  else if (typeof o.url === 'string' && SAFE_URL.test(o.url)) src = o.url;
+  else return null;
+  const out: CopyImage = { src, alt: o.alt };
+  for (const k of ['width', 'height'] as const) if (typeof o[k] === 'number' && (o[k] as number) > 0) out[k] = Math.floor(o[k] as number);
+  return out;
 }
 
 /**
- * The text a copy decision shows: the page's own for each field, overridden by the decided
- * variant's string fields. Non-string values (none come from Core) are ignored.
+ * What a copy decision shows: the page's own value for each field, overridden by the decided
+ * variant's value of the same kind (text for a text field, a safe image for an image field).
+ * Anything else is ignored.
  */
-export function copyText<F extends string>(fallback: Record<F, string>, copy: unknown): Record<F, string> {
-  const out = { ...fallback };
+export function copyText<T extends Record<string, CopyValue>>(fallback: T, copy: unknown, assets = '/_prb/assets'): T {
+  const out = { ...fallback } as Record<string, CopyValue>;
   if (copy && typeof copy === 'object') {
-    for (const [k, v] of Object.entries(copy as Record<string, unknown>)) if (typeof v === 'string' && k in out) (out as Record<string, string>)[k] = v;
+    for (const [k, v] of Object.entries(copy as Record<string, unknown>)) {
+      if (!(k in out)) continue;
+      if (typeof out[k] === 'string') {
+        if (typeof v === 'string') out[k] = v;
+      } else {
+        const img = imageOf(v, assets);
+        if (img) out[k] = img;
+      }
+    }
   }
-  return out;
+  return out as T;
+}
+
+/** `<prb.Image image={t.banner} className="hero" />`: an image field as a plain `<img>`. */
+export function PrbImage({ image, ...rest }: { image: CopyImage } & Record<string, unknown>) {
+  const { src, alt, width, height } = image;
+  return createElement('img', { src, alt, ...(width ? { width } : {}), ...(height ? { height } : {}), ...rest });
 }
 
 /**
@@ -242,15 +298,17 @@ export function createSlot(config: SlotConfig) {
     );
   }
 
-  /** A copy slot (F4): `children` gets the decided text, field by field, as plain strings. */
-  async function Copy<F extends string>({ id, fallback, children }: CopyProps<F>) {
+  const assets = `${(config.assetsPath ?? '/_prb/assets').replace(/\/$/, '')}/${config.site}`;
+
+  /** A copy slot (F4): `children` gets the decided fields: text as plain strings, images as `<img>` attributes. */
+  async function Copy<T extends Record<string, CopyValue>>({ id, fallback, children }: CopyProps<T>) {
     const d = await decide(id);
     if (!d) return createElement('div', { 'data-prb-slot': id, style: { display: 'contents' } }, children({ ...fallback }));
     const v = await visitor();
     return createElement(
       'div',
       { 'data-prb-slot': id, 'data-prb-variant': d.variant, 'data-prb-decision': d.decision_id, style: { display: 'contents' } },
-      children(copyText(fallback, d.copy)),
+      children(copyText(fallback, d.copy, assets)),
       createElement(PrbBeacon, {
         site: config.site,
         slot: id,
@@ -263,5 +321,5 @@ export function createSlot(config: SlotConfig) {
     );
   }
 
-  return { Slot, Sorted, Copy, decide, visitor };
+  return { Slot, Sorted, Copy, Image: PrbImage, decide, visitor };
 }

@@ -81,7 +81,11 @@ const PUBLIC: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^e$/ },
   { method: 'POST', pattern: /^decide$/ },
   { method: 'POST', pattern: /^decide\/batch$/ },
+  // S11: an uploaded image, by site and SHA-256. Nothing else under assets/ goes through.
+  { method: 'GET', pattern: /^assets\/[a-z0-9_-]{1,64}\/[0-9a-f]{64}$/ },
 ];
+// An asset's own safety headers travel with it (Core sets them so nothing it serves can run).
+const FORWARDED = ['content-type', 'cache-control', 'etag', 'content-security-policy', 'x-content-type-options', 'content-disposition', 'cross-origin-resource-policy'];
 
 function cookies(request: Request): Map<string, string> {
   const out = new Map<string, string>();
@@ -135,7 +139,7 @@ export function createEdge(opts: EdgeOptions) {
       body: request.method === 'POST' ? await request.text() : undefined,
     });
     const headers = new Headers();
-    for (const h of ['content-type', 'cache-control']) {
+    for (const h of FORWARDED) {
       const v = up.headers.get(h);
       if (v) headers.set(h, v);
     }
@@ -191,7 +195,7 @@ export function createEdge(opts: EdgeOptions) {
           signal: AbortSignal.timeout(Math.max(ms, opts.hardTimeoutMs ?? 10_000)),
         });
         if (!r.ok) return null;
-        return (await r.json()) as { decision_id: string; payload: string | null; order?: unknown };
+        return (await r.json()) as { decision_id: string; payload: string | null; order?: unknown; copy?: unknown };
       })();
       const d = await deadline(work, ms);
       if (!d) return { html: null };
@@ -199,6 +203,7 @@ export function createEdge(opts: EdgeOptions) {
       const entry: (typeof decided)[number] = { slot, id: d.decision_id };
       decided.push(entry);
       const order = Array.isArray(d.order) && d.order.every((k) => typeof k === 'string') ? (d.order as string[]) : undefined;
+      if (d.copy && typeof d.copy === 'object') return { html: null, copy: d.copy as Record<string, unknown>, assets: `/_prb/assets/${opts.site}` };
       if (!order) return { html: d.payload };
       return { html: null, order, rendered: (keys) => void (entry.items = keys) };
     }

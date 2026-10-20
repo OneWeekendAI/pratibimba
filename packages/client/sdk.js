@@ -382,7 +382,35 @@
   function writeCopy(el, copy) {
     Array.prototype.forEach.call(el.querySelectorAll('[data-prb-field]'), function (f) {
       var v = copy[f.getAttribute('data-prb-field')];
-      if (typeof v === 'string') f.textContent = v;
+      if (typeof v === 'string') { if (f.tagName !== 'IMG') f.textContent = v; }
+      else if (v && typeof v === 'object') writeImage(f, v);
+    });
+  }
+
+  // S11: an image field. The marked element is the <img>, or holds one (a <picture>, a wrapper).
+  // src, alt and size are set as attributes, never as markup; srcset, sizes and the <picture>'s
+  // <source>s go, since the browser would prefer them to the new src. An address Core would not
+  // have accepted (not https or root-relative, an asset id not 64 hex) changes nothing.
+  function imageSrc(v) {
+    if (typeof v.alt !== 'string' || !v.alt) return null;
+    if (typeof v.asset === 'string' && /^[0-9a-f]{64}$/.test(v.asset)) return base + 'assets/' + encodeURIComponent(site) + '/' + v.asset;
+    if (typeof v.url === 'string' && /^(https:\/\/[^\/\s"'<>`\\]|\/(?!\/))[^\s"'<>`\\]*$/.test(v.url)) return v.url;
+    return null;
+  }
+
+  function writeImage(f, v) {
+    var img = f.tagName === 'IMG' ? f : f.querySelector('img');
+    var src = img && imageSrc(v);
+    if (!src) return;
+    var pic = img.parentNode && img.parentNode.tagName === 'PICTURE' ? img.parentNode : null;
+    if (pic) Array.prototype.slice.call(pic.querySelectorAll('source')).forEach(function (s) { s.parentNode.removeChild(s); });
+    img.removeAttribute('srcset');
+    img.removeAttribute('sizes');
+    img.setAttribute('src', src);
+    img.setAttribute('alt', v.alt);
+    ['width', 'height'].forEach(function (k) {
+      if (typeof v[k] === 'number' && v[k] > 0) img.setAttribute(k, String(Math.floor(v[k])));
+      else img.removeAttribute(k);
     });
   }
 
