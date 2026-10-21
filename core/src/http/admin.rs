@@ -66,6 +66,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(super::hooks::router())
         .merge(super::plugins::routes())
         .merge(super::experiments::routes())
+        .merge(super::preview::admin_routes())
         .layer(middleware::from_fn_with_state(state, require_admin));
     Router::new().route("/session", post(login).delete(logout)).merge(guarded)
 }

@@ -227,7 +227,7 @@ pub async fn batch_handler(
 }
 
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
-type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
+pub(crate) type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
 /// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start,
 /// experiment_id, allocation, created_at)`.
 type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>, Option<i64>, String, chrono::DateTime<chrono::Utc>);
@@ -907,13 +907,13 @@ fn response(
 
 /// A variant's gate: `(variant_id, variant key, audience id, name, predicate, status)`, as
 /// [`SNAPSHOT`] reads them for the slot's approved variants, ordered by audience then variant.
-type GateRow = (i64, String, i64, String, Value, String);
+pub(crate) type GateRow = (i64, String, i64, String, Value, String);
 
 /// Drop from `arms` every variant whose audience this visitor is outside, and say so:
 /// `[{id, name, matched, variants}]`, one entry per audience, ascending id. Fails closed: an
 /// audience that is no longer promoted, or reads a local clock the visitor did not report,
 /// matches nobody. The baseline is never gated (a CHECK holds it), so the pool is never empty.
-fn gate_by_audience(
+pub(crate) fn gate_by_audience(
     gates: Vec<GateRow>,
     ctx: &Ctx,
     at: chrono::DateTime<chrono::Utc>,

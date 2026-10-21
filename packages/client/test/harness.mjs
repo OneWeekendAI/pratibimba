@@ -20,6 +20,7 @@ export const DECISION = { decision_id: 'd-1', slot: 'hero', variant: 'gift', pay
 
 /**
  * opts.decide: (body) => Promise<response>   (default: resolves DECISION)
+ * opts.preview: (body) => Promise<response>  (the Preview room's /preview)
  * opts.attrs: extra attributes on the SDK tag
  * opts.url: page URL
  * opts.before: (window) => void, runs before parsing (seed storage, cookies)
@@ -43,6 +44,7 @@ export function load(opts = {}) {
         const body = JSON.parse(init.body);
         calls.push({ url, body });
         if (url.endsWith('/decide')) return (opts.decide || (() => ok(DECISION)))(body);
+        if (url.endsWith('/preview') && opts.preview) return opts.preview(body);
         return ok({ accepted: 1 });
       };
       if (opts.before) opts.before(window);

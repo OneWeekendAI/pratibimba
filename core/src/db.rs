@@ -43,6 +43,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0260_share_webhook", include_str!("../migrations/0260_share_webhook.sql")),
     ("0270_assets", include_str!("../migrations/0270_assets.sql")),
     ("0280_asset_widths", include_str!("../migrations/0280_asset_widths.sql")),
+    ("0290_preview_url", include_str!("../migrations/0290_preview_url.sql")),
 ];
 
 /// Arbitrary constant: "prb" in ASCII.

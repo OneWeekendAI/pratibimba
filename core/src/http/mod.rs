@@ -1,7 +1,7 @@
 //! The HTTP surface.
 //!
 //! - **Public** (what owners proxy at `/_prb/*`): `/decide`, `/decide/batch`, `/e`,
-//!   `/manifest/:site`, `/sdk.js`, `/health`. Browsers reach these through the site's own
+//!   `/manifest/:site`, `/sdk.js`, `/health`, `/preview` (the Preview room, token-authed). Browsers reach these through the site's own
 //!   origin, so the decision path stays first-party. CORS exists only for dev setups where the
 //!   page and Core sit on different origins (`PRB_SITE_ORIGIN`).
 //! - **Webhooks** (`/webhook/stripe/:site`, `/webhook/conversion/:site`): signed platform
@@ -19,6 +19,7 @@ pub mod experiments;
 pub mod hooks;
 pub mod manifest;
 pub mod plugins;
+pub mod preview;
 pub mod privacy;
 pub mod sim;
 pub mod webhooks;
@@ -132,6 +133,7 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
         .route("/webhook/conversion/{site}", post(webhooks::conversion))
         .route("/sdk.js", get(sdk_js))
         .route("/health", get(health))
+        .merge(preview::public_routes())
         .route("/assets/{site}/{hash}", get(crate::assets::serve))
         // An MCP upload carries the image base64-encoded in its JSON: a third larger, plus the call.
         .route("/mcp", post(crate::mcp::handler).layer(axum::extract::DefaultBodyLimit::max((state.assets.max_bytes / 3 * 4 + 64 * 1024).max(2 * 1024 * 1024))))

@@ -36,6 +36,10 @@
  * values; a feature the site tagged pii is sent only when the visitor is identified (`full`, or
  * `consent_aware` with consent), so it never leaves the device otherwise.
  *
+ * Preview (the dashboard's Preview room): a page opened with ?prb_preview=<token> runs none of
+ * the above. It sends no decide and no event, sets no subject or cookie, and caches nothing. It
+ * renders the versions Core's /preview lists, as the room picks them over postMessage.
+ *
  * Picker slots (kind "picker"): when the decision is `picker`, the SDK renders the owner's
  * options, 1 to max_picks of them, with Done and Skip. Done sends a `pick` event with the keys;
  * the picks become `ctx.stated` on every later decide (sessionStorage, or localStorage only
@@ -100,6 +104,243 @@
   var useCookie = mode === 'full' || (mode === 'consent_aware' && consented());
   var adaptMin = parseInt(script.getAttribute('data-adapt-min') || '1', 10);
   var slots = manifest.slots;
+
+  // --- preview mode (S13): the dashboard's Preview room -------------------------------------
+  // A page opened with ?prb_preview=<token> (minted by the dashboard, short-lived, signed by
+  // Core) runs NONE of the code below: no subject, no cookie, no /decide, no events, no cached
+  // decision. It asks Core's side-effect-free /preview for every version each slot could show
+  // this simulated visitor, renders the one the room picks, and talks to the room (the token's
+  // `parent` origin, and only that window) by postMessage.
+  var previewToken = previewTokenOf();
+  if (previewToken) { previewMode(previewToken); return; }
+
+  function previewTokenOf() {
+    var m = /[?&]prb_preview=([^&#]+)/.exec(location.search || '');
+    var t = m ? decodeURIComponent(m[1]) : null;
+    var inFrame = false;
+    try { inFrame = window.parent !== window; } catch (e) { inFrame = true; }
+    try {
+      if (t) window.sessionStorage.setItem('prb_preview', t);
+      // A link followed inside the room's frame keeps the frame in preview.
+      else if (inFrame) t = window.sessionStorage.getItem('prb_preview');
+    } catch (e) { /* private mode: the URL's token only */ }
+    return t || null;
+  }
+
+  function previewMode(token) {
+    var parentOrigin = null;
+    try {
+      var claims = JSON.parse(atob(token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));
+      if (typeof claims.parent === 'string') parentOrigin = claims.parent;
+    } catch (e) { /* a malformed token: Core refuses it below */ }
+    var toRoom = function (msg) {
+      if (!parentOrigin || window.parent === window) return;
+      try { window.parent.postMessage(msg, parentOrigin); } catch (e) { /* the room went away */ }
+    };
+    var hide = document.createElement('style');
+    hide.id = 'prb-hide';
+    hide.textContent = slots.map(function (s) { return ':is(' + s.selector + '):not([data-prb-done])'; }).join(',') + '{visibility:hidden!important}';
+    var marks = document.createElement('style');
+    marks.id = 'prb-preview-marks';
+    marks.textContent =
+      // Drawn inside the slot (negative offset, inset shadow): a parent's overflow cannot clip it.
+      // On the slot's boxes (see `boxes`): a slot element with display:contents draws nothing.
+      '[data-prb-mark~=many]{outline:1.5px dashed rgba(79,70,229,.6);outline-offset:-3px;cursor:pointer}' +
+      '[data-prb-mark~=changed]{outline:2.5px solid #4f46e5;outline-offset:-3px;box-shadow:inset 0 0 0 8px rgba(79,70,229,.14)}' +
+      '[data-prb-mark~=picked]{outline:2.5px solid #4f46e5;outline-offset:-3px}';
+    (document.head || document.documentElement).appendChild(hide);
+    (document.head || document.documentElement).appendChild(marks);
+    setTimeout(function () { if (hide.parentNode) hide.parentNode.removeChild(hide); }, Math.max(timeoutMs, 1500));
+
+    var ctxNow = { returning: false, mobile: false, from_ad: false, tz_offset: -new Date().getTimezoneOffset() };
+    var bySlot = {};      // slot key -> {kind, versions, kept_out}
+    var index = {};       // slot key -> the version shown
+    var shownKey = {};    // slot key -> the version key on the page now
+    var changed = {};     // slot key -> true when the last visitor switch changed it
+    var picked = null;    // the slot the room has open
+    var asked = 0;
+
+    function fetchFor(ctx, quiet) {
+      var n = ++asked;
+      return window.fetch(base + 'preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'omit',
+        body: JSON.stringify({ token: token, ctx: ctx })
+      }).then(function (r) {
+        if (r.status === 401) { toRoom({ type: 'prb:expired' }); throw new Error('preview token refused'); }
+        if (!r.ok) throw new Error('preview ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        if (n !== asked) return; // a newer visitor is already on its way
+        var before = shownKey;
+        bySlot = {};
+        (data.slots || []).forEach(function (s) { bySlot[s.slot] = s; });
+        index = {};
+        changed = {};
+        slots.forEach(function (slot) {
+          var s = bySlot[slot.key];
+          if (!s || !s.versions || !s.versions.length) return;
+          index[slot.key] = 0;
+          var now = versionKey(s.versions[0]);
+          if (!quiet && before[slot.key] !== undefined && before[slot.key] !== now) changed[slot.key] = true;
+        });
+        onReady(function () { renderAll(); report(); });
+      }).catch(function () {
+        onReady(function () { slots.forEach(function (slot) { each(slot, function (el) { el.setAttribute('data-prb-done', ''); }); }); });
+      });
+    }
+
+    function versionKey(v) { return v.order ? v.key + ':' + v.order.join(',') : v.key; }
+
+    // The page's own content of one element, kept before the first change and put back first on
+    // every render, so a version never builds on another.
+    function remember(el) {
+      if (el.prbOwn) return;
+      var fields = [];
+      Array.prototype.forEach.call(el.querySelectorAll('[data-prb-field]'), function (f) {
+        var img = f.tagName === 'IMG' ? f : f.querySelector('img');
+        var attrs = {};
+        if (img) ['src', 'alt', 'srcset', 'sizes', 'width', 'height'].forEach(function (a) { attrs[a] = img.getAttribute(a); });
+        fields.push({ f: f, img: img, text: img ? null : f.textContent, attrs: attrs });
+      });
+      el.prbOwn = { html: el.innerHTML, fields: fields };
+    }
+    function restore(el, kind) {
+      var own = el.prbOwn;
+      if (kind === 'copy') {
+        own.fields.forEach(function (x) {
+          if (x.img) Object.keys(x.attrs).forEach(function (a) { if (x.attrs[a] === null) x.img.removeAttribute(a); else x.img.setAttribute(a, x.attrs[a]); });
+          else if (x.f.textContent !== x.text) x.f.textContent = x.text;
+        });
+      } else if (kind !== 'sorted' && el.innerHTML !== own.html) el.innerHTML = own.html;
+    }
+
+    function render(slot, el) {
+      var s = bySlot[slot.key];
+      var v = s && s.versions && s.versions[index[slot.key]];
+      if (v) {
+        if (el.prbShown !== versionKey(v)) {
+          remember(el);
+          restore(el, s.kind);
+          if (v.order) reorder(el, v.order);
+          else if (s.kind === 'copy') { if (v.copy && typeof v.copy === 'object') writeCopy(el, v.copy); }
+          else if (v.payload !== null && v.payload !== undefined) el.innerHTML = v.payload;
+          el.prbShown = versionKey(v);
+        }
+        el.setAttribute('data-prb-preview', s.versions.length > 1 ? 'many' : 'one');
+        el.setAttribute('data-prb-variant', v.key);
+      }
+      if (changed[slot.key]) el.setAttribute('data-prb-changed', ''); else el.removeAttribute('data-prb-changed');
+      if (picked === slot.key) el.setAttribute('data-prb-picked', ''); else el.removeAttribute('data-prb-picked');
+      el.setAttribute('data-prb-done', '');
+      var mark = [v && s.versions.length > 1 ? 'many' : '', changed[slot.key] ? 'changed' : '', picked === slot.key ? 'picked' : ''].join(' ').trim();
+      (el.prbBoxes || []).forEach(function (b) { b.removeAttribute('data-prb-mark'); });
+      el.prbBoxes = mark ? boxes(el, 0) : [];
+      el.prbBoxes.forEach(function (b) { b.setAttribute('data-prb-mark', mark); });
+    }
+
+    // The elements that draw a slot: the slot itself, or, when it has no box of its own
+    // (display:contents, or zero size around positioned children), its children.
+    function boxes(el, depth) {
+      var r = el.getBoundingClientRect();
+      var flat = false;
+      try { flat = window.getComputedStyle(el).display === 'contents'; } catch (e) { /* no styles */ }
+      if (depth > 3 || !el.children.length || (!flat && (r.width > 0 && r.height > 0 || !(window.innerWidth > 0)))) return [el];
+      var out = [];
+      for (var i = 0; i < el.children.length; i++) out = out.concat(boxes(el.children[i], depth + 1));
+      return out;
+    }
+    function renderAll() {
+      slots.forEach(function (slot) {
+        var s = bySlot[slot.key];
+        if (s && s.versions && s.versions[index[slot.key]]) shownKey[slot.key] = versionKey(s.versions[index[slot.key]]);
+        each(slot, function (el) { render(slot, el); });
+      });
+    }
+
+    function rectOf(key) {
+      var slot = slots.filter(function (s) { return s.key === key; })[0];
+      var el = slot && document.querySelector(slot.selector);
+      if (!el) return null;
+      var t = Infinity, l = Infinity, b = -Infinity, rr = -Infinity;
+      boxes(el, 0).forEach(function (x) {
+        var r = x.getBoundingClientRect();
+        if (!r.width && !r.height) return;
+        t = Math.min(t, r.top); l = Math.min(l, r.left); b = Math.max(b, r.bottom); rr = Math.max(rr, r.right);
+      });
+      if (t === Infinity) return null;
+      return { top: t, left: l, width: rr - l, height: b - t, bottom: b };
+    }
+    function report() {
+      var out = [];
+      slots.forEach(function (slot) {
+        var s = bySlot[slot.key];
+        if (!s) return;
+        out.push({
+          slot: slot.key, kind: s.kind, index: index[slot.key] || 0, changed: !!changed[slot.key], on_page: !!document.querySelector(slot.selector),
+          versions: (s.versions || []).map(function (v) { return { id: v.id, key: v.key, status: v.status, baseline: v.baseline, why: v.why }; }),
+          kept_out: s.kept_out || []
+        });
+      });
+      toRoom({ type: 'prb:state', slots: out, picked: picked, rect: picked ? rectOf(picked) : null, path: location.pathname + location.search.replace(/[?&]prb_preview=[^&#]*/, '') });
+    }
+
+    // The room's instructions. Only from the window that minted the token.
+    window.addEventListener('message', function (e) {
+      if (e.source !== window.parent || !parentOrigin || e.origin !== parentOrigin) return;
+      var m = e.data || {};
+      if (m.type === 'prb:token' && typeof m.token === 'string') token = m.token;
+      else if (m.type === 'prb:visitor' && m.ctx && typeof m.ctx === 'object') {
+        ctxNow = {
+          returning: !!m.ctx.returning, mobile: !!m.ctx.mobile, from_ad: !!m.ctx.from_ad,
+          tz_offset: typeof m.ctx.tz_offset === 'number' ? m.ctx.tz_offset : -new Date().getTimezoneOffset()
+        };
+        fetchFor(ctxNow, !!m.quiet);
+      } else if (m.type === 'prb:pick' && typeof m.slot === 'string' && bySlot[m.slot]) {
+        var n = bySlot[m.slot].versions.length;
+        if (n && typeof m.index === 'number') index[m.slot] = ((m.index % n) + n) % n;
+        delete changed[m.slot];
+        picked = m.slot;
+        renderAll();
+        report();
+      } else if (m.type === 'prb:close') {
+        picked = null;
+        renderAll();
+        report();
+      }
+    });
+
+    // A click on a slot with versions opens it in the room, and does nothing else on the page.
+    document.addEventListener('click', function (e) {
+      var hit = null;
+      slots.forEach(function (slot) {
+        var s = bySlot[slot.key];
+        if (hit || !s || !s.versions || s.versions.length < 2) return;
+        var el = e.target && e.target.closest ? e.target.closest(slot.selector) : null;
+        if (el) hit = slot.key;
+      });
+      if (hit) { e.preventDefault(); e.stopPropagation(); }
+      picked = hit;
+      renderAll();
+      report();
+    }, true);
+    var queued = false;
+    function follow() {
+      if (!picked || queued) return;
+      queued = true;
+      (window.requestAnimationFrame || function (f) { setTimeout(f, 16); })(function () { queued = false; report(); });
+    }
+    window.addEventListener('scroll', follow, true);
+    window.addEventListener('resize', follow);
+
+    // Single-page apps mount slots later: render each as it appears, before it paints.
+    onReady(function () {
+      if (window.MutationObserver) new window.MutationObserver(function () {
+        slots.forEach(function (slot) { each(slot, function (el) { if (bySlot[slot.key] && !el.hasAttribute('data-prb-preview')) render(slot, el); }); });
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    });
+    toRoom({ type: 'prb:hello' });
+    fetchFor(ctxNow, true);
+  }
 
   var store = {
     get: function (k) { try { return window.sessionStorage.getItem(k); } catch (e) { return null; } },

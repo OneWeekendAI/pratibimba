@@ -19,6 +19,10 @@ pub const APPROVER: &str = "cli:apply";
 pub struct SiteFile {
     pub site: String,
     pub origin: String,
+    /// The page the dashboard's Preview room opens (an absolute http(s) URL on the site, e.g.
+    /// one under a base path). Omitted: keep the current value; a new site previews `origin/`.
+    #[serde(default)]
+    pub preview_url: Option<String>,
     /// Share of visitors (0 to 0.5) who always get the baseline. Omitted: keep the current value.
     #[serde(default)]
     pub holdout_fraction: Option<f32>,
@@ -165,6 +169,12 @@ impl SiteFile {
             h.validate()?;
         }
         check_attribution("site", self.attribution.as_deref())?;
+        if let Some(u) = &self.preview_url {
+            let ok = reqwest::Url::parse(u).is_ok_and(|p| matches!(p.scheme(), "http" | "https") && p.host().is_some());
+            if !ok || u.len() > 2048 {
+                bail!("preview_url {u:?} must be an absolute http(s) URL");
+            }
+        }
         if let Some(c) = &self.currency {
             if crate::commerce::currency(c).is_none() {
                 bail!("currency {c:?} must be a three-letter ISO 4217 code, e.g. USD");
@@ -327,6 +337,9 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(file.currency.as_deref().and_then(crate::commerce::currency))
         .execute(&mut *tx)
         .await?;
+    if let Some(u) = &file.preview_url {
+        sqlx::query("UPDATE sites SET preview_url = $2 WHERE id = $1").bind(&file.site).bind(u).execute(&mut *tx).await?;
+    }
     if let Some(h) = &file.history {
         let v = h.enabled.then(|| serde_json::to_value(h)).transpose()?;
         sqlx::query("UPDATE sites SET history = $2 WHERE id = $1").bind(&file.site).bind(v).execute(&mut *tx).await?;
