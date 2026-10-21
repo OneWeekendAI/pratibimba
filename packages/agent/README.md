@@ -8,7 +8,7 @@ npm i -g @pratibimba/agent    # or run it with npx, below
 
 ```sh
 # in the project the SDK is installed in:
-npx @pratibimba/agent scan       # proposes candidate slots (JSX/TSX, HTML, Vue, Svelte, Astro)
+npx @pratibimba/agent scan       # proposes candidate slots (JSX/TSX, HTML, Vue incl. Pug templates, Svelte incl. 5 snippets, Astro)
 npx @pratibimba/agent install    # drops the pack into .claude / .cursor / .pratibimba, wires MCP config
 npx @pratibimba/agent install --url https://core.example.com
 ```

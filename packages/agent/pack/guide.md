@@ -45,7 +45,7 @@ When the user asks where to personalise, or wants a new slot, start here. Run:
 
     npx @pratibimba/agent scan
 
-It reads the repo (JSX/TSX, Vue, Svelte, Astro and plain HTML) and lists candidate slots, best first: hero
+It reads the repo (JSX/TSX, Vue (HTML or Pug templates), Svelte (snippets included), Astro and plain HTML) and lists candidate slots, best first: hero
 headlines, calls to action, product lists, promo lines, image banners and returning-visitor
 spots. A hero or banner with a picture comes with an image field (see "Images and layout"). Each line
 gives `file:line`, the slot kind (`swap`, `copy` or `sorted`), a suggested key, audience and

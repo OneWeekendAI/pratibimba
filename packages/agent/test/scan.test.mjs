@@ -29,7 +29,7 @@ const at = (r, file, line) => r.candidates.find((c) => c.file === file && c.line
 
 const FIXTURES = join(here, 'fixtures');
 for (const [ex, root] of [['shop', EXAMPLES], ['next', EXAMPLES], ['plain', EXAMPLES],
-  ['vue', FIXTURES], ['svelte', FIXTURES], ['astro', FIXTURES], ['jsx-lt', FIXTURES]]) {
+  ['vue', FIXTURES], ['svelte', FIXTURES], ['astro', FIXTURES], ['jsx-lt', FIXTURES], ['vue-pug', FIXTURES], ['svelte5', FIXTURES]]) {
   test(`${root === EXAMPLES ? 'examples' : 'fixtures'}/${ex} matches its golden scan`, async () => {
     const got = await scan({ dir: join(root, ex) });
     const path = join(GOLDEN, `${ex}.json`);
@@ -92,6 +92,77 @@ test('fixtures/svelte: {#each} is a sorted list, a prb:slot comment is existing,
   assert.deepEqual(brief(r), [[10, 'copy', 'hero'], [19, 'sorted', 'products'], [16, 'swap', 'promo'], [27, 'copy', 'get_started_cta']]);
   assert.ok(!r.candidates.some((c) => c.line === 28), 'a heading with dynamic words is not a copy slot');
   assert.match(r.candidates[1].why, /with prices/);
+});
+
+test('fixtures/vue-pug: a Pug template is read as its HTML, with Pug line numbers and excerpts', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'vue-pug') });
+  assert.deepEqual(r.existing, [{ key: 'comeback', kind: 'swap', file: 'src/pages/Home.vue', line: 24 }], 'a // prb:slot comment marks the next tag');
+  assert.deepEqual(brief(r), [[9, 'copy', 'hero'], [16, 'sorted', 'products'], [14, 'swap', 'promo'], [31, 'copy', 'book_a_call_cta']]);
+  assert.ok(!r.candidates.some((c) => c.file === 'src/components/Welcome.vue'), 'a Pug component rendered inside a slot is covered');
+  assert.ok(!r.candidates.some((c) => [26, 27, 28, 29].includes(c.line)), '`h1= expr` is dynamic, and a `pre.` block is text, not tags');
+  assert.ok(!r.candidates.some((c) => c.line < 7 || c.line > 31), 'nothing from <script> or <style>');
+  const [hero, list, promo, cta] = r.candidates;
+  assert.equal(hero.selector, '#top', 'the #id shorthand is the id');
+  assert.deepEqual(hero.fields.map((f) => f.baseline), ['Hand-poured candles', 'Soy wax, cotton wicks.', 'Shop candles', { src: '/img/hero.jpg', alt: 'Candles on a shelf' }]);
+  assert.equal(hero.excerpt, 'section.hero#top');
+  assert.equal(list.excerpt, 'ul.products', 'a v-for in attributes over several lines makes the list');
+  assert.equal(list.goal, 'revenue', '`₹{{ p.price }}` reads as a price');
+  assert.equal(promo.excerpt, '.banner', 'an implicit div with `| text`');
+  assert.equal(cta.fields[0].baseline, 'Book a call');
+  for (const c of r.candidates) assert.match(c.mark, /script tag/);
+  assert.match(promo.mark, /data-prb-slot="promo".*in Pug, inside the tag's parentheses/);
+});
+
+test('a Pug template: block expansion, interpolation, nested parentheses and silent comments', async () => {
+  const dir = await fixture({ 'src/App.vue': [
+    '<template lang="pug">',
+    'div',
+    '  //-',
+    '    section.hero',
+    '      h1 Not real',
+    '      a.btn Shop now',
+    '  header.hero',
+    '    h1: span Big #[em autumn] sale',
+    '    a.cta(href="/x" :class="[a, { b: f(1, 2) }]") Shop #{season}',
+    '  ul',
+    '    li: a(href="/a") Free shipping on orders over ₹999',
+    '  button(@click=go(1, 2)) Book a call',
+    '</template>',
+  ].join('\n') });
+  const r = await scan({ dir });
+  // As in HTML, the offer is the <ul> holding it (its <li> is not a container). The silent
+  // comment's block is not read, and an unquoted value's parentheses stay in the attribute.
+  assert.deepEqual(brief(r), [[7, 'copy', 'hero'], [10, 'swap', 'promo'], [12, 'copy', 'book_a_call_cta']], JSON.stringify(brief(r)));
+  assert.deepEqual(r.candidates[0].fields.map((f) => f.name), ['headline'], 'an interpolated label is dynamic, so it is no field');
+  assert.equal(r.candidates[0].fields[0].baseline, 'Big autumn sale');
+});
+
+test('fixtures/svelte5: snippets: an {@render}ed list is sorted, a snippet rendered in a slot is covered', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'svelte5') });
+  assert.deepEqual(r.existing, [{ key: 'weekly', kind: 'swap', file: 'src/routes/+page.svelte', line: 25 }]);
+  assert.deepEqual(brief(r), [[14, 'copy', 'hero'], [19, 'sorted', 'products'], [34, 'copy', 'get_started_cta'], [30, 'copy', 'thanks_for_visiting_headline']]);
+  assert.ok(!r.candidates.some((c) => c.line === 11), 'the offer snippet renders inside the weekly slot');
+  const list = r.candidates[1];
+  assert.equal(list.goal, 'revenue');
+  assert.match(list.mark, /data-prb-item=.*root element of \{#snippet card\}/);
+});
+
+test('a snippet rendered by a snippet that renders in a slot is covered too', async () => {
+  const dir = await fixture({ 'src/routes/+page.svelte': [
+    '{#snippet inner()}',
+    '  <p class="banner">Free shipping this week only</p>',
+    '{/snippet}',
+    '{#snippet outer()}',
+    '  <div>{@render inner()}</div>',
+    '{/snippet}',
+    '<aside data-prb-slot="weekly">{@render outer()}</aside>',
+    '{#snippet loose()}',
+    '  <p class="sale">20% off today only</p>',
+    '{/snippet}',
+    '{@render loose()}',
+  ].join('\n') });
+  const r = await scan({ dir });
+  assert.deepEqual(brief(r), [[9, 'swap', 'promo']], JSON.stringify(brief(r)));
 });
 
 test('fixtures/astro: frontmatter and <script> are skipped, JSX inside expressions is scanned, site.json selectors count', async () => {

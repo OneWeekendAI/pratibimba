@@ -107,6 +107,24 @@ const MUTANTS = [
   ['scan gives a sorted mark no item keys', SC, "if (c.kind === 'sorted') m +=", 'if (false) m +='],
   ['the pack says Vue/Svelte/Astro have a component', G, 'For Vue, Svelte and Astro there is **no SDK component**', 'For Vue, Svelte and Astro use the SDK component'],
   ['scan writes without --write', C, 'if (opts.write) {', 'if (true) {'],
+  // S12c: Pug templates and Svelte 5 snippets.
+  ['scan ignores Pug templates', SC, "const pug = fmt === 'vue' ? pugTemplates(text) : null;", 'const pug = null;'],
+  ['Pug excerpts quote the HTML', SC, '(f.pug ? f.pug[el.line - 1] : f.text', '(false ? f.pug[el.line - 1] : f.text'],
+  ['Pug attributes stop at the first nested paren', SC, "if (c === '(' || c === '{' || c === '[') depth++;\n      if (c === ')'", "if (c === '{' || c === '[') depth++;\n      if (c === ')'"],
+  ['Pug attributes end at the line', SC, "        if (line + 1 >= lines.length) break;", "        break;"],
+  ['Pug #id shorthand is dropped', SC, "(ids.length ? ` id=\"${ids[ids.length - 1]}\"` : '')", "''"],
+  ['Pug block expansion nests nothing', SC, "if (rest.startsWith(': ')) { rest = rest.slice(2).trimStart(); continue; }", ''],
+  ['Pug comments are dropped', SC, "if (!silent) s += `<!--${esc(body.slice(2))}`;", ''],
+  ['Pug silent comments are read as tags', SC, "const silent = body.startsWith('//-');", "const silent = false; if (body.startsWith('//-')) { out[i] = s; continue; }"],
+  ['Pug `p.` text blocks are read as tags', SC, "const block = /^\\.\\s*$/.test(s);", 'const block = false;'],
+  ['Pug `= expr` reads as static words', SC, "if (/^!?=/.test(rest)) { s += `{{ ${rest.replace(/^!?=\\s*/, '')} }}`; break; }", "if (/^!?=/.test(rest)) { s += rest.replace(/^!?=\\s*/, ''); break; }"],
+  ['Pug #[tag] interpolation is left as text', SC, "return s.replace(/#\\[([^\\]]*)\\]/g, (_, x) => {", "return s.replace(/#\\[NEVER([^\\]]*)\\]/g, (_, x) => {"],
+  ['Pug marks lose their hint', SC, "${pug ? ' (in Pug, inside the tag\\'s parentheses)' : ''}", ''],
+  ['Svelte {@render} lists are not sorted', SC, "(f.fmt === 'svelte' && /\\{@render\\s/.test(body))", 'false'],
+  ['a snippet rendered in a slot is not covered', SC, "if (f.covered.some(([a, b]) => rendered.test(f.text.slice(a, b)))) { f.covered.push(range); grew = true; }", ''],
+  ['snippet coverage is one level deep', SC, 'for (let grew = true; grew;) {\n      grew = false;', 'for (let grew = true, once = 0; grew && once++ < 1;) {\n      grew = false;'],
+  ['a snippet list price is not seen', SC, "body + (def ? f.text.slice(def[0], def[1]) : '')", 'body'],
+  ['a snippet list mark names no snippet', SC, 'if (c.snippet) m +=', 'if (false) m +='],
 ];
 
 let survived = 0;

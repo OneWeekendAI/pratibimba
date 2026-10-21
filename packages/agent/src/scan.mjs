@@ -53,7 +53,10 @@ export async function scan({ dir, limit } = {}) {
     const rel = relative(dir, abs).split(sep).join('/');
     const text = await readFile(abs, 'utf8');
     const fmt = formatOf(rel);
-    parsed.push({ rel, fmt, markup: fmt !== 'jsx', ...parse(text, fmt) });
+    // A Vue template written in Pug is read as the HTML it compiles to, one line per Pug line,
+    // so line numbers still point into the file; excerpts quote the Pug.
+    const pug = fmt === 'vue' ? pugTemplates(text) : null;
+    parsed.push({ rel, fmt, markup: fmt !== 'jsx', ...parse(pug ?? text, fmt), ...(pug ? { pug: text.split('\n') } : {}) });
   }
   const site = await readSite(dir);
 
@@ -74,6 +77,20 @@ export async function scan({ dir, limit } = {}) {
       existing.push({ key, kind, file: f.rel, line: el.line });
       f.covered.push([el.start, el.end]);
       for (const m of f.text.slice(el.start, el.end).matchAll(/<([A-Z]\w*)\b/g)) coveredNames.add(m[1]);
+    }
+  }
+  // Svelte 5: a snippet rendered inside a slot ({@render name(...)}) renders there, so its
+  // definition is covered too, and so is any snippet it renders in turn.
+  for (const f of parsed) {
+    if (f.fmt !== 'svelte') continue;
+    const defs = snippets(f.text);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [name, range] of defs) {
+        if (f.covered.includes(range)) continue;
+        const rendered = new RegExp(`\\{@render\\s+${name.replace(/\$/g, '\\$')}\\s*\\(`);
+        if (f.covered.some(([a, b]) => rendered.test(f.text.slice(a, b)))) { f.covered.push(range); grew = true; }
+      }
     }
   }
   for (const f of parsed) {
@@ -97,7 +114,7 @@ export async function scan({ dir, limit } = {}) {
       const c = classify(el, f);
       if (!c) continue;
       chosen.push([el.start, el.end]);
-      candidates.push({ file: f.rel, line: el.line, home: HOME.test(f.rel), el, ...c });
+      candidates.push({ file: f.rel, line: el.line, home: HOME.test(f.rel), el, ...(f.pug ? { pug: true } : {}), ...c });
     }
   }
   for (const c of candidates) c.score = KINDS[c.type].score + (c.home ? 5 : 0);
@@ -163,12 +180,18 @@ function classify(el, f) {
   if (loop && isContainer && loop.test(inner) && !kids.some((k) => k.closeStart !== undefined && CONTAINERS.has(k.name) && loop.test(f.text.slice(k.openEnd, k.closeStart)))) {
     const body = inner.slice(inner.search(loop));
     // A Vue v-for sits on the repeated element itself; the others render elements after the loop.
-    if ((f.fmt !== 'jsx' || /key=/.test(body)) && (f.fmt === 'vue' || /<[a-z]/.test(body))) {
-      const priced = /price|₹|\$|€|£/i.test(body);
+    // Svelte 5 may render each item through a snippet: {@render card(p)}.
+    const rendersItems = f.fmt === 'vue' || /<[a-z]/.test(body) || (f.fmt === 'svelte' && /\{@render\s/.test(body));
+    if ((f.fmt !== 'jsx' || /key=/.test(body)) && rendersItems) {
+      // Svelte 5 may render each item through a snippet; the item's markup is the snippet's.
+      const snippet = f.fmt === 'svelte' ? /\{@render\s+([\w$]+)\s*\(/.exec(body)?.[1] : undefined;
+      const def = snippet && snippets(f.text).get(snippet);
+      const priced = /price|₹|\$|€|£/i.test(body + (def ? f.text.slice(def[0], def[1]) : ''));
       return {
         type: 'grid', kind: 'sorted', key: toks.find((t) => GRID_TOKENS.test(t))?.toLowerCase() ?? 'list',
         audience: 'everyone; the order is learned from visitor features', goal: priced ? 'revenue' : 'conversion',
         why: `a list rendered from data${priced ? ' with prices' : ''}: a sorted slot learns which order gets clicked, with each item's key as its id`,
+        ...(snippet ? { snippet } : {}),
       };
     }
   }
@@ -278,6 +301,182 @@ function parse(src, fmt) {
   for (const c of comments) c.before = els.find((e) => e.start >= c.at)?.start;
   return { text, els, comments };
 }
+
+// ---- Pug (Vue <template lang="pug">) ----
+//
+// Each Pug template becomes the HTML it describes, line for line: a Pug line's tag opens on the
+// same line, and the tags it closes are written at the start of the next line that dedents past
+// them. Everything outside the template is untouched, so the result has the file's line count.
+// Covered: tags with #id/.class shorthand, implicit div, (attributes) over several lines, inline
+// text, `| text`, `tag.` text blocks, `tag: child` expansion, `tag/` self-closing, `= expr`,
+// `#[tag text]` interpolation, `//` comments (kept, so `// prb:slot="key"` works)
+// and `//-` silent ones, raw `<html>` lines. Pug's own code (if/each/case/mixin/include) is
+// transparent: its children belong to the enclosing tag.
+
+const PUG_TEMPLATE = /<template\b[^>]*\blang\s*=\s*["'](?:pug|jade)["'][^>]*>/i;
+const PUG_KEYWORDS = /^(if|else|unless|each|for|while|case|when|default|block|append|prepend|extends|include|mixin|doctype|yield)\b/;
+
+function pugTemplates(src) {
+  const m = PUG_TEMPLATE.exec(src);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  // The template's own </template>: the last one before <script>/<style> blocks that follow it.
+  const rest = src.slice(start);
+  const close = /\n<\/template\s*>/.exec(rest) ?? /<\/template\s*>/.exec(rest);
+  const end = close ? start + close.index : src.length;
+  return src.slice(0, start) + pugToHtml(src.slice(start, end)) + src.slice(end);
+}
+
+export function pugToHtml(pug) {
+  const lines = pug.split('\n');
+  const out = lines.map(() => '');
+  const stack = []; // { indent, close }
+  let textBlock = null; // indent of a `tag.` / comment block whose deeper lines are not tags
+  const indentOf = (s) => /^[ \t]*/.exec(s)[0].replace(/\t/g, '  ').length;
+  const closeTo = (indent) => {
+    let s = '';
+    while (stack.length && stack[stack.length - 1].indent >= indent) s += stack.pop().close;
+    return s;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const body = raw.trim();
+    if (!body) continue;
+    const indent = indentOf(raw);
+    if (textBlock) {
+      if (indent > textBlock.indent) {
+        out[i] = textBlock.silent ? '' : textBlock.comment ? ` ${esc(body)}` : ` ${inline(body)}`;
+        textBlock.last = i;
+        continue;
+      }
+      if (textBlock.comment && !textBlock.silent) out[textBlock.last] += ' -->';
+      textBlock = null;
+    }
+    const i0 = i;
+    let s = closeTo(indent);
+    if (body.startsWith('//')) {
+      const silent = body.startsWith('//-');
+      if (!silent) s += `<!--${esc(body.slice(2))}`;
+      textBlock = { indent, silent, comment: true, last: i };
+      out[i] = s;
+      continue;
+    }
+    if (body.startsWith('|')) { out[i] = s + inline(body.slice(1).replace(/^ /, '')); continue; }
+    if (body.startsWith('<')) { out[i] = s + body; continue; }
+    if (body.startsWith('-')) { out[i] = s; continue; }
+    if (body.startsWith('=') || body.startsWith('!=')) { out[i] = s + `{{ ${body.replace(/^!?=\s*/, '')} }}`; continue; }
+    if (PUG_KEYWORDS.test(body) || body.startsWith('+')) { stack.push({ indent, close: '' }); out[i] = s; continue; }
+    // One or more tags (`a: b: c text`), each opened here and closed on dedent.
+    let rest = body;
+    for (;;) {
+      const tag = pugTag(rest, lines, i);
+      if (!tag) { s += inline(rest); break; }
+      i = tag.line; // attributes may have run over several lines
+      s += `<${tag.name}${tag.attrs}${tag.selfClose ? ' /' : ''}>`;
+      if (!tag.selfClose) stack.push({ indent, close: `</${tag.name}>` });
+      rest = tag.rest;
+      if (tag.block) { textBlock = { indent, comment: false }; s += inline(rest.trim()); break; }
+      if (rest.startsWith(': ')) { rest = rest.slice(2).trimStart(); continue; }
+      if (/^!?=/.test(rest)) { s += `{{ ${rest.replace(/^!?=\s*/, '')} }}`; break; }
+      s += inline(rest.replace(/^ /, ''));
+      break;
+    }
+    out[i0] = s;
+  }
+  if (textBlock?.comment && !textBlock.silent) out[textBlock.last] += ' -->';
+  // Close what is still open on the last line.
+  let last = out.length - 1;
+  while (last > 0 && !lines[last].trim()) last--;
+  out[last] += closeTo(0);
+  return out.join('\n');
+}
+
+/** A Pug tag at the start of `s`: name, shorthand, (attributes), and what follows. */
+function pugTag(s, lines, line) {
+  const m = /^([A-Za-z][\w-]*)?((?:[.#][\w-]+)*)/.exec(s);
+  if (!m || (!m[1] && !m[2])) return null;
+  let name = m[1] ?? 'div', i = m[0].length;
+  const classes = [], ids = [];
+  for (const x of m[2].matchAll(/([.#])([\w-]+)/g)) (x[1] === '.' ? classes : ids).push(x[2]);
+  let attrs = '';
+  let text = s;
+  if (text[i] === '(') {
+    // Attributes, possibly over several lines: read until the matching ')'.
+    let depth = 0, k = i + 1, q = null, buf = '';
+    for (;;) {
+      if (k >= text.length) {
+        if (line + 1 >= lines.length) break;
+        line++;
+        buf += ' ';
+        text = text + '\n' + lines[line].trim();
+        k++;
+        continue;
+      }
+      const c = text[k];
+      if (q) { if (c === '\\') { buf += c + (text[k + 1] ?? ''); k += 2; continue; } if (c === q) q = null; buf += c; k++; continue; }
+      if (c === '"' || c === "'" || c === '`') { q = c; buf += c; k++; continue; }
+      if (c === '(' || c === '{' || c === '[') depth++;
+      if (c === ')' || c === '}' || c === ']') { if (depth === 0 && c === ')') { k++; break; } depth--; }
+      buf += c; k++;
+    }
+    const parsed = pugAttrs(buf);
+    for (const [n, v] of parsed) {
+      if (n === 'class' && v !== null && /^["']/.test(v)) classes.push(v.slice(1, -1));
+      else if (n === 'id' && v !== null && /^["']/.test(v)) ids.push(v.slice(1, -1));
+      else attrs += v === null ? ` ${n}` : ` ${n}=${/^["']/.test(v) ? v : `"${v.replace(/"/g, "'")}"`}`;
+    }
+    s = text.slice(k);
+    i = 0;
+  } else s = s.slice(i), i = 0;
+  if (s.startsWith('&attributes')) s = s.replace(/^&attributes\([^)]*\)/, '');
+  const head = (ids.length ? ` id="${ids[ids.length - 1]}"` : '') + (classes.length ? ` class="${classes.join(' ')}"` : '');
+  const selfClose = s.startsWith('/') || /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i.test(name);
+  if (s.startsWith('/')) s = s.slice(1);
+  const block = /^\.\s*$/.test(s);
+  return { name, attrs: head + attrs, rest: block ? '' : s, selfClose, block, line };
+}
+
+/** `a="x", b='y' c :d="e(f, g)"` -> [[name, value | null]]. */
+function pugAttrs(s) {
+  const out = [];
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    while (i < n && /[\s,]/.test(s[i])) i++;
+    if (i >= n) break;
+    const nm = /^[^\s=,()'"!]+/.exec(s.slice(i));
+    if (!nm) { i++; continue; }
+    const name = nm[0];
+    i += name.length;
+    while (i < n && s[i] === ' ') i++;
+    if (s[i] === '!' && s[i + 1] === '=') i++;
+    if (s[i] !== '=') { out.push([name, null]); continue; }
+    i++;
+    while (i < n && s[i] === ' ') i++;
+    let depth = 0, q = null, v = '';
+    for (; i < n; i++) {
+      const c = s[i];
+      if (q) { v += c; if (c === '\\') { v += s[++i] ?? ''; continue; } if (c === q) q = null; continue; }
+      if (c === '"' || c === "'" || c === '`') { q = c; v += c; continue; }
+      if (c === '(' || c === '{' || c === '[') depth++;
+      else if (c === ')' || c === '}' || c === ']') depth--;
+      else if (depth === 0 && (c === ',' || /\s/.test(c))) break;
+      v += c;
+    }
+    out.push([name, v.replace(/\n/g, ' ')]);
+  }
+  return out;
+}
+
+/** Pug inline text: `#[tag(attrs) text]` becomes a tag. (`#{expr}` needs nothing: its braces
+ * already make the words dynamic.) */
+function inline(s) {
+  return s.replace(/#\[([^\]]*)\]/g, (_, x) => {
+    const t = pugTag(x, [x], 0);
+    return t ? `<${t.name}${t.attrs}>${t.rest.replace(/^ /, '')}</${t.name}>` : x;
+  });
+}
+const esc = (s) => s.replace(/--/g, '- -');
 
 // ---- the tokenizer ----
 //
@@ -541,18 +740,20 @@ function unique(base, taken) {
 }
 const f2 = (parsed, rel) => parsed.find((f) => f.rel === rel);
 function excerpt(el, f) {
-  const line = f.text.slice(el.start).split('\n')[0].trim();
+  const line = (f.pug ? f.pug[el.line - 1] : f.text.slice(el.start).split('\n')[0]).trim();
   return line.length > 100 ? `${line.slice(0, 97)}...` : line;
 }
 function mark(c, key, id, file) {
   if (!/\.[jt]sx$/.test(file)) {
     // The script tag's markup: there is no Vue, Svelte or Astro component, and the script acts
     // on the markup the server sends (a client-only mount is not there yet when it runs).
-    let m = id ? `selector #${id} (already unique)` : `add data-prb-slot="${key}" to the element`;
+    const pug = c.pug;
+    let m = id ? `selector #${id} (already unique)` : `add data-prb-slot="${key}" to the element${pug ? ' (in Pug, inside the tag\'s parentheses)' : ''}`;
     const words = c.kind === 'copy' ? c.fields.filter((x) => x.type !== 'image') : [];
     if (words.length) m += `; inside it, put each field's words in an element marked data-prb-field="<name>" (${words.map((x) => x.name).join(', ')})`;
     for (const x of c.kind === 'copy' ? c.fields.filter((x) => x.type === 'image') : []) m += `; mark the <img> data-prb-field="${x.name}"`;
     if (c.kind === 'sorted') m += '; mark each repeated item, directly inside it, data-prb-item="<its key>"';
+    if (c.snippet) m += ` (each item is the root element of {#snippet ${c.snippet}})`;
     if (!/\.html?$/.test(file)) m += '; this is the script tag\'s markup (no component exists for this framework), and it acts on server-rendered markup only';
     return m;
   }
@@ -563,6 +764,17 @@ function mark(c, key, id, file) {
     return `render ${[words, imgs.length ? 'the image' : ''].filter(Boolean).join(' and ')} through <prb.Copy id="${key}" fallback={...}>${imgs.length ? `, each image as ${imgs.join(', ')} (fallback {src, alt})` : ''}`;
   }
   return `wrap it in <prb.Slot id="${key}">; the current markup is the baseline`;
+}
+
+/** Svelte 5 `{#snippet name(...)}...{/snippet}` blocks: name -> [start, end] (nested ones too). */
+function snippets(text) {
+  const out = new Map();
+  const open = [];
+  for (const m of text.matchAll(/\{#snippet\s+([A-Za-z_$][\w$]*)|\{\/snippet\s*\}/g)) {
+    if (m[1]) open.push([m[1], m.index]);
+    else if (open.length) { const [name, start] = open.pop(); out.set(name, [start, m.index + m[0].length]); }
+  }
+  return out;
 }
 
 async function walk(dir) {
