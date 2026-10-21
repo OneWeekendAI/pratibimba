@@ -18,11 +18,20 @@
 //!   `restore` copies it back. An S3 bucket is not copied: back it up with the bucket's own
 //!   versioning or replication.
 //!
+//! - **The nightly schedule lives in the binary** ([`run_daily`], `pratibimba backup --daily`).
+//!   It goes by the wall clock and by the dumps already in the directory, not by a `sleep`: a
+//!   backup is due when the newest dump there is older than the last scheduled time (03:00 UTC
+//!   by default). So a restart does not take a second dump the same day, a host that slept
+//!   through 03:00 takes the backup when it wakes, and a failed run is retried five minutes later
+//!   instead of the next day. (The earlier compose loop, `backup; sleep 86400`, did none of
+//!   these: on a laptop, Docker's VM clock stops while the host sleeps, so "daily" drifted by
+//!   every hour of sleep, and a failure waited a full day.)
+//!
 //! The tools come from `PRB_PG_BIN` (a directory) when set, else from `PATH`. `pg_dump` must be
 //! at least the server's major version; the Docker image carries Debian's client.
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveTime, TimeZone, Utc};
 use std::path::{Path, PathBuf};
 
 /// Tables whose rows a backup leaves out (their schema is kept).
@@ -76,6 +85,108 @@ pub async fn backup(url: &str, out: &Path, pg_bin: Option<&Path>, at: DateTime<U
         bail!("pg_dump failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(file)
+}
+
+/// A backup and, when the asset store is a local directory, a copy of it beside the dump.
+/// Returns the dump and `(assets copy, files copied)`.
+pub async fn backup_with_assets(url: &str, out: &Path, pg_bin: Option<&Path>, at: DateTime<Utc>, assets: Option<&Path>) -> Result<(PathBuf, Option<(PathBuf, u64)>)> {
+    let file = backup(url, out, pg_bin, at).await?;
+    let copied = match assets.filter(|d| d.is_dir()) {
+        Some(dir) => {
+            let to = assets_dir_for(&file);
+            let n = copy_tree(dir, &to)?;
+            Some((to, n))
+        }
+        None => None,
+    };
+    Ok((file, copied))
+}
+
+// ---- the nightly schedule ----
+
+/// The default time of day (UTC) for `backup --daily`.
+pub const DEFAULT_AT: NaiveTime = NaiveTime::from_hms_opt(3, 0, 0).unwrap();
+/// How long a failed scheduled backup waits before it is tried again.
+pub const RETRY_SECS: i64 = 300;
+
+/// The most recent scheduled moment at or before `now`: today at `at` (UTC), or yesterday's.
+pub fn last_slot(now: DateTime<Utc>, at: NaiveTime) -> DateTime<Utc> {
+    let today = Utc.from_utc_datetime(&now.date_naive().and_time(at));
+    if today <= now { today } else { today - chrono::Duration::days(1) }
+}
+
+/// A scheduled backup is due when there is none yet, or the newest is older than the last slot.
+pub fn due(now: DateTime<Utc>, newest: Option<DateTime<Utc>>, at: NaiveTime) -> bool {
+    newest.is_none_or(|t| t < last_slot(now, at))
+}
+
+/// When the newest dump in `dir` was taken, read from its [`file_name`]; other files are ignored.
+pub fn newest_backup(dir: &Path) -> Option<DateTime<Utc>> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stamp = name.strip_prefix("pratibimba-backup-")?.strip_suffix(".sql")?.to_string();
+            chrono::NaiveDateTime::parse_from_str(&stamp, "%Y%m%dT%H%M%SZ").ok().map(|n| Utc.from_utc_datetime(&n))
+        })
+        .max()
+}
+
+/// Whether the loop tries now: a backup is due, and a failed try is not still waiting out
+/// [`RETRY_SECS`].
+pub fn should_try(now: DateTime<Utc>, newest: Option<DateTime<Utc>>, at: NaiveTime, retry_after: Option<DateTime<Utc>>) -> bool {
+    due(now, newest, at) && retry_after.is_none_or(|r| now >= r)
+}
+
+/// `HH:MM` (UTC).
+pub fn parse_at(s: &str) -> Result<NaiveTime> {
+    NaiveTime::parse_from_str(s, "%H:%M").with_context(|| format!("--at {s:?}: give a UTC time as HH:MM, e.g. 03:00"))
+}
+
+/// `pratibimba backup --daily <dir>`: runs forever, checking every `check` whether a backup is
+/// [`due`], and taking it when it is. `clock` is the wall clock (a test hands in its own), and
+/// `rounds` stops the loop after that many checks (tests; `None` runs forever). Returns the dumps
+/// it wrote.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_daily(
+    url: &str,
+    dir: &Path,
+    pg_bin: Option<&Path>,
+    assets: Option<&Path>,
+    at: NaiveTime,
+    check: std::time::Duration,
+    mut clock: impl FnMut() -> DateTime<Utc>,
+    rounds: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let mut written = vec![];
+    let mut retry_after: Option<DateTime<Utc>> = None;
+    let next = |now: DateTime<Utc>| last_slot(now, at) + chrono::Duration::days(1);
+    tracing::info!(dir = %dir.display(), at = %at.format("%H:%M"), newest = ?newest_backup(dir), "daily backup: scheduled every day at this UTC time; a missed one runs on start");
+    let mut round = 0;
+    loop {
+        let now = clock();
+        if should_try(now, newest_backup(dir), at, retry_after) {
+            match backup_with_assets(url, dir, pg_bin, now, assets).await {
+                Ok((file, copied)) => {
+                    retry_after = None;
+                    tracing::info!(file = %file.display(), assets = ?copied.map(|c| c.1), next = %next(now), "daily backup written");
+                    written.push(file);
+                }
+                Err(e) => {
+                    retry_after = Some(now + chrono::Duration::seconds(RETRY_SECS));
+                    tracing::error!(error = %format!("{e:#}"), retry_at = ?retry_after, "daily backup failed");
+                }
+            }
+        }
+        round += 1;
+        if rounds.is_some_and(|r| round >= r) {
+            return Ok(written);
+        }
+        tokio::time::sleep(check).await;
+    }
 }
 
 /// `pg_dump` dumps a server of its own major version or older, never a newer one.
@@ -177,6 +288,67 @@ pub fn merge_tree(from: &Path, to: &Path) -> Result<u64> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn the_last_slot_is_today_once_its_time_has_passed() {
+        assert_eq!(last_slot(utc("2026-10-21T02:59:59Z"), DEFAULT_AT), utc("2026-10-20T03:00:00Z"));
+        assert_eq!(last_slot(utc("2026-10-21T03:00:00Z"), DEFAULT_AT), utc("2026-10-21T03:00:00Z"));
+        assert_eq!(last_slot(utc("2026-10-21T23:00:00Z"), DEFAULT_AT), utc("2026-10-21T03:00:00Z"));
+    }
+
+    #[test]
+    fn a_backup_is_due_once_per_slot() {
+        let at = DEFAULT_AT;
+        assert!(due(utc("2026-10-21T10:00:00Z"), None, at), "no backup yet: take one now");
+        // Taken at 03:00:05 today: not due again today, due from tomorrow 03:00.
+        let taken = Some(utc("2026-10-21T03:00:05Z"));
+        assert!(!due(utc("2026-10-21T15:00:00Z"), taken, at), "a restart the same day takes no second dump");
+        assert!(!due(utc("2026-10-22T02:59:59Z"), taken, at));
+        assert!(due(utc("2026-10-22T03:00:00Z"), taken, at));
+        // Asleep through 03:00 (last one two days ago): due the moment the host wakes, once.
+        assert!(due(utc("2026-10-23T08:30:00Z"), taken, at));
+        assert!(!due(utc("2026-10-23T08:31:00Z"), Some(utc("2026-10-23T08:30:00Z")), at));
+        // Taken before today's slot (on start at 01:00): the 03:00 one still runs.
+        assert!(due(utc("2026-10-21T03:00:00Z"), Some(utc("2026-10-21T01:00:00Z")), at));
+    }
+
+    #[test]
+    fn the_newest_backup_is_read_from_the_file_names() {
+        let d = std::env::temp_dir().join(format!("prb-newest-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(newest_backup(&d), None);
+        assert_eq!(newest_backup(&d.join("missing")), None);
+        for n in ["pratibimba-backup-20261020T030000Z.sql", "pratibimba-backup-20261021T030004Z.sql", "notes.txt", "pratibimba-backup-junk.sql"] {
+            std::fs::write(d.join(n), "x").unwrap();
+        }
+        // A newer-looking directory (an assets copy) is not a dump.
+        std::fs::create_dir_all(d.join("pratibimba-backup-20991231T000000Z.sql")).unwrap();
+        assert_eq!(newest_backup(&d), Some(utc("2026-10-21T03:00:04Z")));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_failed_try_waits_five_minutes_not_a_day() {
+        let failed_at = utc("2026-10-21T03:00:00Z");
+        let retry = Some(failed_at + chrono::Duration::seconds(RETRY_SECS));
+        let newest = Some(utc("2026-10-20T03:00:01Z"));
+        assert!(!should_try(utc("2026-10-21T03:04:59Z"), newest, DEFAULT_AT, retry));
+        assert!(should_try(utc("2026-10-21T03:05:00Z"), newest, DEFAULT_AT, retry));
+        assert!(!should_try(utc("2026-10-21T03:05:00Z"), Some(utc("2026-10-21T03:04:00Z")), DEFAULT_AT, None), "not due: nothing to retry");
+    }
+
+    #[test]
+    fn at_is_hh_mm() {
+        assert_eq!(parse_at("03:00").unwrap(), DEFAULT_AT);
+        assert_eq!(parse_at("23:45").unwrap(), NaiveTime::from_hms_opt(23, 45, 0).unwrap());
+        for bad in ["3", "25:00", "03:00:00Z", "noon"] {
+            assert!(parse_at(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn backup_file_name_is_timestamped() {

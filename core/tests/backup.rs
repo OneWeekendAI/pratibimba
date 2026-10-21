@@ -182,3 +182,35 @@ async fn a_restored_install_migrates_as_a_noop_and_keeps_working() {
     src.drop().await;
     dst.drop().await;
 }
+
+// ---- the nightly schedule (backup --daily) ----
+
+fn utc(s: &str) -> chrono::DateTime<Utc> {
+    chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+}
+
+/// Run the daily loop over these wall-clock readings, one check each, and return the dump names.
+async fn daily(src: &Db, dir: &Path, times: &[&str]) -> Vec<String> {
+    let mut clock = times.iter().map(|t| utc(t)).collect::<Vec<_>>().into_iter();
+    let files = backup::run_daily(&src.url, dir, pg_bin().as_deref(), None, backup::DEFAULT_AT, std::time::Duration::ZERO, move || clock.next().unwrap(), Some(times.len()))
+        .await
+        .unwrap();
+    files.iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect()
+}
+
+#[tokio::test]
+async fn the_daily_schedule_takes_one_dump_a_day_and_none_on_a_restart() {
+    let (src, dir) = (fresh().await, scratch().join("nightly"));
+    populate(&src.pool).await;
+    // First start mid-morning with no dumps: one now. Then nothing until the next 03:00.
+    let got = daily(&src, &dir, &["2026-10-21T10:00:00Z", "2026-10-21T10:01:00Z", "2026-10-21T23:00:00Z", "2026-10-22T02:59:59Z", "2026-10-22T03:00:00Z", "2026-10-22T03:01:00Z"]).await;
+    assert_eq!(got, ["pratibimba-backup-20261021T100000Z.sql", "pratibimba-backup-20261022T030000Z.sql"]);
+    // A restart (a new container) the same day takes no second dump.
+    assert!(daily(&src, &dir, &["2026-10-22T09:00:00Z", "2026-10-22T21:00:00Z"]).await.is_empty());
+    // The host slept through two 03:00s: one dump when it wakes, not one per missed night.
+    assert_eq!(daily(&src, &dir, &["2026-10-24T08:00:00Z", "2026-10-24T08:01:00Z"]).await, ["pratibimba-backup-20261024T080000Z.sql"]);
+    // Each is a real dump.
+    let file = dir.join("pratibimba-backup-20261022T030000Z.sql");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("CREATE TABLE"), "{}", file.display());
+    src.drop().await;
+}

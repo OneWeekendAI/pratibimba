@@ -1,8 +1,9 @@
 # A self-hosted install: Postgres, Core (serve), the learning worker, and a nightly backup.
 #   PRB_ADMIN_TOKEN=... docker compose -f examples/compose.yml up
-# The backup service writes a timestamped SQL dump to examples/backups (next to this file) once a
-# day, with a copy of the uploaded images beside it (`<dump>.assets/`); restore one into an empty
-# database with `pratibimba restore <file>` (see the README).
+# The backup service writes a timestamped SQL dump to examples/backups (next to this file) every
+# day at 03:00 UTC (PRB_BACKUP_AT), and at start when the newest there is older than that, with a
+# copy of the uploaded images beside it (`<dump>.assets/`); restore one into an empty database
+# with `pratibimba restore <file>` (see the README).
 services:
   db:
     image: postgres:17
@@ -53,18 +54,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # The cron: one dump a day. The image's pg_dump is Debian's 17; keep the server at 17 or older
-  # (against a newer one, backup stops with an error naming both versions).
+  # The nightly backup. `backup --daily` keeps its own schedule by the wall clock and the dumps
+  # already in /backups (not a `sleep 86400`, which drifts while a laptop sleeps and waits a day
+  # after a failure): a restart takes no second dump the same day, a missed night runs on wake,
+  # a failure is retried after five minutes. Its log says when each dump was written.
+  # The image's pg_dump is Debian's 17; keep the server at 17 or older (against a newer one,
+  # backup stops with an error naming both versions).
   # `migrate` first: it waits on serve's migration lock, so the dump taken at start-up never
   # catches the schema half-built.
   backup:
     image: pratibimba
     pull_policy: never
-    entrypoint: ["/bin/sh", "-c", "while true; do pratibimba migrate && pratibimba backup /backups; sleep 86400; done"]
+    entrypoint: ["/bin/sh", "-c", "pratibimba migrate && exec pratibimba backup --daily /backups"]
     # A bind mount is owned by the host user; root in the container can write to it.
     user: "0:0"
     environment:
       PRB_DB: postgres://postgres:pratibimba@db:5432/postgres
+      PRB_BACKUP_AT: ${PRB_BACKUP_AT:-03:00}
     volumes:
       - ./backups:/backups
       - assets:/var/lib/pratibimba/assets:ro

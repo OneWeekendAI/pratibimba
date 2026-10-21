@@ -171,7 +171,7 @@ flowchart LR
   audiences and plugin installs; and submits drafts for human approval.
 - **Instruction pack.** `npm i -g @pratibimba/agent` ships a guide the agent reads first;
   `npx @pratibimba/agent install` adds the pack to a project, `npx @pratibimba/agent scan`
-  reads JSX/TSX, plain HTML, Vue, Svelte and Astro and proposes candidate slots with
+  reads JSX/TSX, plain HTML, Vue (HTML or Pug templates), Svelte (5 snippets too) and Astro and proposes candidate slots with
   file:line, selector, kind (swap/copy/sorted) and the exact `create_slot` arguments; a hero or
   banner with a picture comes with an image field. `upload_asset` lets the agent upload an
   image it was given; the variant that uses it still needs a person's approval.
@@ -377,8 +377,10 @@ Core is configured entirely from the environment. Set the same values on `serve`
 | `PRB_WORKER_TICK_MS` | `1000` | how often `worker` closes attribution windows (events wake it at once) |
 | `PRB_DASHBOARD_DIR` | set in the image | the built dashboard (`dashboard/out`), served at `/app` |
 | `PRB_PG_BIN` | `PATH` | directory holding `pg_dump` and `psql`, for `backup` and `restore` |
+| `PRB_BACKUP_AT` | `03:00` | UTC time of day for `backup --daily` |
+| `PRB_BACKUP_CHECK_SECS` | 60 | how often `backup --daily` checks whether a dump is due |
 | `PRB_ERASE_PURGE_AFTER_SECS` | 1 day (max 30 days) | how long erased events sit tombstoned before deletion |
-| `PRB_ASSETS_DIR` | `prb-assets` (`/var/lib/pratibimba/assets` in the image) | where uploaded images live, as `<site>/<sha256>` |
+| `PRB_ASSETS_DIR` | `prb-assets` (`/var/lib/pratibimba/assets` in the image) | where uploaded images live, as `<site>/<sha256>` (and `<sha256>.w<width>` for the resized copies) |
 | `PRB_ASSETS_S3_BUCKET`, `_ENDPOINT`, `_ACCESS_KEY`, `_SECRET_KEY` | — | store images in an S3-compatible bucket instead; set the bucket and the rest are required |
 | `PRB_ASSETS_S3_REGION` | `us-east-1` | the bucket's signing region (`auto` for R2 also works) |
 | `PRB_ASSET_MAX_BYTES` | 5 MiB (max 50 MiB) | the largest image an upload may be |
@@ -407,7 +409,11 @@ Core serves both at `/assets/<site>/<sha256>`, cached a year, so a CDN in front 
 privacy salts are left out by design, so a backup cannot link one day's cookieless visitors to
 the next. With images in a local directory it also copies them to `<dump>.assets/`; a bucket is
 not copied, so back it up with its own versioning or replication. The compose `backup` service
-writes one to `examples/backups/` on start and then daily.
+runs `pratibimba backup --daily /backups` and writes to `examples/backups/` every day at 03:00
+UTC (`PRB_BACKUP_AT`). It also writes one at start when the newest dump there is older than the
+last 03:00. It schedules by the wall clock and the dumps already written, so a restart does not
+take a second dump the same day, a host that slept through 03:00 backs up when it wakes, and a
+failed run is retried after five minutes. `docker compose logs backup` shows each dump.
 
 `pratibimba restore <file>` loads a dump into an **empty** `PRB_DB` in one transaction and copies
 `<dump>.assets/` back into `PRB_ASSETS_DIR`. The image's `pg_dump` is Debian's 17; against a
@@ -584,6 +590,14 @@ curl -X POST --data-binary @autumn.webp -H "authorization: Bearer $PRB_ADMIN_TOK
 or the dashboard's Images shelf, or the agent's `upload_asset` tool. The type is judged by the
 bytes, not the name; uploads are size-capped; an asset can only be named by its own site.
 Core serves it at `/assets/<site>/<id>` (your page uses `/_prb/assets/<site>/<id>`).
+
+Uploads are made responsive for you. A PNG, JPEG or WebP is also stored at each of 320, 640,
+960, 1280 and 1920 px that is narrower than the original, in the same format, served at
+`/assets/<site>/<id>?w=640`. The resizing happens inside Core when you upload, with no outside
+service. A decision tells the renderer which widths exist, and all three installs write
+`srcset` and `sizes` for you. `sizes` caps the image at the field's `width`, or at the image's
+own width when the field gives none. SVG, GIF and AVIF are served as uploaded. An image
+uploaded before this feature gets its widths when you upload it again.
 
 **A swap variant** changes the layout. Its HTML can rearrange the region, for example the
 image beside the headline instead of below it:

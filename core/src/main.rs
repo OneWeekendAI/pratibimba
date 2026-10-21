@@ -23,10 +23,13 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: pratibimba <serve | worker [--once] | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]
                   | erase <site> <subject> --by <actor> [--reason R] | erasures <site>
-                  | backup [dir-or-file] | restore <file>>
+                  | backup [dir-or-file] | backup --daily <dir> [--at HH:MM] | restore <file>>
 
 erase <site> <subject>: right-to-erase one visitor; the subject is tombstoned and never comes back.
 backup [dir-or-file]: a timestamped SQL dump (pg_dump) of the database; default: the current directory.
+backup --daily <dir> [--at HH:MM]: stay running and take one dump a day at that UTC time (default
+  03:00, or PRB_BACKUP_AT); one is taken at start when the newest in <dir> is older than the last
+  scheduled time, and a failed run is retried after five minutes.
 restore <file>: load a backup into an EMPTY database (PRB_DB), in one transaction.
 
 simulate <site>: run synthetic visitors against the site's sandbox (<site>~sim), never the site itself.
@@ -54,13 +57,29 @@ async fn main() -> Result<()> {
     let url = db::database_url()?;
     // backup and restore drive pg_dump / psql; restore needs a database with no schema yet.
     match cmd {
+        Some("backup") if args.get(1).map(String::as_str) == Some("--daily") => {
+            let dir = std::path::PathBuf::from(args.get(2).filter(|a| !a.starts_with("--")).context(USAGE)?);
+            let at = match (args.get(3).map(String::as_str), args.get(4)) {
+                (Some("--at"), Some(v)) => pratibimba::backup::parse_at(v)?,
+                (None, _) => match std::env::var("PRB_BACKUP_AT").ok().filter(|v| !v.trim().is_empty()) {
+                    Some(v) => pratibimba::backup::parse_at(v.trim())?,
+                    None => pratibimba::backup::DEFAULT_AT,
+                },
+                _ => bail!("{USAGE}"),
+            };
+            let assets = pratibimba::assets::Assets::from_env()?.store.local_dir();
+            let check = Duration::from_secs(std::env::var("PRB_BACKUP_CHECK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60).max(1));
+            let pg = pratibimba::backup::pg_bin_from_env();
+            pratibimba::backup::run_daily(&url, &dir, pg.as_deref(), assets.as_deref(), at, check, chrono::Utc::now, None).await?;
+            return Ok(());
+        }
         Some("backup") => {
             let out = std::path::PathBuf::from(args.get(1).map(String::as_str).unwrap_or("."));
-            let file = pratibimba::backup::backup(&url, &out, pratibimba::backup::pg_bin_from_env().as_deref(), chrono::Utc::now()).await?;
+            let assets = pratibimba::assets::Assets::from_env()?.store.local_dir();
+            let pg = pratibimba::backup::pg_bin_from_env();
+            let (file, copied) = pratibimba::backup::backup_with_assets(&url, &out, pg.as_deref(), chrono::Utc::now(), assets.as_deref()).await?;
             println!("{}", file.display());
-            if let Some(dir) = pratibimba::assets::Assets::from_env()?.store.local_dir().filter(|d| d.is_dir()) {
-                let to = pratibimba::backup::assets_dir_for(&file);
-                let n = pratibimba::backup::copy_tree(&dir, &to)?;
+            if let Some((to, n)) = copied {
                 println!("{} ({n} asset files)", to.display());
             }
             return Ok(());
