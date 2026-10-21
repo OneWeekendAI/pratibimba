@@ -127,10 +127,23 @@ pub struct DecideResponse {
     pub explanation: Value,
 }
 
-/// A copy decision carries its fields as `copy`, never as a payload.
-fn with_copy(mut resp: DecideResponse, is_copy: bool) -> DecideResponse {
+/// A copy decision carries its fields as `copy`, never as a payload. An image field naming an
+/// uploaded asset that has responsive variants (S12b) also gets `widths` (the stored steps) and
+/// `natural_width`, from [`SNAPSHOT`]'s `asset_widths`, so a renderer can write a `srcset`.
+fn with_copy(mut resp: DecideResponse, is_copy: bool, asset_widths: Option<&Value>) -> DecideResponse {
     if is_copy {
-        resp.copy = Some(crate::copy::parse(resp.payload.take().as_deref()).unwrap_or(Value::Null));
+        let mut copy = crate::copy::parse(resp.payload.take().as_deref()).unwrap_or(Value::Null);
+        if let (Some(fields), Some(sizes)) = (copy.as_object_mut(), asset_widths.and_then(Value::as_object)) {
+            for v in fields.values_mut() {
+                let Some(img) = v.as_object_mut() else { continue };
+                let Some([natural, widths]) = img.get("asset").and_then(Value::as_str).and_then(|a| sizes.get(a)).and_then(Value::as_array).map(|a| a.as_slice()) else {
+                    continue;
+                };
+                img.insert("widths".into(), widths.clone());
+                img.insert("natural_width".into(), natural.clone());
+            }
+        }
+        resp.copy = Some(copy);
     }
     resp
 }
@@ -261,6 +274,13 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        EXISTS (SELECT 1 FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day < day.d) AS stale_salts,
        (SELECT v FROM subj) AS subject,
        s.id AS slot_id, s.cold_start_exposures, s.sorted AS sorted_spec, s.copy IS NOT NULL AS is_copy, r.ranking AS st_ranking,
+       CASE WHEN s.copy IS NOT NULL THEN
+           (SELECT jsonb_object_agg(x.sha256, jsonb_build_array(x.width, to_jsonb(x.widths)))
+              FROM assets x
+             WHERE x.site_id = $1 AND cardinality(x.widths) > 0 AND x.width IS NOT NULL
+               AND x.sha256 IN (SELECT jsonb_path_query(v.payload::jsonb, 'lax $.*.asset') #>> '{}'
+                                  FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved' AND v.payload IS NOT NULL))
+       END AS asset_widths,
        a.arm_ids, a.arm_keys, a.arm_payloads, a.arm_baselines, a.arm_shares,
        (SELECT jsonb_agg(jsonb_build_array(v.id, v.key, g.id, g.name, g.predicate, g.status) ORDER BY g.id, v.id)
           FROM variants v JOIN segments g ON g.id = v.audience_id
@@ -343,6 +363,9 @@ struct SlotSnapshot {
     sorted: Option<Value>,
     /// A copy slot (see [`crate::copy`]).
     is_copy: bool,
+    /// A copy slot's `{sha256: [natural width, [responsive widths]]}` for the assets its
+    /// approved variants name (S12b).
+    asset_widths: Option<Value>,
     /// The sticky decision's served order, when the slot is sorted.
     sticky_ranking: Option<Vec<i64>>,
     model: Option<(i64, Value)>,
@@ -450,6 +473,7 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                 sticky,
                 sorted: row.try_get("sorted_spec")?,
                 is_copy: row.try_get("is_copy")?,
+                asset_widths: row.try_get("asset_widths")?,
                 sticky_ranking: row.try_get("st_ranking")?,
                 model,
                 cold,
@@ -609,6 +633,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
         ..req.ctx.clone()
     };
     let is_copy = slot.is_copy;
+    let asset_widths = slot.asset_widths.clone();
     let mut arms = slot.arms;
     // The kill switch: a paused site serves only the page's own content.
     // A sorted slot's items, by key in the declared default order.
@@ -669,7 +694,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
             let lessons = current_lessons.filter(|(v, _)| *v == version).map(|(_, n)| n);
             let resp = response(id, &req.slot, key, payload, &policy, version, lessons, features, &scores, seed as u64, held, &arms, auds, cold, alloc);
             let ranking = if sorted_order.is_some() { slot.sticky_ranking.as_deref() } else { None };
-            return Ok((with_copy(with_order(resp, ranking, &arms), is_copy), made));
+            return Ok((with_copy(with_order(resp, ranking, &arms), is_copy, asset_widths.as_ref()), made));
         }
     }
 
@@ -796,7 +821,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let made = Made { subject: req.subject.clone(), at, record: rec };
     let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
     let resp = response(id, &req.slot, key, payload, policy, version, Some(model.n), features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc);
-    Ok((with_copy(with_order(resp, ranking.as_deref(), &arms), is_copy), made))
+    Ok((with_copy(with_order(resp, ranking.as_deref(), &arms), is_copy, asset_widths.as_ref()), made))
 }
 
 /// Who chose the treated arm, for the explanation.

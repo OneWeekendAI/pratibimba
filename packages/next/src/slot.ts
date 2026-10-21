@@ -70,6 +70,10 @@ export interface CopyImage {
   alt: string;
   width?: number;
   height?: number;
+  /** S12b: an uploaded asset's responsive candidates (`<src>?w=<width> <width>w`, ..., the original). */
+  srcSet?: string;
+  /** S12b: with `srcSet`: the slot is at most the image's own (or the given) width. */
+  sizes?: string;
 }
 
 /** A copy field's value: a line of text, or an image. */
@@ -109,7 +113,22 @@ export function imageOf(v: unknown, assets: string): CopyImage | null {
   else return null;
   const out: CopyImage = { src, alt: o.alt };
   for (const k of ['width', 'height'] as const) if (typeof o[k] === 'number' && (o[k] as number) > 0) out[k] = Math.floor(o[k] as number);
+  const rs = typeof o.asset === 'string' ? responsive(src, o) : null;
+  if (rs) Object.assign(out, rs);
   return out;
+}
+
+/**
+ * S12b: the srcset for an uploaded asset Core also stored at narrower widths (`widths`, with
+ * `natural_width`), or `null`. Same rule as the script tag's and the edge's.
+ */
+export function responsive(src: string, o: Record<string, unknown>): { srcSet: string; sizes: string } | null {
+  const natural = o.natural_width;
+  if (!Array.isArray(o.widths) || typeof natural !== 'number' || !(natural > 0) || !Number.isInteger(natural)) return null;
+  const ws = o.widths.filter((w): w is number => typeof w === 'number' && w > 0 && Number.isInteger(w) && w < natural);
+  if (!ws.length) return null;
+  const cap = typeof o.width === 'number' && o.width > 0 ? Math.floor(o.width) : natural;
+  return { srcSet: [...ws.map((w) => `${src}?w=${w} ${w}w`), `${src} ${natural}w`].join(', '), sizes: `(max-width: ${cap}px) 100vw, ${cap}px` };
 }
 
 /**
@@ -135,8 +154,8 @@ export function copyText<T extends Record<string, CopyValue>>(fallback: T, copy:
 
 /** `<prb.Image image={t.banner} className="hero" />`: an image field as a plain `<img>`. */
 export function PrbImage({ image, ...rest }: { image: CopyImage } & Record<string, unknown>) {
-  const { src, alt, width, height } = image;
-  return createElement('img', { src, alt, ...(width ? { width } : {}), ...(height ? { height } : {}), ...rest });
+  const { src, alt, width, height, srcSet, sizes } = image;
+  return createElement('img', { src, alt, ...(width ? { width } : {}), ...(height ? { height } : {}), ...(srcSet ? { srcSet, sizes } : {}), ...rest });
 }
 
 /**

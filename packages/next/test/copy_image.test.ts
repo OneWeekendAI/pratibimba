@@ -85,3 +85,29 @@ test('route_forwards_an_asset_with_its_safety_headers', async () => {
   }
   assert.equal(calls.length, 1);
 });
+
+// S12b: Core's responsive widths for an uploaded asset become srcset and sizes.
+test('copy_image_with_responsive_widths_renders_a_srcset', async () => {
+  const { Copy } = slotWith({ banner: { asset: ID, alt: 'Autumn beans', width: 800, widths: [320, 640], natural_width: 1600 } });
+  const html = renderToStaticMarkup(await Copy({ id: 'hero', fallback, children: hero }));
+  const base = `/_prb/assets/shop/${ID}`;
+  assert.ok(html.includes(`srcSet="${base}?w=320 320w, ${base}?w=640 640w, ${base} 1600w"`) || html.includes(`srcset="${base}?w=320 320w, ${base}?w=640 640w, ${base} 1600w"`), html);
+  assert.match(html, /sizes="\(max-width: 800px\) 100vw, 800px"/);
+});
+
+test('copy_image_without_usable_widths_or_from_a_url_has_no_srcset', async () => {
+  for (const banner of [{ asset: ID, alt: 'B' }, { asset: ID, alt: 'B', widths: [2000], natural_width: 1600 }, { asset: ID, alt: 'B', widths: [320], natural_width: '1600' },
+                        { url: '/a.png', alt: 'B', widths: [320], natural_width: 1600 }]) {
+    const { Copy } = slotWith({ banner });
+    const html = renderToStaticMarkup(await Copy({ id: 'hero', fallback, children: hero }));
+    assert.ok(!/srcset|sizes=/i.test(html), `${JSON.stringify(banner)} -> ${html}`);
+  }
+});
+
+test('the_door_forwards_a_responsive_width', async () => {
+  const seen: string[] = [];
+  const route = createRoute({ core: 'http://core', fetch: (async (u: string) => { seen.push(u); return new Response('x', { status: 200, headers: { 'content-type': 'image/jpeg' } }); }) as unknown as typeof globalThis.fetch });
+  const r = await route.GET(new Request(`https://shop.test/_prb/assets/shop/${ID}?w=640`));
+  assert.equal(r.status, 200);
+  assert.deepEqual(seen, [`http://core/assets/shop/${ID}?w=640`]);
+});

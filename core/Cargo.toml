@@ -27,6 +27,7 @@ hmac = "0.12"
 tokio-stream = { version = "0.1", features = ["time"] }
 chrono-tz = "0.10"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

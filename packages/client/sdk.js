@@ -388,8 +388,9 @@
   }
 
   // S11: an image field. The marked element is the <img>, or holds one (a <picture>, a wrapper).
-  // src, alt and size are set as attributes, never as markup; srcset, sizes and the <picture>'s
-  // <source>s go, since the browser would prefer them to the new src. An address Core would not
+  // src, alt and size are set as attributes, never as markup; the page's srcset, sizes and the
+  // <picture>'s <source>s go, since the browser would prefer them to the new src (an asset with
+  // responsive widths gets its own srcset and sizes instead, S12b). An address Core would not
   // have accepted (not https or root-relative, an asset id not 64 hex) changes nothing.
   function imageSrc(v) {
     if (typeof v.alt !== 'string' || !v.alt) return null;
@@ -398,16 +399,32 @@
     return null;
   }
 
+  // S12b: an uploaded asset Core also stored at narrower widths comes with `widths` and
+  // `natural_width`; the srcset names each (`?w=<width>`) and the original, and sizes caps the
+  // slot at the image's own (or the variant's given) width. Anything else: no srcset.
+  function responsive(src, v) {
+    if (typeof v.asset !== 'string' || !Array.isArray(v.widths)) return null;
+    var natural = v.natural_width;
+    if (typeof natural !== 'number' || !(natural > 0) || natural % 1) return null;
+    var ws = v.widths.filter(function (w) { return typeof w === 'number' && w > 0 && w % 1 === 0 && w < natural; });
+    if (!ws.length) return null;
+    var parts = ws.map(function (w) { return src + '?w=' + w + ' ' + w + 'w'; });
+    parts.push(src + ' ' + natural + 'w');
+    var cap = typeof v.width === 'number' && v.width > 0 ? Math.floor(v.width) : natural;
+    return { srcset: parts.join(', '), sizes: '(max-width: ' + cap + 'px) 100vw, ' + cap + 'px' };
+  }
+
   function writeImage(f, v) {
     var img = f.tagName === 'IMG' ? f : f.querySelector('img');
     var src = img && imageSrc(v);
     if (!src) return;
     var pic = img.parentNode && img.parentNode.tagName === 'PICTURE' ? img.parentNode : null;
     if (pic) Array.prototype.slice.call(pic.querySelectorAll('source')).forEach(function (s) { s.parentNode.removeChild(s); });
-    img.removeAttribute('srcset');
-    img.removeAttribute('sizes');
     img.setAttribute('src', src);
     img.setAttribute('alt', v.alt);
+    var rs = responsive(src, v);
+    if (rs) { img.setAttribute('srcset', rs.srcset); img.setAttribute('sizes', rs.sizes); }
+    else { img.removeAttribute('srcset'); img.removeAttribute('sizes'); }
     ['width', 'height'].forEach(function (k) {
       if (typeof v[k] === 'number' && v[k] > 0) img.setAttribute(k, String(Math.floor(v[k])));
       else img.removeAttribute(k);

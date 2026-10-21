@@ -89,3 +89,33 @@ test('the_edge_forwards_assets_and_nothing_else_under_assets', async () => {
   }
   assert.equal(calls.length, 1);
 });
+
+// S12b: Core's responsive widths for an uploaded asset become the rebuilt <img>'s srcset.
+test('an_asset_with_responsive_widths_gets_a_srcset', () => {
+  const out = applyCopy(REGION, { banner: { asset: ID, alt: 'Autumn', widths: [320, 640, 960], natural_width: 1200 } }, ASSETS);
+  const img = doc(out).querySelector('img[data-prb-field="banner"]')!;
+  const base = `${ASSETS}/${ID}`;
+  assert.equal(img.getAttribute('srcset'), `${base}?w=320 320w, ${base}?w=640 640w, ${base}?w=960 960w, ${base} 1200w`);
+  assert.equal(img.getAttribute('sizes'), '(max-width: 1200px) 100vw, 1200px');
+  assert.equal(doc(out).querySelector('source'), null);
+  const given = doc(applyCopy(REGION, { banner: { asset: ID, alt: 'A', width: 600, widths: [320], natural_width: 1200 } }, ASSETS)).querySelector('img[data-prb-field="banner"]')!;
+  assert.equal(given.getAttribute('sizes'), '(max-width: 600px) 100vw, 600px');
+});
+
+test('no_usable_widths_or_a_url_image_gives_no_srcset', () => {
+  for (const banner of [{ asset: ID, alt: 'B' }, { asset: ID, alt: 'B', widths: [1300], natural_width: 1200 }, { asset: ID, alt: 'B', widths: ['1 2" onerror="x'], natural_width: 1200 },
+                        { url: '/a.png', alt: 'B', widths: [320], natural_width: 1200 }]) {
+    const img = doc(applyCopy(REGION, { banner }, ASSETS)).querySelector('img[data-prb-field="banner"]')!;
+    assert.equal(img.hasAttribute('srcset'), false, JSON.stringify(banner));
+    assert.equal(img.hasAttribute('sizes'), false, JSON.stringify(banner));
+    assert.equal(img.hasAttribute('onerror'), false);
+  }
+});
+
+test('the_edge_forwards_a_responsive_width', async () => {
+  const calls: string[] = [];
+  const fetch = (async (url: string) => { calls.push(String(url)); return new Response('JPG', { headers: { 'content-type': 'image/jpeg' } }); }) as unknown as typeof globalThis.fetch;
+  const edge = createEdge({ core: 'http://core:8080', site: 'shop', fetch });
+  assert.equal((await edge.handleRequest(new Request(`https://shop.test/_prb/assets/shop/${ID}?w=640`))).status, 200);
+  assert.deepEqual(calls, [`http://core:8080/assets/shop/${ID}?w=640`]);
+});

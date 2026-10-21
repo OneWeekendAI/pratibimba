@@ -21,6 +21,11 @@
 //!   site references (draft, approved or paused, by asset id in an image field or by its URL in
 //!   swap HTML) is marked; once it has stayed unreferenced for the grace period
 //!   (`PRB_ASSET_GC_GRACE_SECS`, default 7 days) its row and bytes are deleted.
+//! - **Responsive variants** (S12b, [`resized`]): a PNG, JPEG or WebP upload is also stored at
+//!   each step of [`WIDTHS`] narrower than itself, in its own format, under
+//!   `<site>/<sha256>.w<width>` and served at `GET /assets/<site>/<sha256>?w=<width>`. A decision
+//!   hands renderers the widths it has, and they write a `srcset`. Done in Core, on upload, with
+//!   no outside service; an image Core cannot decode is still stored, just without variants.
 
 use crate::http::{ApiError, AppState};
 use anyhow::{Context, Result, bail};
@@ -46,6 +51,11 @@ pub const MIMES: [&str; 6] = ["image/png", "image/jpeg", "image/webp", "image/av
 /// Served on every asset: nothing it holds may run, load or frame anything.
 pub const CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";
 pub const CACHE: &str = "public, max-age=31536000, immutable";
+/// The responsive width ladder (S12b): an upload is stored resized to each step narrower than it.
+pub const WIDTHS: [u32; 5] = [320, 640, 960, 1280, 1920];
+/// Decoding refuses anything larger (a decompression bomb would otherwise allocate gigabytes).
+const DECODE_MAX_DIM: u32 = 12_000;
+const DECODE_MAX_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// A lowercase 64-character SHA-256 hex digest: the only shape an asset id has.
 pub fn is_hash(s: &str) -> bool {
@@ -264,12 +274,69 @@ pub trait Store: Send + Sync {
 /// A storage key: exactly `<site>/<sha256>`, the site made of id characters. Nothing that could
 /// climb out of a directory or name another bucket path gets through.
 pub fn check_key(key: &str) -> Result<()> {
-    let Some((site, hash)) = key.split_once('/') else { bail!("bad asset key {key:?}") };
+    let Some((site, name)) = key.split_once('/') else { bail!("bad asset key {key:?}") };
+    // `<sha256>` or a responsive variant `<sha256>.w<width>` (S12b).
+    let hash = match name.split_once(".w") {
+        Some((h, w)) if !w.is_empty() && w.len() <= 5 && w.bytes().all(|b| b.is_ascii_digit()) && !w.starts_with('0') => h,
+        Some(_) => bail!("bad asset key {key:?}"),
+        None => name,
+    };
     let site_ok = !site.is_empty() && site.len() <= 128 && site != "." && site != ".." && site.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'~' | b'.'));
     if !site_ok || !is_hash(hash) {
         bail!("bad asset key {key:?}");
     }
     Ok(())
+}
+
+/// Where the `width` variant of an asset lives (S12b).
+pub fn variant_key(site: &str, hash: &str, width: u32) -> String {
+    format!("{}.w{width}", key(site, hash))
+}
+
+/// The responsive variants of an image (S12b): for each step of [`WIDTHS`] narrower than the
+/// image, its bytes resized to that width (height in proportion), in the image's own format
+/// (JPEG at quality 82, PNG, lossless WebP). Only PNG, JPEG and WebP; a variant no smaller than
+/// the original is left out, and bytes that do not decode give none. CPU work: call it from a
+/// blocking thread.
+pub fn resized(mime: &str, bytes: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    use image::{ImageFormat, ImageReader, Limits, imageops::FilterType};
+    let format = match mime {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/webp" => ImageFormat::WebP,
+        _ => return vec![],
+    };
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(DECODE_MAX_DIM);
+    limits.max_image_height = Some(DECODE_MAX_DIM);
+    limits.max_alloc = Some(DECODE_MAX_ALLOC);
+    reader.limits(limits);
+    let img = match reader.decode() {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, mime, "image not decodable; stored without responsive variants");
+            return vec![];
+        }
+    };
+    let (w0, h0) = (img.width(), img.height());
+    let mut out = vec![];
+    for w in WIDTHS.into_iter().filter(|&w| w < w0) {
+        let h = ((h0 as u64 * w as u64 + w0 as u64 / 2) / w0 as u64).max(1) as u32;
+        let small = img.resize_exact(w, h, FilterType::Lanczos3);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let done = match format {
+            ImageFormat::Jpeg => small.to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 82)),
+            ImageFormat::WebP => small.to_rgba8().write_with_encoder(image::codecs::webp::WebPEncoder::new_lossless(&mut buf)),
+            _ => small.write_to(&mut buf, ImageFormat::Png),
+        };
+        match done {
+            Ok(()) if buf.get_ref().len() < bytes.len() => out.push((w, buf.into_inner())),
+            Ok(()) => {}
+            Err(e) => tracing::warn!(error = %e, mime, w, "a responsive variant did not encode"),
+        }
+    }
+    out
 }
 
 pub fn key(site: &str, hash: &str) -> String {
@@ -542,10 +609,20 @@ pub async fn upload(pool: &PgPool, assets: &Assets, site: &str, bytes: &[u8], na
     let hash = sha256_hex(bytes);
     let (w, h) = dimensions(mime, bytes).unzip();
     assets.store.put(&key(site, &hash), bytes, mime).await.map_err(ApiError::Internal)?;
-    let created: DateTime<Utc> = sqlx::query_scalar(
-        "INSERT INTO assets (site_id, sha256, mime, bytes, width, height, name, uploaded_by, mcp_call_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT (site_id, sha256) DO UPDATE SET unreferenced_since = CASE WHEN assets.unreferenced_since IS NULL THEN NULL ELSE now() END
-         RETURNING created_at",
+    // S12b: the responsive variants, stored before the row names them. Same bytes give the same
+    // variants, so a re-upload (of an asset stored before S12b, say) simply fills them in.
+    let owned = bytes.to_vec();
+    let variants = tokio::task::spawn_blocking(move || resized(mime, &owned)).await.map_err(|e| ApiError::Internal(e.into()))?;
+    let mut widths: Vec<i32> = vec![];
+    for (vw, vb) in &variants {
+        assets.store.put(&variant_key(site, &hash, *vw), vb, mime).await.map_err(ApiError::Internal)?;
+        widths.push(*vw as i32);
+    }
+    let (created, widths): (DateTime<Utc>, Vec<i32>) = sqlx::query_as(
+        "INSERT INTO assets (site_id, sha256, mime, bytes, width, height, name, uploaded_by, mcp_call_id, widths) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (site_id, sha256) DO UPDATE SET unreferenced_since = CASE WHEN assets.unreferenced_since IS NULL THEN NULL ELSE now() END,
+                                                     widths = CASE WHEN cardinality(assets.widths) = 0 THEN EXCLUDED.widths ELSE assets.widths END
+         RETURNING created_at, widths",
     )
     .bind(site)
     .bind(&hash)
@@ -556,10 +633,11 @@ pub async fn upload(pool: &PgPool, assets: &Assets, site: &str, bytes: &[u8], na
     .bind(clean_name(name))
     .bind(by.chars().take(128).collect::<String>())
     .bind(mcp_call)
+    .bind(&widths)
     .fetch_one(pool)
     .await?;
     Ok(json!({
-        "id": hash, "mime": mime, "bytes": bytes.len(), "width": w, "height": h, "created_at": created,
+        "id": hash, "mime": mime, "bytes": bytes.len(), "width": w, "height": h, "widths": widths, "created_at": created,
         "path": path(site, &hash),
         "use": { "image_field": { "asset": hash, "alt": "say what it shows" }, "swap_html_src": format!("/_prb{}", path(site, &hash)) },
     }))
@@ -568,14 +646,14 @@ pub async fn upload(pool: &PgPool, assets: &Assets, site: &str, bytes: &[u8], na
 /// The site's assets, newest first.
 pub async fn list(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, i32, Option<i32>, Option<i32>, Option<String>, String, DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT sha256, mime, bytes, width, height, name, uploaded_by, created_at, unreferenced_since FROM assets WHERE site_id = $1 ORDER BY created_at DESC, sha256",
+    let rows: Vec<(String, String, i32, Option<i32>, Option<i32>, Option<String>, String, DateTime<Utc>, Option<DateTime<Utc>>, Vec<i32>)> = sqlx::query_as(
+        "SELECT sha256, mime, bytes, width, height, name, uploaded_by, created_at, unreferenced_since, widths FROM assets WHERE site_id = $1 ORDER BY created_at DESC, sha256",
     )
     .bind(site)
     .fetch_all(pool)
     .await?;
-    Ok(json!({ "assets": rows.into_iter().map(|(id, mime, bytes, w, h, name, by, at, unref)| json!({
-        "id": id, "mime": mime, "bytes": bytes, "width": w, "height": h, "name": name, "uploaded_by": by, "created_at": at,
+    Ok(json!({ "assets": rows.into_iter().map(|(id, mime, bytes, w, h, name, by, at, unref, widths)| json!({
+        "id": id, "mime": mime, "bytes": bytes, "width": w, "height": h, "widths": widths, "name": name, "uploaded_by": by, "created_at": at,
         "in_use": unref.is_none(), "unreferenced_since": unref, "path": path(site, &id),
     })).collect::<Vec<_>>() }))
 }
@@ -591,18 +669,40 @@ pub async fn check_refs(pool: &PgPool, site: &str, refs: &[String]) -> Result<()
     Ok(())
 }
 
-/// `GET /assets/{site}/{hash}`: the bytes, cached for a year, unable to run anything.
-pub async fn serve(State(state): State<Arc<AppState>>, Path((site, hash)): Path<(String, String)>, headers: HeaderMap) -> Response {
+#[derive(serde::Deserialize)]
+pub struct ServeQuery {
+    /// S12b: one of the asset's responsive widths; without it, the original.
+    w: Option<String>,
+}
+
+/// `GET /assets/{site}/{hash}[?w=<width>]`: the bytes (or a responsive variant's), cached for a
+/// year, unable to run anything. A width the asset was not stored at is 404, never the original
+/// under another name: a srcset candidate must be the size it says.
+pub async fn serve(State(state): State<Arc<AppState>>, Path((site, hash)): Path<(String, String)>, axum::extract::Query(q): axum::extract::Query<ServeQuery>, headers: HeaderMap) -> Response {
     let not_found = || (StatusCode::NOT_FOUND, "no such asset").into_response();
     if !is_hash(&hash) {
         return not_found();
     }
-    let mime: Option<String> = match sqlx::query_scalar("SELECT mime FROM assets WHERE site_id = $1 AND sha256 = $2").bind(&site).bind(&hash).fetch_optional(&state.pool).await {
-        Ok(m) => m,
-        Err(e) => return ApiError::from(e).into_response(),
+    let width: Option<u32> = match q.w.as_deref() {
+        None => None,
+        Some(w) => match w.parse() {
+            Ok(n) if WIDTHS.contains(&n) => Some(n),
+            _ => return not_found(),
+        },
     };
-    let Some(mime) = mime else { return not_found() };
-    let etag = format!("\"{hash}\"");
+    let row: Option<(String, Vec<i32>)> =
+        match sqlx::query_as("SELECT mime, widths FROM assets WHERE site_id = $1 AND sha256 = $2").bind(&site).bind(&hash).fetch_optional(&state.pool).await {
+            Ok(m) => m,
+            Err(e) => return ApiError::from(e).into_response(),
+        };
+    let Some((mime, widths)) = row else { return not_found() };
+    if width.is_some_and(|w| !widths.contains(&(w as i32))) {
+        return not_found();
+    }
+    let etag = match width {
+        Some(w) => format!("\"{hash}.w{w}\""),
+        None => format!("\"{hash}\""),
+    };
     let common = [
         (header::CACHE_CONTROL, CACHE.to_string()),
         (header::ETAG, etag.clone()),
@@ -617,7 +717,11 @@ pub async fn serve(State(state): State<Arc<AppState>>, Path((site, hash)): Path<
     if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|t| t.trim() == etag)) {
         return (StatusCode::NOT_MODIFIED, common).into_response();
     }
-    match state.assets.store.get(&key(&site, &hash)).await {
+    let store_key = match width {
+        Some(w) => variant_key(&site, &hash, w),
+        None => key(&site, &hash),
+    };
+    match state.assets.store.get(&store_key).await {
         Ok(Some(bytes)) => (StatusCode::OK, common, [(header::CONTENT_TYPE, mime)], bytes).into_response(),
         Ok(None) => not_found(),
         Err(e) => ApiError::Internal(e).into_response(),
@@ -650,15 +754,20 @@ pub async fn gc(pool: &PgPool, assets: &Assets, now: DateTime<Utc>) -> Result<Gc
         .execute(pool)
         .await?
         .rows_affected();
-    let deleted: Vec<(String, String)> =
-        sqlx::query_as(&format!("DELETE FROM assets a WHERE unreferenced_since <= $1 AND NOT {REFERENCED} RETURNING site_id, sha256"))
+    let rows: Vec<(String, String, Vec<i32>)> =
+        sqlx::query_as(&format!("DELETE FROM assets a WHERE unreferenced_since <= $1 AND NOT {REFERENCED} RETURNING site_id, sha256, widths"))
             .bind(now - assets.grace)
             .fetch_all(pool)
             .await?;
-    for (site, hash) in &deleted {
-        if let Err(e) = assets.store.delete(&key(site, hash)).await {
-            tracing::error!(error = %e, site, hash, "asset bytes not deleted; the row is gone, so it is no longer served");
+    let mut deleted = Vec::with_capacity(rows.len());
+    for (site, hash, widths) in rows {
+        let keys = std::iter::once(key(&site, &hash)).chain(widths.iter().map(|&w| variant_key(&site, &hash, w as u32)));
+        for k in keys {
+            if let Err(e) = assets.store.delete(&k).await {
+                tracing::error!(error = %e, key = k, "asset bytes not deleted; the row is gone, so it is no longer served");
+            }
         }
+        deleted.push((site, hash));
     }
     Ok(Gc { marked, revived, deleted })
 }

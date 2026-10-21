@@ -73,3 +73,36 @@ test('kinds_do_not_cross', async () => {
   assert.equal($(p, 'h1').textContent, 'Our own');
   assert.equal($(p, 'h1').querySelector('img'), null);
 });
+
+// S12b: responsive widths Core stored for an uploaded asset become the image's srcset.
+test('an_asset_with_responsive_widths_gets_a_srcset_and_sizes', async () => {
+  const p = page({ banner: { asset: ID, alt: 'Autumn beans', widths: [320, 640, 960, 1280], natural_width: 1600 } });
+  await sleep(20);
+  const img = $(p, '#banner');
+  const base = `https://core.test/assets/demo/${ID}`;
+  assert.equal(img.getAttribute('src'), base);
+  assert.equal(img.getAttribute('srcset'), `${base}?w=320 320w, ${base}?w=640 640w, ${base}?w=960 960w, ${base}?w=1280 1280w, ${base} 1600w`);
+  assert.equal(img.getAttribute('sizes'), '(max-width: 1600px) 100vw, 1600px');
+  assert.equal($(p, '#src1'), null);
+});
+
+test('responsive_sizes_follow_the_given_width', async () => {
+  const p = page({ banner: { asset: ID, alt: 'Autumn beans', width: 800, widths: [320, 640], natural_width: 1600 } });
+  await sleep(20);
+  assert.equal($(p, '#banner').getAttribute('sizes'), '(max-width: 800px) 100vw, 800px');
+});
+
+test('odd_or_missing_widths_give_no_srcset', async () => {
+  for (const extra of [{}, { widths: [320] }, { widths: [], natural_width: 900 }, { widths: ['320 1x, /x.png'], natural_width: 900 },
+                       { widths: [320], natural_width: '900' }, { widths: [1200], natural_width: 900 }]) {
+    const p = page({ banner: { asset: ID, alt: 'Beans', ...extra } });
+    await sleep(20);
+    assert.equal($(p, '#banner').getAttribute('src'), `https://core.test/assets/demo/${ID}`, JSON.stringify(extra));
+    assert.equal($(p, '#banner').hasAttribute('srcset'), false, JSON.stringify(extra));
+    assert.equal($(p, '#banner').hasAttribute('sizes'), false, JSON.stringify(extra));
+  }
+  // A URL image never gets one, even with widths.
+  const p = page({ banner: { url: '/a.png', alt: 'x', widths: [320], natural_width: 900 } });
+  await sleep(20);
+  assert.equal($(p, '#banner').hasAttribute('srcset'), false);
+});

@@ -133,6 +133,22 @@ interface Img {
   alt: string;
   width?: number;
   height?: number;
+  /** S12b: an uploaded asset's responsive candidates and the slot's size cap. */
+  srcset?: string;
+  sizes?: string;
+}
+
+/**
+ * S12b: the srcset for an uploaded asset Core also stored at narrower widths (`widths`, with
+ * `natural_width`), or `null`. Same rule as the script tag's and the next SDK's.
+ */
+function responsive(src: string, o: Record<string, unknown>): { srcset: string; sizes: string } | null {
+  const natural = o.natural_width;
+  if (!Array.isArray(o.widths) || typeof natural !== 'number' || !(natural > 0) || !Number.isInteger(natural)) return null;
+  const ws = o.widths.filter((w): w is number => typeof w === 'number' && w > 0 && Number.isInteger(w) && w < natural);
+  if (!ws.length) return null;
+  const cap = typeof o.width === 'number' && o.width > 0 ? Math.floor(o.width) : natural;
+  return { srcset: [...ws.map((w) => `${src}?w=${w} ${w}w`), `${src} ${natural}w`].join(', '), sizes: `(max-width: ${cap}px) 100vw, ${cap}px` };
 }
 
 function imageOf(v: unknown, assets: string): Img | null {
@@ -145,6 +161,8 @@ function imageOf(v: unknown, assets: string): Img | null {
   else return null;
   const out: Img = { src, alt: o.alt };
   for (const k of ['width', 'height'] as const) if (typeof o[k] === 'number' && (o[k] as number) > 0) out[k] = Math.floor(o[k] as number);
+  const rs = typeof o.asset === 'string' ? responsive(src, o) : null;
+  if (rs) Object.assign(out, rs);
   return out;
 }
 
@@ -154,7 +172,8 @@ function imgTag(attrs: string, img: Img): string {
   ATTR.lastIndex = 0;
   for (let m: RegExpExecArray | null; (m = ATTR.exec(attrs)); ) if (!DROP.has(m[1].toLowerCase())) kept += m[0];
   const size = (img.width ? ` width="${img.width}"` : '') + (img.height ? ` height="${img.height}"` : '');
-  return `<img${kept} src="${escAttr(img.src)}" alt="${escAttr(img.alt)}"${size}>`;
+  const rs = img.srcset ? ` srcset="${escAttr(img.srcset)}" sizes="${escAttr(img.sizes ?? '')}"` : '';
+  return `<img${kept} src="${escAttr(img.src)}"${rs} alt="${escAttr(img.alt)}"${size}>`;
 }
 
 interface Tok {
