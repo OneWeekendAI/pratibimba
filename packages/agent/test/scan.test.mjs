@@ -28,7 +28,7 @@ const at = (r, file, line) => r.candidates.find((c) => c.file === file && c.line
 // ---- golden outputs on the real examples ----
 
 const FIXTURES = join(here, 'fixtures');
-for (const [ex, root] of [['shop', EXAMPLES], ['next', EXAMPLES], ['plain', EXAMPLES],
+for (const [ex, root] of [['next', EXAMPLES], ['plain', EXAMPLES],
   ['vue', FIXTURES], ['svelte', FIXTURES], ['astro', FIXTURES], ['jsx-lt', FIXTURES]]) {
   test(`${root === EXAMPLES ? 'examples' : 'fixtures'}/${ex} matches its golden scan`, async () => {
     const got = await scan({ dir: join(root, ex) });
@@ -39,18 +39,6 @@ for (const [ex, root] of [['shop', EXAMPLES], ['next', EXAMPLES], ['plain', EXAM
 }
 
 // Hand-written claims about the examples, so the goldens are not the only judge.
-test('examples/shop: every existing slot is found, and nothing inside one is offered', async () => {
-  const r = await scan({ dir: join(EXAMPLES, 'shop') });
-  assert.deepEqual(r.existing.map((e) => `${e.key}:${e.kind}`).sort(),
-    ['comeback:swap', 'grid:sorted', 'hero:swap', 'hero_copy:copy', 'promo:swap']);
-  assert.ok(!r.candidates.some((c) => c.file === 'app/page.tsx'), 'the home page is fully slotted');
-  assert.ok(!r.candidates.some((c) => c.file.startsWith('app/components/')), 'the hero variants render inside a slot');
-  const buy = at(r, 'app/p/[slug]/page.tsx', 33);
-  assert.equal(buy?.kind, 'copy');
-  assert.equal(buy.fields[0].baseline, 'Buy now');
-  assert.ok(!r.candidates.some((c) => /Added to your cart/.test(c.excerpt)), 'a confirmation note is not a returning-visitor spot');
-});
-
 test('examples/next: the hero component is covered because it renders inside <prb.Slot>', async () => {
   const r = await scan({ dir: join(EXAMPLES, 'next') });
   assert.deepEqual(r.existing.map((e) => e.key), ['hero', 'promo']);

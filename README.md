@@ -638,7 +638,6 @@ symlinked package outside the app).
 | `examples/next/` | plain Next.js example |
 | `examples/edge/` | plain Cloudflare Worker example |
 | `examples/plain/` | script-tag example with a declared `site.json`: a layout swap and an image field |
-| `examples/shop/` | a Next.js store with commerce events, an agent-drafted hero and sorted grid |
 | `examples/pickly/` | a plain Vite + React shop with no Pratibimba yet: the starting point for adding it to an existing site |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
