@@ -603,8 +603,11 @@ npx @pratibimba/agent scan           # proposes candidate slots from your repo
 npx @pratibimba/agent install        # drops the instruction pack into .claude / .cursor / AGENTS.md
 ```
 
-Then mint a per-site MCP token in the dashboard and point your agent at `POST /mcp` on your
-Core. The agent reads results and drafts variants in real components; a human still has to
+`install` adds two skills: `pratibimba` (read results, draft variants) and
+`pratibimba-integrate` (add Pratibimba to an existing site someone else wrote: Core,
+`site.json`, the script tag and consent, slots, outcome events;
+[`examples/pickly`](examples/pickly) is a site to try it on). Then mint a per-site MCP token in
+the dashboard and point your agent at `POST /mcp` on your Core. The agent reads results and drafts variants in real components; a human still has to
 approve every draft before it is served.
 
 ### Packages
@@ -636,6 +639,7 @@ symlinked package outside the app).
 | `examples/edge/` | plain Cloudflare Worker example |
 | `examples/plain/` | script-tag example with a declared `site.json`: a layout swap and an image field |
 | `examples/shop/` | a Next.js store with commerce events, an agent-drafted hero and sorted grid |
+| `examples/pickly/` | a plain Vite + React shop with no Pratibimba yet: the starting point for adding it to an existing site |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
 | `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |

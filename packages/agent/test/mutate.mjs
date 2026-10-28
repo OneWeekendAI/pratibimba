@@ -15,6 +15,7 @@ const S = 'src/install.mjs';
 const C = 'bin/cli.mjs';
 const G = 'pack/guide.md';
 const SC = 'src/scan.mjs';
+const I = 'pack/integrate.md';
 
 const MUTANTS = [
   ['an edited pack file is overwritten', S, "if (!force) return { action: 'kept'", "if (false) return { action: 'kept'"],
@@ -33,6 +34,13 @@ const MUTANTS = [
   ['the instructions ignore --token-env', S, 'TOKEN_ENV: tokenEnv', "TOKEN_ENV: 'PRATIBIMBA_MCP_TOKEN'"],
   ['the instructions ignore --url', S, 'MCP_URL: url', "MCP_URL: 'http://localhost:8080/mcp'"],
   ['the skill is misnamed', S, "'name: pratibimba'", "'name: prb'"],
+  ['the integrate skill is misnamed', S, "'name: pratibimba-integrate'", "'name: prb-integrate'"],
+  ['the integrate skill is not installed', S, "    { path: '.claude/skills/pratibimba-integrate/SKILL.md', kind: 'pack', content: integrateSkill },\n", ''],
+  ['the integrate guide ignores --token-env', S, "{ MCP_URL: url, TOKEN_ENV: tokenEnv });\n  const integrateSkill", "{ MCP_URL: url, TOKEN_ENV: 'PRATIBIMBA_MCP_TOKEN' });\n  const integrateSkill"],
+  ['the integrate guide lets the agent approve', I, '**There is no approve tool. Never\napprove, and never say a draft is live.**', 'Approve drafts when the user asks.'],
+  ['the integrate guide puts variants in the site file', I, '**Put only baselines in the file.**', 'Put your variants in the file.'],
+  ['the integrate guide makes features audience keys', I, '**Custom `features` are not audience keys**', 'Custom `features` are audience keys too'],
+  ['the integrate guide drops the re-render rule', I, '**Never let the framework re-render over a slot.**', 'Re-rendering is fine.'],
   ['the CLI exits 0 after an error', C, "process.exit(report.some((r) => r.action === 'error') ? 1 : 0);", 'process.exit(0);'],
   ['the CLI ignores PRATIBIMBA_MCP_URL', C, 'values.url ?? process.env.PRATIBIMBA_MCP_URL ?? DEFAULT_URL', 'values.url ?? DEFAULT_URL'],
   ['the pack no longer says a person approves', G, 'A person approves. You do not, and you cannot.', 'A person usually approves.'],
