@@ -1,0 +1,73 @@
+/* Pickly v2 design tokens — a pantry at golden hour.
+   Shared and frozen for page agents. Imported before index.css. */
+:root {
+  /* v1 palette (index.css repeats these; tokens.css is the source) */
+  --mustard: #e8b447;
+  --mustard-deep: #b87b1c;
+  --mustard-soft: #f8e8c2;
+  --leaf: #2e683f;
+  --leaf-deep: #1e4529;
+  --leaf-soft: #e3ede3;
+  --chili: #b82d18;
+  --chili-soft: #fae0d9;
+  --paper: #faf6ee;
+  --paper-tint: #f3ece0;
+  --card: #fffdf9;
+  --ink: #22180e;
+  --ink-soft: #544636;
+  --ink-faint: #8c7d69;
+
+  /* teak shelf */
+  --teak: #8a5a33;
+  --teak-light: #b07d4f;
+  --teak-deep: #5e3b1f;
+  --teak-grain: #6f4627;
+  /* sesame oil */
+  --oil: #d99a2b;
+  --oil-light: #f1c76a;
+  --oil-glow: rgba(241, 199, 106, .35);
+  /* kraft + newsprint */
+  --kraft: #c9a678;
+  --kraft-light: #dcc19a;
+  --newsprint: #ebe5d6;
+  --newsprint-ink: #4a4338;
+  /* wax seals */
+  --wax-red: #9b2318;
+  --wax-red-light: #c2412f;
+  --wax-green: #2f5a34;
+  --wax-green-light: #4c7c4f;
+  /* twine */
+  --twine: #b9925e;
+  --twine-dark: #8d6a3d;
+  /* glass */
+  --glass-edge: rgba(70, 52, 30, .55);
+  --glass-tint: rgba(255, 252, 244, .55);
+  --glass-shine: rgba(255, 255, 255, .85);
+
+  /* spacing (4px base) */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px;
+  --s-6: 32px; --s-7: 48px; --s-8: 64px; --s-9: 96px;
+  --gutter: clamp(16px, 4vw, 40px);
+
+  /* radius */
+  --r-xs: 4px; --r-sm: 8px; --r-md: 14px; --r-lg: 22px; --r-pill: 999px;
+  --r-paper: 3px 6px 4px 5px; /* a torn-ish, uneven paper corner set */
+
+  /* shadows: warm, low sun from the left */
+  --shadow-paper: 1px 2px 0 rgba(42, 31, 18, .06), 3px 8px 18px -6px rgba(42, 31, 18, .18);
+  --shadow-lift: 2px 6px 0 rgba(42, 31, 18, .05), 8px 22px 40px -12px rgba(42, 31, 18, .28);
+  --shadow-jar: 6px 14px 22px -10px rgba(60, 35, 10, .45);
+  --shadow-inset-wood: inset 0 2px 0 rgba(255, 220, 170, .25), inset 0 -3px 6px rgba(40, 20, 5, .35);
+
+  /* easing: spring-ish beziers for CSS (motion/react springs live in lib/motion.js) */
+  --ease-out-soft: cubic-bezier(.22, 1, .36, 1);
+  --ease-spring: cubic-bezier(.34, 1.36, .64, 1);      /* small overshoot */
+  --ease-spring-firm: cubic-bezier(.3, 1.18, .55, 1);  /* tighter overshoot */
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
+  --ease-drop: cubic-bezier(.55, 0, .85, .35);         /* gravity-in */
+  --dur-quick: 160ms; --dur-base: 280ms; --dur-slow: 520ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-quick: 0ms; --dur-base: 0ms; --dur-slow: 0ms; }
+}

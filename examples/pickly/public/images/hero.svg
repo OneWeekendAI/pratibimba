@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <radialGradient id="hgrad" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#3d2a1d"/>
+      <stop offset="100%" stop-color="#1c130c"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#hgrad)"/>
+  <rect x="40" y="40" width="1120" height="720" fill="none" stroke="#e8b447" stroke-opacity="0.4" stroke-width="2" rx="16"/>
+  <g text-anchor="middle">
+    <text x="600" y="360" font-family="'Sorts Mill Goudy', Georgia, serif" font-style="italic" font-size="110" fill="#e8b447" font-weight="bold">Pickly</text>
+    <text x="600" y="450" font-family="'Montserrat', system-ui, sans-serif" font-size="32" fill="#ffffff" fill-opacity="0.92" font-weight="600" letter-spacing="2">Small-Batch Andhra Pickles</text>
+    <text x="600" y="510" font-family="'Montserrat', system-ui, sans-serif" font-size="22" fill="#ffffff" fill-opacity="0.7" letter-spacing="3">VEG &amp; NON-VEG · POSTED ANYWHERE IN INDIA</text>
+  </g>
+</svg>
