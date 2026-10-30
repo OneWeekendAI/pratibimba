@@ -3,6 +3,7 @@
 // as what a visitor sees: text as text, an image as the image.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
+import { Check, Copy, ImagePlus, Images } from 'lucide-react';
 import { Button, Card, Chip, SectionTitle } from '@/components/ui';
 import { api, ApiError, type Asset, type CopyField, type FieldValue, type ImageValue } from '@/lib/api';
 
@@ -33,7 +34,7 @@ export function FieldView({ value, field, site, compact = false }: { value: Fiel
     <figure className="m-0" data-testid="field-image">
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={value.alt} className={compact ? 'max-h-16 rounded border border-line' : 'max-h-40 max-w-full rounded border border-line'} />
+        <img src={src} alt={value.alt} width={value.width ?? undefined} height={value.height ?? undefined} className={compact ? 'max-h-16 rounded border border-line' : 'max-h-40 max-w-full rounded border border-line'} />
       ) : (
         <div className="rounded border border-dashed border-line-strong px-2 py-3 text-xs text-muted">{value.url} on your site</div>
       )}
@@ -63,8 +64,8 @@ export function AssetShelf({ site, onPick }: { site: string; onPick?: (a: Asset)
     setCopied(a.id);
   };
   return (
-    <Card className="p-5" data-testid="asset-shelf">
-      <SectionTitle hint="png, jpeg, webp, avif, gif or svg">Images</SectionTitle>
+    <Card className="p-5 sm:p-6" data-testid="asset-shelf">
+      <SectionTitle icon={Images} help="PNG, JPEG, WebP, AVIF, GIF or SVG. Uploading shows nothing to visitors; an approved variant that uses the image does.">Images</SectionTitle>
       <div className="flex flex-wrap items-center gap-3">
         <input
           ref={input}
@@ -78,24 +79,25 @@ export function AssetShelf({ site, onPick }: { site: string; onPick?: (a: Asset)
             e.target.value = '';
           }}
         />
-        <Button variant="ghost" onClick={() => input.current?.click()} disabled={up.isPending}>{up.isPending ? 'Uploading…' : 'Upload an image'}</Button>
+        <Button variant="ghost" icon={ImagePlus} onClick={() => input.current?.click()} disabled={up.isPending}>{up.isPending ? 'Uploading…' : 'Upload an image'}</Button>
         {error && <span role="alert" className="text-[13px] text-pause-ink">{error}</span>}
       </div>
       {assets.length > 0 && (
         <ul className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="asset-list">
           {assets.map((a) => (
             <li key={a.id} className="overflow-hidden rounded-md border border-line" data-testid={`asset-${a.id.slice(0, 12)}`}>
-              <div className="grid h-24 place-items-center bg-surface-2/50">
+              <div className="grid h-24 place-items-center border-b border-line bg-paper">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={assetSrc(site, a.id)} alt={a.name ?? ''} className="max-h-24 max-w-full" />
+                <img src={assetSrc(site, a.id)} alt={a.name ?? ''} width={a.width ?? undefined} height={a.height ?? undefined} loading="lazy" className="h-auto max-h-24 w-auto max-w-full" />
               </div>
-              <div className="space-y-1 p-2 text-[11.5px]">
+              <div className="space-y-1 p-2.5 text-[12px]">
                 <div className="truncate" title={a.name ?? a.id}>{a.name ?? a.id.slice(0, 12)}</div>
                 <div className="flex items-center justify-between text-muted">
                   <span>{a.width && a.height ? `${a.width}×${a.height} · ` : ''}{kb(a.bytes)}</span>
                   {a.in_use ? <Chip tone="live">in use</Chip> : null}
                 </div>
-                <button type="button" className="text-accent underline" onClick={() => (onPick ? onPick(a) : copy(a))}>
+                <button type="button" className="inline-flex items-center gap-1 rounded-sm font-medium text-ink-2 transition-colors hover:text-ink" onClick={() => (onPick ? onPick(a) : copy(a))}>
+                  {!onPick && (copied === a.id ? <Check className="size-3" aria-hidden /> : <Copy className="size-3" aria-hidden />)}
                   {onPick ? 'Use' : copied === a.id ? 'Copied' : 'Copy id'}
                 </button>
               </div>

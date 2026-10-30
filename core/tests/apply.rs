@@ -77,3 +77,67 @@ async fn apply_moves_baseline_between_variants(pool: PgPool) {
     site_file::apply(&pool, &moved).await.unwrap();
     assert_eq!(count(&pool, "SELECT count(*) FROM variants WHERE key='b' AND is_baseline").await, 1);
 }
+
+// ---- P1 templates through the site file (B3) ----
+
+fn copy_file(variants: serde_json::Value) -> serde_json::Value {
+    json!({ "site": "demo", "origin": "http://localhost:5173", "slots": [{
+        "key": "hero", "selector": "#hero", "kind": "copy",
+        "copy": { "fields": [ { "name": "title", "max": 40, "required": true } ] },
+        "variants": variants }] })
+}
+
+/// The site file applied, or its refusal as text (a bad template is refused when read).
+async fn apply_json(pool: &PgPool, v: serde_json::Value) -> Result<(), String> {
+    db::migrate(pool).await.unwrap();
+    let f: site_file::SiteFile = match serde_json::from_value(v) {
+        Ok(f) => f,
+        Err(e) => return Err(e.to_string()),
+    };
+    site_file::apply(pool, &f).await.map_err(|e| e.to_string())
+}
+
+#[sqlx::test(migrations = false)]
+async fn apply_accepts_template_variant(pool: PgPool) {
+    let f = copy_file(json!([{ "key": "own", "baseline": true },
+        { "key": "usual", "requires": ["visitor.top_item"], "copy": { "title": "Your usual {visitor.top_item.name | truncate: 20}" } }]));
+    apply_json(&pool, f).await.unwrap();
+    let (payload, req): (String, Vec<String>) =
+        sqlx::query_as("SELECT payload, requires FROM variants WHERE key = 'usual'").fetch_one(&pool).await.unwrap();
+    let p: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(p["title"]["src"], "Your usual {visitor.top_item.name | truncate: 20}", "{payload}");
+    assert!(p["title"]["tpl"].is_array(), "stored parsed: {payload}");
+    assert_eq!(req, vec!["visitor.top_item".to_string()]);
+}
+
+// Mutation: drop the copy::check_covered call in copy::validate_slot -> red.
+#[sqlx::test(migrations = false)]
+async fn apply_refuses_uncovered_required_placeholder(pool: PgPool) {
+    // B5's gap: no requires, no fallback, so a new visitor would get an empty required title.
+    let f = copy_file(json!([{ "key": "own", "baseline": true },
+        { "key": "usual", "copy": { "title": "{visitor.top_item.name | truncate: 20}" } }]));
+    let e = apply_json(&pool, f).await.unwrap_err();
+    assert!(e.contains("\"usual\"") && e.contains("\"title\" is required") && e.contains("Add \"visitor.top_item.name\" to requires") && e.contains("fallback"), "{e}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants").await, 0, "nothing applied");
+}
+
+// Mutation: skip `check` on templated values in apply (the Template arm of copy::check) -> red.
+#[sqlx::test(migrations = false)]
+async fn apply_refuses_over_long_template(pool: PgPool) {
+    // An item name can be 256 characters; "Your usual " plus that cannot fit a 40-character title.
+    let f = copy_file(json!([{ "key": "own", "baseline": true },
+        { "key": "usual", "copy": { "title": "Your usual {visitor.top_item.name}" } }]));
+    let e = apply_json(&pool, f).await.unwrap_err();
+    assert!(e.contains("\"title\"") && e.contains("visitor.top_item.name") && e.contains("max is 40") && e.contains("truncate"), "{e}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants").await, 0, "nothing applied");
+}
+
+// Mutation: pass `false` for `baseline` to validate_requires in site_file::validate_slot -> red
+// (the database CHECK still refuses, but without saying why).
+#[sqlx::test(migrations = false)]
+async fn apply_refuses_requires_on_baseline(pool: PgPool) {
+    let f = copy_file(json!([{ "key": "own", "baseline": true, "requires": ["visitor.top_item"] },
+        { "key": "x", "copy": { "title": "Hello" } }]));
+    let e = apply_json(&pool, f).await.unwrap_err();
+    assert!(e.contains("\"own\"") && e.contains("baseline") && e.contains("has no requires"), "{e}");
+}

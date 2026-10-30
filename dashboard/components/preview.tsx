@@ -3,8 +3,8 @@
 export function Preview({ html, label, height = 140, scale = 1 }: { html: string | null; label: string; height?: number; scale?: number }) {
   if (html === null) {
     return (
-      <div className="grid place-items-center rounded-md border border-dashed border-line-strong bg-surface-2/50 px-3 text-center text-xs text-muted" style={{ height }}>
-        The page’s own content (the baseline lives in your code, not in Pratibimba)
+      <div className="grid place-items-center rounded-md border border-dashed border-line-strong bg-paper px-3 text-center text-[12px] text-muted" style={{ height }}>
+        The page’s own content
       </div>
     );
   }

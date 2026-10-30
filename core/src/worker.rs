@@ -46,10 +46,13 @@ use chrono::{DateTime, Utc};
 use crate::webhooks;
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
+use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
 
 pub const BATCH: i64 = 500;
+/// Most rows a worker pass gives a propensity (see `fill_propensity`).
+pub const PROPENSITY_PER_PASS: i64 = 100;
 
 /// How long an event that names a decision Core does not have yet waits in the outbox for it.
 /// The edge queue (EC3) does not keep order, so an exposure or a click can land before the
@@ -132,9 +135,102 @@ async fn run_scoped(pool: &PgPool, now: DateTime<Utc>, batch: i64, scope: Option
             break;
         }
     }
+    // A1: each settled row's propensity, from the model version that made it. One bounded batch
+    // per pass: a replay is 2000 draws per row, so a backlog (rows settled before 0310) must not
+    // hold up settling; `pratibimba backfill-propensity` clears one in a single run.
+    fill_scoped(pool, batch.min(PROPENSITY_PER_PASS), scope).await?;
     // Right-to-erase: delete the events of erasures whose delay has passed.
     crate::privacy::purge_due(pool, now, &scoped("{scope}", 2), scope).await?;
     Ok(stats)
+}
+
+/// One batch of settled decisions on real sites given their propensity (A1, see
+/// `advisor::propensity`); the number of rows written. A row is written once: every settled row
+/// gets a kind, `none` when it cannot be replayed, so a second pass finds nothing.
+pub async fn fill_propensity(pool: &PgPool, batch: i64) -> Result<u64> {
+    fill_scoped(pool, batch, None).await
+}
+
+/// Every settled decision without a propensity, on real sites and then on each sandbox, in
+/// batches of `batch` until none is left; the number written. `pratibimba backfill-propensity`.
+/// A sandbox's worker pass fills only [`PROPENSITY_PER_PASS`] rows, so after a `simulate` most of
+/// its rows wait here (B8: the sandbox advisor saw no propensities without this).
+pub async fn backfill_propensity(pool: &PgPool, batch: i64) -> Result<u64> {
+    let mut scopes: Vec<Option<String>> = vec![None];
+    let sandboxes: Vec<String> = sqlx::query_scalar("SELECT id FROM sites WHERE sandbox_of IS NOT NULL ORDER BY id").fetch_all(pool).await?;
+    scopes.extend(sandboxes.into_iter().map(Some));
+    let mut total = 0;
+    for scope in &scopes {
+        loop {
+            let n = fill_scoped(pool, batch, scope.as_deref()).await?;
+            total += n;
+            if n == 0 {
+                break;
+            }
+        }
+    }
+    Ok(total)
+}
+
+type PropensityRow = (Uuid, i64, String, i64, Value, Vec<i64>, i64, i64, bool, String, bool, Option<Value>);
+
+async fn fill_scoped(pool: &PgPool, batch: i64, scope: Option<&str>) -> Result<u64> {
+    use crate::advisor::propensity::{self, Kind};
+    let rows: Vec<PropensityRow> = sqlx::query_as(&scoped(
+        "SELECT d.id, d.slot_id, d.policy, d.policy_version, d.features, d.pool, d.variant_id, d.seed, d.in_holdout,
+                d.allocation, d.cold_start IS NOT NULL, e.arms
+           FROM decisions d JOIN sites t ON t.id = d.site_id LEFT JOIN experiments e ON e.id = d.experiment_id
+          WHERE d.propensity_kind IS NULL AND d.settled_at IS NOT NULL AND {scope}
+          ORDER BY d.settled_at, d.id LIMIT $1",
+        2,
+    ))
+    .bind(batch)
+    .bind(scope)
+    .fetch_all(pool)
+    .await?;
+    // Model states by (slot, version), read once per batch; `None` when the version is gone.
+    let mut models: HashMap<(i64, i64), Option<LinTs>> = HashMap::new();
+    let (mut ids, mut values, mut kinds) = (vec![], vec![], vec![]);
+    for (id, slot, policy, version, features, arm_pool, chosen, seed, held, allocation, cold, arms) in rows {
+        let mut kind = propensity::kind_of(&policy, &allocation, held, cold, arm_pool.len());
+        let value = match kind {
+            Kind::Single => Some(1.0),
+            Kind::Experiment => arms.as_ref().and_then(|a| propensity::experiment_weight(&crate::experiments::parse_arms(a), &arm_pool, chosen)),
+            Kind::Replay => {
+                if let std::collections::hash_map::Entry::Vacant(e) = models.entry((slot, version)) {
+                    let state: Option<Value> = sqlx::query_scalar("SELECT state FROM model_versions WHERE slot_id = $1 AND version = $2")
+                        .bind(slot)
+                        .bind(version)
+                        .fetch_optional(pool)
+                        .await?;
+                    e.insert(state.and_then(|s| serde_json::from_value(s).ok()));
+                }
+                models[&(slot, version)].as_ref().and_then(|m| propensity::of_row(m, &policy, &features, &arm_pool, chosen, seed as u64))
+            }
+            Kind::Holdout | Kind::None => None,
+        };
+        // A row that should have a value but cannot be computed is `none`, never retried.
+        if value.is_none() && matches!(kind, Kind::Replay | Kind::Experiment) {
+            kind = Kind::None;
+        }
+        ids.push(id);
+        values.push(value.map(|v| v as f32));
+        kinds.push(kind.as_str());
+    }
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let done = sqlx::query(
+        "UPDATE decisions d SET propensity = x.p, propensity_kind = x.k
+           FROM UNNEST($1::uuid[], $2::real[], $3::text[]) AS x(id, p, k)
+          WHERE d.id = x.id AND d.propensity_kind IS NULL",
+    )
+    .bind(&ids)
+    .bind(&values)
+    .bind(&kinds)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected())
 }
 
 /// Two workers can deadlock on a decision row and a model row; Postgres aborts one, and the

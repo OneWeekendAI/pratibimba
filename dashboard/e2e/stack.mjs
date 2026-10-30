@@ -54,7 +54,7 @@ async function until(what, ok, secs = 120) {
 }
 for (const port of [18083, 3400]) {
   const taken = await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false);
-  if (taken) fail(`port ${port} is already in use, likely by an earlier run (pkill -f 'target/debug/pratibimba')`);
+  if (taken) fail(`port ${port} is already in use, likely by an earlier run (stop that run by its own PID; never pkill -f the pratibimba path, it also kills the live demo)`);
 }
 
 psql(`DROP DATABASE IF EXISTS ${NAME} WITH (FORCE)`);
@@ -82,9 +82,32 @@ createServer(async (req, res) => {
   }
   if (url.pathname.startsWith('/_prb/')) {
     if (!reach) return res.writeHead(404).end('not found');
-    const up = await fetch(CORE + url.pathname.slice(5) + url.search);
+    // POST too: the SDK's preview mode asks /_prb/preview.
+    const body = req.method === 'POST' ? await new Promise((ok) => { const c = []; req.on('data', (d) => c.push(d)); req.on('end', () => ok(Buffer.concat(c))); }) : undefined;
+    const up = await fetch(CORE + url.pathname.slice(5) + url.search, { method: req.method, body, headers: body ? { 'content-type': req.headers['content-type'] ?? 'application/json' } : undefined });
     res.writeHead(up.status, { 'content-type': up.headers.get('content-type') ?? 'text/plain' });
     return res.end(Buffer.from(await up.arrayBuffer()));
+  }
+  // Opened by the Preview room (?prb_preview=…): a page with the script fallback and both slots.
+  if (url.searchParams.has('prb_preview')) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    // B4's kitchen site (a test applies it): a copy hero whose title a template fills.
+    const tsite = (() => { try { return JSON.parse(Buffer.from(url.searchParams.get('prb_preview').split('.')[0], 'base64url')).site; } catch { return null; } })();
+    if (tsite === 'dhaba') {
+      return res.end(`<!doctype html><title>Dhaba</title>
+<script src="/_prb/manifest/dhaba.js"></script>
+<script src="/_prb/sdk.js" data-site="dhaba"></script>
+<body style="margin:0;font:16px/1.4 Georgia,serif">
+<div data-prb-slot="hero_copy" id="hero" style="padding:48px 24px;background:#f6e7d2"><h1 data-prb-field="title">Home-style food, cooked today</h1><p>Lunch from 12 to 3.</p></div>
+</body>`);
+    }
+    return res.end(`<!doctype html><title>Kaapi Co.</title>
+<script src="/_prb/manifest/shop.js"></script>
+<script src="/_prb/sdk.js" data-site="shop"></script>
+<body style="margin:0;font:16px/1.4 Georgia,serif">
+<div data-prb-slot="hero" style="padding:48px 24px;background:#f4ead8"><h1>Kaapi Co.</h1><p>Roasted in Chikmagalur.</p></div>
+<div data-prb-slot="banner" style="padding:16px 24px;background:#e8efe4"><p>Fresh roast every Monday.</p></div>
+</body>`);
   }
   res.writeHead(200, { 'content-type': 'text/html', 'x-prb-sdk': 'next/0.1.0' });
   res.end('<!doctype html><title>Kaapi Co.</title><h1>Kaapi Co.</h1>');

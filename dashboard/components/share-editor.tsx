@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useActor } from '@/components/shell';
 import { ShareSlider } from '@/components/slider';
+import { Check, SlidersHorizontal, X } from 'lucide-react';
 import { Button } from '@/components/ui';
 import { api, ApiError, type VariantRow } from '@/lib/api';
 
@@ -25,25 +26,26 @@ export function ShareEditor({ site, slot, v }: { site: string; slot: string; v: 
   });
   if (!open) {
     return (
-      <button type="button" className="mt-1 text-[11px] text-accent hover:underline" onClick={() => setOpen(true)}>
+      <button type="button" className="mt-2 inline-flex items-center gap-1 self-start rounded-sm text-[12px] font-medium text-ink-2 transition-colors hover:text-ink" onClick={() => setOpen(true)}>
+        <SlidersHorizontal className="size-3" aria-hidden />
         Change share
       </button>
     );
   }
   return (
     <div className="mt-2 space-y-2" data-testid={`share-editor-${v.key}`}>
-      <div className="flex items-baseline justify-between text-[11px]">
+      <div className="flex items-baseline justify-between text-[12px]">
         <span className="text-muted">Planned share</span>
         <span className="tabular font-semibold">{share}%</span>
       </div>
       <ShareSlider value={share} onChange={setShare} label={`new traffic share for ${v.key}`} />
-      <p className="text-[11px] text-muted" data-testid="share-rule">Re-applying the site file keeps your value until the file's own value changes.</p>
-      {error && <p role="alert" className="text-[11.5px] text-pause-ink">{error}</p>}
+      <p className="text-[12px] text-muted" data-testid="share-rule">Re-applying the site file keeps your value until the file's own value changes.</p>
+      {error && <p role="alert" className="text-[12px] text-pause-ink">{error}</p>}
       <div className="flex items-center gap-2">
-        <Button onClick={() => save.mutate()} disabled={!actor.trim() || save.isPending}>Save {share}%</Button>
-        <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+        <Button icon={Check} className="h-8 px-2.5" onClick={() => save.mutate()} disabled={!actor.trim() || save.isPending}>Save {share}%</Button>
+        <Button variant="ghost" icon={X} className="h-8 px-2.5" onClick={() => setOpen(false)}>Cancel</Button>
       </div>
-      {!actor.trim() && <p className="text-[11px] text-muted">Enter your name at the top to change it.</p>}
+      {!actor.trim() && <p className="text-[12px] text-muted">Add your name at the top to change it.</p>}
     </div>
   );
 }

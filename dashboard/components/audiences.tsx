@@ -5,6 +5,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useActor } from '@/components/shell';
+import { UserPlus, UsersRound } from 'lucide-react';
 import { Button, SectionTitle, inputClass } from '@/components/ui';
 import { api, ApiError, type AudienceRow, type VariantRow } from '@/lib/api';
 
@@ -67,17 +68,17 @@ export function Audiences({ site, slot, variants, audiences }: { site: string; s
 
   return (
     <div>
-      <SectionTitle>Audiences</SectionTitle>
-      <ul className="space-y-2 text-xs text-ink-2" aria-label="Variant audiences">
+      <SectionTitle icon={UsersRound} help="Pick who each live variant is shown to. A visitor outside the audience never gets it.">Audiences</SectionTitle>
+      <ul className="space-y-2 text-[13px] text-ink-2" aria-label="Variant audiences">
         {live.map((v) => (
           <li key={v.id} className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-            <span className="font-mono whitespace-nowrap text-ink">{v.key}</span>
+            <span className="min-w-0 truncate text-ink">{v.key}</span>
             {v.is_baseline ? (
               <span className="text-muted">everyone</span>
             ) : (
               <select
                 aria-label={`Audience for ${v.key}`}
-                className={`${inputClass} h-8 max-w-full text-xs`}
+                className={`${inputClass} max-w-full`}
                 value={v.audience ?? ''}
                 disabled={gate.isPending}
                 onChange={(e) => gate.mutate({ id: v.id, audience: e.target.value ? Number(e.target.value) : null })}
@@ -93,30 +94,30 @@ export function Audiences({ site, slot, variants, audiences }: { site: string; s
         <p className="mt-2 text-xs text-muted">Rules on order or view history match identified visitors only.</p>
       )}
       <form
-        className="mt-4 space-y-2 border-t border-line pt-3"
+        className="mt-4 space-y-2 border-t border-dashed border-line pt-4"
         aria-label="New audience"
         onSubmit={(e) => { e.preventDefault(); create.mutate(); }}
       >
-        <select aria-label="Rule" className={`${inputClass} w-full text-xs`} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
+        <select aria-label="Rule" className={`${inputClass} w-full`} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
           {KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
         </select>
         <div className="flex gap-2">
           {(kind === 'lapsed' || kind === 'orders') && (
-            <input aria-label="N" type="number" min={kind === 'lapsed' ? 0 : 1} className={`${inputClass} w-20 text-xs`} value={n} onChange={(e) => setN(Number(e.target.value))} />
+            <input aria-label="N" type="number" min={kind === 'lapsed' ? 0 : 1} className={`${inputClass} w-20`} value={n} onChange={(e) => setN(Number(e.target.value))} />
           )}
           {kind === 'ltv' && (
-            <select aria-label="Value" className={`${inputClass} text-xs`} value={ltv} onChange={(e) => setLtv(e.target.value)}>
+            <select aria-label="Value" className={`${inputClass}`} value={ltv} onChange={(e) => setLtv(e.target.value)}>
               {['none', 'low', 'mid', 'high'].map((b) => <option key={b}>{b}</option>)}
             </select>
           )}
           {needsText && (
             <>
-              <input aria-label={kind === 'viewed_item' ? 'Item id' : 'Category'} className={`${inputClass} min-w-0 flex-1 text-xs`} value={text} onChange={(e) => setText(e.target.value)} />
-              <input aria-label="Days" type="number" min={1} max={90} className={`${inputClass} w-16 text-xs`} value={days} onChange={(e) => setDays(Number(e.target.value))} />
+              <input aria-label={kind === 'viewed_item' ? 'Item id' : 'Category'} className={`${inputClass} min-w-0 flex-1`} value={text} onChange={(e) => setText(e.target.value)} />
+              <input aria-label="Days" type="number" min={1} max={90} className={`${inputClass} w-16`} value={days} onChange={(e) => setDays(Number(e.target.value))} />
             </>
           )}
         </div>
-        <Button type="submit" variant="ghost" className="h-8 w-full text-xs" disabled={create.isPending || (needsText && !text.trim())}>
+        <Button type="submit" variant="ghost" icon={UserPlus} className="w-full" disabled={create.isPending || (needsText && !text.trim())}>
           Add audience
         </Button>
       </form>

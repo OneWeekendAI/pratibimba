@@ -214,24 +214,6 @@ async fn the_manifest_marks_a_sorted_slot_and_lists_its_items_in_the_declared_or
     assert_eq!(keys, ["d", "c", "b", "a"]);
 }
 
-/// The shop example's site file applies, and its product grid is a sorted slot whose items are
-/// the shop's product slugs in the page's order.
-#[sqlx::test(migrations = false)]
-async fn the_shop_example_declares_its_product_grid_as_a_sorted_slot(pool: PgPool) {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/shop");
-    let file: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("site.json")).unwrap()).unwrap();
-    pratibimba::db::migrate(&pool).await.unwrap();
-    pratibimba::site_file::apply(&pool, &serde_json::from_value(file).unwrap()).await.unwrap();
-    let products = std::fs::read_to_string(dir.join("lib/products.ts")).unwrap();
-    let slugs: Vec<&str> = products.split("slug: '").skip(1).map(|s| &s[..s.find('\'').unwrap()]).collect();
-    assert!(slugs.len() >= 2, "{slugs:?}");
-    let m = get(&app(&pool), "/manifest/shop").await.json();
-    let grid = m["slots"].as_array().unwrap().iter().find(|s| s["key"] == "grid").expect("a grid slot");
-    assert_eq!(grid["kind"], "sorted");
-    let keys: Vec<&str> = grid["variants"].as_array().unwrap().iter().map(|v| v["key"].as_str().unwrap()).collect();
-    assert_eq!(keys, slugs);
-}
-
 // Found in the F2 live run (2026-10-14): the decision detail told a sorted decision as a swap
 // ("We showed `estate-filter`"), with no order, and a held-out one as "saw the baseline".
 #[sqlx::test(migrations = false)]

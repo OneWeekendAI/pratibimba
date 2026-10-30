@@ -178,3 +178,89 @@ async fn reject_in_the_room_retires_a_live_variant_and_logs_who(pool: PgPool) {
     let app = admin_app(&pool);
     assert_eq!(keys(&look(&app, json!({ "returning": true })).await, "hero"), ["baseline", "spring"]);
 }
+
+// --- B4: personas -------------------------------------------------------------------------
+
+const USUAL: &str = "Your usual {visitor.top_item.name | truncate: 30} is ready";
+
+/// A kitchen copy slot: the page's own title and an approved `your_usual` that needs a top item.
+async fn kitchen(pool: &PgPool) -> axum::Router {
+    pratibimba::db::migrate(pool).await.unwrap();
+    let f = json!({ "site": "demo", "origin": "http://localhost:5173", "privacy_mode": "full", "slots": [{
+        "key": "hero_copy", "selector": "#hero", "kind": "copy",
+        "copy": { "fields": [ { "name": "title", "max": 60, "required": true } ] },
+        "variants": [
+            { "key": "own", "baseline": true },
+            { "key": "your_usual", "requires": ["visitor.top_item"], "copy": { "title": USUAL } }
+        ] }] });
+    pratibimba::site_file::apply(pool, &file_from(f)).await.unwrap();
+    admin_app(pool)
+}
+
+async fn look_as(app: &axum::Router, persona: &str) -> Resp {
+    post(app, "/preview", json!({ "token": token_for("demo", 600), "ctx": {}, "persona": persona })).await
+}
+
+fn version<'a>(p: &'a Value, key: &str) -> &'a Value {
+    p["slots"][0]["versions"].as_array().unwrap().iter().find(|v| v["key"] == key).unwrap_or_else(|| panic!("no {key}: {p}"))
+}
+
+// Mutation: pass `None` facts in `versions` -> red.
+#[sqlx::test(migrations = false)]
+async fn preview_persona_fills_template(pool: PgPool) {
+    let app = kitchen(&pool).await;
+    let r = look_as(&app, "usual_rajma").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let v = version(&r.json(), "your_usual").clone();
+    assert_eq!(v["copy"], json!({ "title": "Your usual rajma-chawal is ready" }), "{v}");
+    assert_eq!(v["filled"], json!(true), "{v}");
+    assert!(!r.text.contains("tpl"), "a template left Core: {}", r.text);
+}
+
+// Mutation: skip close_by_requires in `versions` -> red.
+#[sqlx::test(migrations = false)]
+async fn preview_first_visit_shows_fall_through(pool: PgPool) {
+    let app = kitchen(&pool).await;
+    let r = look_as(&app, "first_visit").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let v = version(&r.json(), "your_usual").clone();
+    assert_eq!(v["closed"], json!(true), "{v}");
+    assert_eq!(v["why"], "needs visitor.top_item; this visitor falls to own", "{v}");
+    assert!(v["copy"].is_null(), "a closed version shows no copy: {v}");
+}
+
+// Mutation: accept an unknown persona as a first visit -> red.
+#[sqlx::test(migrations = false)]
+async fn preview_unknown_persona_refused(pool: PgPool) {
+    let app = kitchen(&pool).await;
+    let r = look_as(&app, "asha@example.com").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
+    assert!(r.text.contains("unknown persona") && r.text.contains("usual_rajma"), "{}", r.text);
+}
+
+// Mutation: record a decision for a persona preview -> red (the footprint changes).
+#[sqlx::test(migrations = false)]
+async fn preview_writes_nothing_with_persona(pool: PgPool) {
+    let app = kitchen(&pool).await;
+    for i in 0..3 {
+        let r = post(&app, "/decide", json!({ "site": "demo", "slot": "hero_copy", "subject": format!("real{i}") })).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    }
+    let before = footprint(&pool).await;
+    assert_ne!(before[0], "0");
+    for p in ["first_visit", "three_orders_40d", "usual_rajma", "cart_yesterday"] {
+        assert_eq!(look_as(&app, p).await.status, StatusCode::OK);
+    }
+    assert_eq!(footprint(&pool).await, before, "a persona preview wrote something");
+}
+
+// Mutation: answer the personas route with an empty list -> red.
+#[sqlx::test(migrations = false)]
+async fn personas_route_lists_keys_and_labels(pool: PgPool) {
+    let app = kitchen(&pool).await;
+    let r = api_get(&app, "/api/personas").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let keys: Vec<String> = r.json()["personas"].as_array().unwrap().iter().map(|p| p["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(keys, ["first_visit", "three_orders_40d", "usual_rajma", "cart_yesterday"]);
+    assert!(r.json()["personas"][2]["label"].as_str().is_some_and(|l| !l.is_empty()));
+}

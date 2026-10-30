@@ -142,29 +142,39 @@
     hide.textContent = slots.map(function (s) { return ':is(' + s.selector + '):not([data-prb-done])'; }).join(',') + '{visibility:hidden!important}';
     var marks = document.createElement('style');
     marks.id = 'prb-preview-marks';
-    marks.textContent =
-      // Drawn inside the slot (negative offset, inset shadow): a parent's overflow cannot clip it.
-      // On the slot's boxes (see `boxes`): a slot element with display:contents draws nothing.
+    // Drawn inside the slot (negative offset, inset shadow): a parent's overflow cannot clip it.
+    // On the slot's boxes (see `boxes`): a slot element with display:contents draws nothing.
+    var MARKS =
       '[data-prb-mark~=many]{outline:1.5px dashed rgba(79,70,229,.6);outline-offset:-3px;cursor:pointer}' +
       '[data-prb-mark~=changed]{outline:2.5px solid #4f46e5;outline-offset:-3px;box-shadow:inset 0 0 0 8px rgba(79,70,229,.14)}' +
       '[data-prb-mark~=picked]{outline:2.5px solid #4f46e5;outline-offset:-3px}';
+    // The room's explorer (prb:view zones): the compartments are drawn in a layer of their own
+    // (see drawZones), one box around each whole slot; the slot itself only takes the pointer.
+    var ZONES = '[data-prb-mark~=zone]{cursor:pointer}';
+    marks.textContent = MARKS;
     (document.head || document.documentElement).appendChild(hide);
     (document.head || document.documentElement).appendChild(marks);
     setTimeout(function () { if (hide.parentNode) hide.parentNode.removeChild(hide); }, Math.max(timeoutMs, 1500));
 
     var ctxNow = { returning: false, mobile: false, from_ad: false, tz_offset: -new Date().getTimezoneOffset() };
+    var personaNow = null; // a synthetic visitor's history (P1), named by the room
     var bySlot = {};      // slot key -> {kind, versions, kept_out}
     var index = {};       // slot key -> the version shown
     var shownKey = {};    // slot key -> the version key on the page now
     var changed = {};     // slot key -> true when the last visitor switch changed it
     var picked = null;    // the slot the room has open
     var asked = 0;
+    // prb:view: `zones` outlines and labels every slot and makes each one clickable (the
+    // room's explorer); `marks: false` draws nothing at all (the room's thumbnail frames).
+    var view = { zones: false, marks: true };
+    var hot = null;       // the slot under the pointer, in zones
+    var layer = null;     // the label chips, in zones
 
     function fetchFor(ctx, quiet) {
       var n = ++asked;
       return window.fetch(base + 'preview', {
         method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'omit',
-        body: JSON.stringify({ token: token, ctx: ctx })
+        body: JSON.stringify(personaNow ? { token: token, ctx: ctx, persona: personaNow } : { token: token, ctx: ctx })
       }).then(function (r) {
         if (r.status === 401) { toRoom({ type: 'prb:expired' }); throw new Error('preview token refused'); }
         if (!r.ok) throw new Error('preview ' + r.status);
@@ -189,7 +199,8 @@
       });
     }
 
-    function versionKey(v) { return v.order ? v.key + ':' + v.order.join(',') : v.key; }
+    // A copy version's text is part of it: the same version filled for another persona (P1) is new.
+    function versionKey(v) { return v.order ? v.key + ':' + v.order.join(',') : v.copy ? v.key + ':' + JSON.stringify(v.copy) : v.key; }
 
     // The page's own content of one element, kept before the first change and put back first on
     // every render, so a version never builds on another.
@@ -232,7 +243,11 @@
       if (changed[slot.key]) el.setAttribute('data-prb-changed', ''); else el.removeAttribute('data-prb-changed');
       if (picked === slot.key) el.setAttribute('data-prb-picked', ''); else el.removeAttribute('data-prb-picked');
       el.setAttribute('data-prb-done', '');
-      var mark = [v && s.versions.length > 1 ? 'many' : '', changed[slot.key] ? 'changed' : '', picked === slot.key ? 'picked' : ''].join(' ').trim();
+      var mark = !view.marks ? '' : [
+        view.zones && s ? 'zone' : (v && s.versions.length > 1 ? 'many' : ''),
+        view.zones && hot === slot.key ? 'hot' : '',
+        changed[slot.key] ? 'changed' : '', picked === slot.key ? 'picked' : ''
+      ].join(' ').replace(/\s+/g, ' ').trim();
       (el.prbBoxes || []).forEach(function (b) { b.removeAttribute('data-prb-mark'); });
       el.prbBoxes = mark ? boxes(el, 0) : [];
       el.prbBoxes.forEach(function (b) { b.setAttribute('data-prb-mark', mark); });
@@ -255,6 +270,71 @@
         if (s && s.versions && s.versions[index[slot.key]]) shownKey[slot.key] = versionKey(s.versions[index[slot.key]]);
         each(slot, function (el) { render(slot, el); });
       });
+      drawZones();
+    }
+
+    // One small chip per slot, at its top-left corner, in a layer of its own on <html> (page
+    // coordinates, so a scroll needs no redraw). It takes no pointer: a click lands on the slot.
+    function drawZones() {
+      if (!view.zones || !view.marks) { if (layer && layer.parentNode) layer.parentNode.removeChild(layer); layer = null; return; }
+      if (!layer) {
+        layer = document.createElement('div');
+        layer.id = 'prb-zones';
+        layer.setAttribute('aria-hidden', 'true');
+        layer.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;pointer-events:none';
+      }
+      layer.style.zIndex = String(underBars());
+      if (layer.parentNode !== document.documentElement) document.documentElement.appendChild(layer);
+      while (layer.firstChild) layer.removeChild(layer.firstChild);
+      var sx = window.pageXOffset || 0, sy = window.pageYOffset || 0;
+      // Boxes first, chips after, so no box is drawn over another slot's chip.
+      var chips = [];
+      slots.forEach(function (slot) {
+        if (!bySlot[slot.key]) return;
+        var r = rectOf(slot.key);
+        if (!r) return;
+        var on = picked === slot.key, lit = hot === slot.key;
+        var top = Math.round(r.top + sy), left = Math.round(r.left + sx);
+        var boxEl = document.createElement('div');
+        boxEl.setAttribute('data-prb-zone-box', slot.key);
+        // Grey with a white halo, so it reads on light and dark pages alike.
+        boxEl.style.cssText = 'position:absolute;box-sizing:border-box;top:' + top + 'px;left:' + left + 'px;width:' + Math.round(r.width) + 'px;height:' + Math.round(r.height) + 'px;border-radius:3px;' +
+          (on ? 'border:2px solid #0060df;box-shadow:0 0 0 1px rgba(255,255,255,.7)' + (changed[slot.key] ? ',inset 0 0 0 9999px rgba(0,96,223,.06)' : '')
+            : (lit ? 'border:1.5px solid rgba(23,23,23,.75)' : 'border:1px dashed rgba(23,23,23,.45)') + ';box-shadow:0 0 0 1px rgba(255,255,255,.45)' + (changed[slot.key] ? ',inset 0 0 0 9999px rgba(0,96,223,.07)' : ''));
+        layer.appendChild(boxEl);
+        var chip = document.createElement('span');
+        chip.setAttribute('data-prb-zone', slot.key);
+        chip.textContent = slot.key;
+        chip.style.cssText = 'position:absolute;top:' + Math.max(0, top - 9) + 'px;left:' + (left + 8) + 'px;' +
+          'font:500 11px/18px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;padding:0 6px;border-radius:4px;white-space:nowrap;' +
+          'color:#fff;background:' + (on ? '#0060df' : lit ? '#171717' : 'rgba(23,23,23,.78)') + ';box-shadow:0 0 0 1px rgba(255,255,255,.5),0 1px 2px rgba(0,0,0,.2)';
+        chips.push(chip);
+      });
+      chips.forEach(function (c) { layer.appendChild(c); });
+    }
+    // The layer sits just under the page's own bars and drawers (its lowest fixed or sticky
+    // z-index), so a sticky header still covers the compartments it scrolls over.
+    var barsAt = 0, barsZ = 2147483646;
+    function underBars() {
+      var now = Date.now();
+      if (now - barsAt < 1500) return barsZ;
+      barsAt = now;
+      var z = Infinity, all = document.body ? document.body.getElementsByTagName('*') : [];
+      for (var i = 0; i < all.length && i < 4000; i++) {
+        var cs;
+        try { cs = window.getComputedStyle(all[i]); } catch (e) { continue; }
+        if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+        var n = parseInt(cs.zIndex, 10);
+        if (n > 0 && n < z) z = n;
+      }
+      barsZ = z === Infinity ? 2147483646 : Math.max(1, z - 1);
+      return barsZ;
+    }
+    var zoneQueued = false;
+    function redrawZones() {
+      if (!view.zones || zoneQueued) return;
+      zoneQueued = true;
+      (window.requestAnimationFrame || function (f) { setTimeout(f, 16); })(function () { zoneQueued = false; drawZones(); });
     }
 
     function rectOf(key) {
@@ -277,7 +357,7 @@
         if (!s) return;
         out.push({
           slot: slot.key, kind: s.kind, index: index[slot.key] || 0, changed: !!changed[slot.key], on_page: !!document.querySelector(slot.selector),
-          versions: (s.versions || []).map(function (v) { return { id: v.id, key: v.key, status: v.status, baseline: v.baseline, why: v.why }; }),
+          versions: (s.versions || []).map(function (v) { var o = { id: v.id, key: v.key, status: v.status, baseline: v.baseline, why: v.why }; if (v.closed) o.closed = true; if (v.filled) o.filled = true; return o; }),
           kept_out: s.kept_out || []
         });
       });
@@ -294,12 +374,24 @@
           returning: !!m.ctx.returning, mobile: !!m.ctx.mobile, from_ad: !!m.ctx.from_ad,
           tz_offset: typeof m.ctx.tz_offset === 'number' ? m.ctx.tz_offset : -new Date().getTimezoneOffset()
         };
+        personaNow = typeof m.persona === 'string' && m.persona ? m.persona : null;
         fetchFor(ctxNow, !!m.quiet);
       } else if (m.type === 'prb:pick' && typeof m.slot === 'string' && bySlot[m.slot]) {
         var n = bySlot[m.slot].versions.length;
         if (n && typeof m.index === 'number') index[m.slot] = ((m.index % n) + n) % n;
         delete changed[m.slot];
         picked = m.slot;
+        renderAll();
+        if (m.scroll) {
+          var at = slots.filter(function (s) { return s.key === m.slot; })[0];
+          var el = at && document.querySelector(at.selector);
+          if (el && el.scrollIntoView) try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (x) { el.scrollIntoView(false); }
+        }
+        report();
+      } else if (m.type === 'prb:view') {
+        view = { zones: !!m.zones, marks: m.marks !== false };
+        marks.textContent = !view.marks ? '' : view.zones ? ZONES : MARKS;
+        if (!view.zones) hot = null;
         renderAll();
         report();
       } else if (m.type === 'prb:close') {
@@ -314,7 +406,7 @@
       var hit = null;
       slots.forEach(function (slot) {
         var s = bySlot[slot.key];
-        if (hit || !s || !s.versions || s.versions.length < 2) return;
+        if (hit || !s || (!view.zones && (!s.versions || s.versions.length < 2))) return;
         var el = e.target && e.target.closest ? e.target.closest(slot.selector) : null;
         if (el) hit = slot.key;
       });
@@ -331,14 +423,34 @@
     }
     window.addEventListener('scroll', follow, true);
     window.addEventListener('resize', follow);
+    window.addEventListener('resize', redrawZones);
+    window.addEventListener('load', redrawZones);
+    if (window.ResizeObserver) onReady(function () { if (document.body) new window.ResizeObserver(redrawZones).observe(document.body); });
+    // In zones, the slot under the pointer is drawn darker.
+    function hover(key) {
+      if (!view.zones || hot === key) return;
+      hot = key;
+      renderAll();
+    }
+    document.addEventListener('mouseover', function (e) {
+      if (!view.zones) return;
+      var key = null;
+      slots.forEach(function (slot) { if (!key && bySlot[slot.key] && e.target && e.target.closest && e.target.closest(slot.selector)) key = slot.key; });
+      hover(key);
+    });
+    document.addEventListener('mouseout', function (e) { if (!e.relatedTarget) hover(null); });
 
     // Single-page apps mount slots later: render each as it appears, before it paints.
     onReady(function () {
-      if (window.MutationObserver) new window.MutationObserver(function () {
+      if (window.MutationObserver) new window.MutationObserver(function (records) {
         slots.forEach(function (slot) { each(slot, function (el) { if (bySlot[slot.key] && !el.hasAttribute('data-prb-preview')) render(slot, el); }); });
+        // The chips' own layer changing is not a page change (else it redraws every frame).
+        var own = records.every(function (r) { return layer && (r.target === layer || (r.target === document.documentElement && [].every.call(r.addedNodes, function (n) { return n === layer; }) && [].every.call(r.removedNodes, function (n) { return n === layer; }))); });
+        if (!own) redrawZones();
       }).observe(document.documentElement, { childList: true, subtree: true });
     });
-    toRoom({ type: 'prb:hello' });
+    // `can` tells the room which of its later messages this SDK understands.
+    toRoom({ type: 'prb:hello', can: ['view'] });
     fetchFor(ctxNow, true);
   }
 

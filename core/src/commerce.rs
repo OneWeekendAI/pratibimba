@@ -22,6 +22,8 @@ use uuid::Uuid;
 pub const MAX_VALUE: f64 = 1e12;
 pub const MAX_ITEMS: usize = 100;
 pub const MAX_ITEMS_BYTES: usize = 16_384;
+/// The longest item id an event may carry (bytes, so also an upper bound in characters).
+pub const MAX_ITEM_ID: usize = 256;
 /// Values are kept to four decimal places.
 pub const SCALE: f64 = 10_000.0;
 
@@ -63,7 +65,7 @@ pub fn check(order_id: Option<&str>, value: Option<f64>, cur: Option<&str>, item
             return Err(format!("items: at most {MAX_ITEMS} items and {MAX_ITEMS_BYTES} bytes"));
         }
         for it in list {
-            let ok_id = it.get("id").and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s.len() <= 256);
+            let ok_id = it.get("id").and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s.len() <= MAX_ITEM_ID);
             let ok_price = it.get("price").is_none_or(|p| p.as_f64().is_some_and(|p| p.is_finite() && p >= 0.0));
             let ok_qty = it.get("quantity").is_none_or(|q| q.as_i64().is_some_and(|q| (1..=1_000_000).contains(&q)));
             if !it.is_object() || !ok_id || !ok_price || !ok_qty {

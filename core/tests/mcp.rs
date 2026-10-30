@@ -551,3 +551,97 @@ async fn get_results_has_no_note_when_nothing_is_pending(pool: PgPool) {
     let r = data(&call(&app, &t, "get_results", why(json!({}))).await);
     assert!(r.get("note").is_none(), "{r}");
 }
+
+// ---- P1 templates through propose_copy and list_slots (B3) ----
+
+async fn copy_setup(pool: &PgPool) -> (Router, String) {
+    pratibimba::db::migrate(pool).await.unwrap();
+    let f = json!({ "site": "demo", "origin": "http://localhost:5173", "slots": [{
+        "key": "hero", "selector": "#hero", "kind": "copy",
+        "copy": { "fields": [ { "name": "title", "max": 40, "required": true } ] },
+        "variants": [ { "key": "own", "baseline": true } ] }] });
+    pratibimba::site_file::apply(pool, &file_from(f)).await.unwrap();
+    let t = token(pool, "demo").await;
+    (admin_app(pool), t)
+}
+
+// Mutation: drop `requires` from the propose payload (store '{}') -> red.
+#[sqlx::test(migrations = false)]
+async fn propose_copy_template_lands_as_draft(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let out = data(&call(&app, &t, "propose_copy", why(json!({ "slot": "hero", "key": "usual",
+        "copy": { "title": "Your usual {visitor.top_item.name | truncate: 20}" }, "requires": ["visitor.top_item"] }))).await);
+    assert_eq!(out["status"], "draft", "{out}");
+    let (status, author, payload, req): (String, String, String, Vec<String>) =
+        sqlx::query_as("SELECT status, author, payload, requires FROM variants WHERE key = 'usual'").fetch_one(&pool).await.unwrap();
+    assert_eq!((status.as_str(), author.as_str()), ("draft", "agent"));
+    assert!(payload.contains("\"tpl\""), "stored parsed: {payload}");
+    assert_eq!(req, vec!["visitor.top_item".to_string()]);
+    // A person sees it, with its requires, in the approvals queue.
+    let cards = api_get(&app, "/api/sites/demo/approvals").await.json();
+    let card = cards["drafts"].as_array().unwrap().iter().find(|c| c["key"] == "usual").cloned().expect("queued");
+    assert_eq!(card["requires"], json!(["visitor.top_item"]), "{card}");
+}
+
+// Mutation: drop the copy::check_covered_stored call in mcp::propose -> red.
+#[sqlx::test(migrations = false)]
+async fn propose_copy_refuses_uncovered_required_placeholder(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let e = err_text(&call(&app, &t, "propose_copy", why(json!({ "slot": "hero", "key": "usual",
+        "copy": { "title": "{visitor.top_item.name | truncate: 20}" } }))).await);
+    assert!(e.contains("is required") && e.contains("requires") && e.contains("fallback"), "{e}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants WHERE key = 'usual'").await, 0);
+}
+
+// Mutation: check every placeholder in propose against an empty requires (ignore p.requires) -> red.
+#[sqlx::test(migrations = false)]
+async fn propose_copy_required_placeholder_with_requires_lands(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let out = data(&call(&app, &t, "propose_copy", why(json!({ "slot": "hero", "key": "usual",
+        "copy": { "title": "{visitor.top_item.name | truncate: 20}" }, "requires": ["visitor.top_item"] }))).await);
+    assert_eq!(out["status"], "draft", "{out}");
+}
+
+// Mutation: replace the unknown-path message's list of paths with a bare "unknown path" -> red.
+#[sqlx::test(migrations = false)]
+async fn propose_copy_unknown_path_refused_with_list(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let e = err_text(&call(&app, &t, "propose_copy", why(json!({ "slot": "hero", "key": "ltv",
+        "copy": { "title": "You spent {visitor.ltv | truncate: 10}" } }))).await);
+    assert!(e.contains("visitor.ltv") && e.contains("visitor.top_item.name") && e.contains("visitor.visit_count"), "{e}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants WHERE key = 'ltv'").await, 0);
+}
+
+// Mutation: drop the requires check in propose_copy (store an unknown requires path) -> red.
+#[sqlx::test(migrations = false)]
+async fn propose_copy_unknown_requires_refused(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let e = err_text(&call(&app, &t, "propose_copy", why(json!({ "slot": "hero", "key": "x",
+        "copy": { "title": "Hello again" }, "requires": ["visitor.ltv"] }))).await);
+    assert!(e.contains("requires") && e.contains("visitor.ltv"), "{e}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM variants WHERE key = 'x'").await, 0);
+}
+
+// Mutation: drop `template_paths` from list_slots -> red.
+#[sqlx::test(migrations = false)]
+async fn list_slots_names_template_paths(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let out = data(&call(&app, &t, "list_slots", why(json!({}))).await);
+    let paths = out["template_paths"].as_array().expect("template_paths listed");
+    assert_eq!(paths.len(), 10, "{out}");
+    let name = paths.iter().find(|p| p["path"] == "visitor.top_item.name").expect("top_item.name listed");
+    assert_eq!(name["max"], 256, "{name}");
+    let visits = paths.iter().find(|p| p["path"] == "visitor.visit_count").expect("visit_count listed");
+    assert_eq!((visits["max"].clone(), visits["number"].clone()), (json!(5), json!(true)), "{visits}");
+}
+
+// Mutation: drop the template text from propose_copy's description -> red.
+#[sqlx::test(migrations = false)]
+async fn propose_copy_description_documents_templates(pool: PgPool) {
+    let (app, t) = copy_setup(&pool).await;
+    let r = rpc(&app, Some(&t), json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).await.json();
+    let tool = r["result"]["tools"].as_array().unwrap().iter().find(|x| x["name"] == "propose_copy").cloned().unwrap();
+    let d = tool["description"].as_str().unwrap();
+    assert!(d.contains("{visitor.top_item.name | truncate: 20}") && d.contains("fallback") && d.contains("{{") && d.contains("requires"), "{d}");
+    assert!(tool["inputSchema"]["properties"]["requires"].is_object(), "{tool}");
+}

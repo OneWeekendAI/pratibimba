@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Suspense, type ReactNode } from 'react';
 import { McpTailCard } from '@/components/agent';
-import { Shell } from '@/components/shell';
+import { Crumb, Shell } from '@/components/shell';
+import { Braces, ChevronRight, FilePen, Globe } from 'lucide-react';
 import { Card, Chip, Empty, Loading, SectionTitle, type ChipTone } from '@/components/ui';
 import { api, type McpCallDetail, type SiteRow } from '@/lib/api';
 import { when } from '@/lib/format';
@@ -15,7 +16,7 @@ const OUTCOME: Record<McpCallDetail['outcome'], ChipTone> = { ok: 'live', error:
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[160px_1fr] gap-4 px-4 py-2.5 text-[13px]">
+    <div className="grid grid-cols-[110px_1fr] gap-4 px-4 py-3 text-[13px] sm:grid-cols-[160px_1fr] sm:px-5">
       <dt className="text-muted">{label}</dt>
       <dd className="min-w-0 break-words">{children}</dd>
     </div>
@@ -24,7 +25,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 function Record({ c }: { c: McpCallDetail }) {
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-4xl space-y-10">
       <Card>
         <dl className="divide-y divide-line" data-testid="audit-record">
           <Row label="Agent"><b className="font-medium">{c.agent || 'unnamed agent'}</b>{c.on_behalf_of && <span className="text-muted"> on behalf of {c.on_behalf_of}</span>}</Row>
@@ -38,22 +39,22 @@ function Record({ c }: { c: McpCallDetail }) {
       </Card>
       {c.variants.length > 0 && (
         <section>
-          <SectionTitle>What it wrote</SectionTitle>
+          <SectionTitle icon={FilePen}>What it wrote</SectionTitle>
           <Card className="divide-y divide-line text-[13px]">
             {c.variants.map((v) => (
-              <div key={v.id} className="flex items-center gap-2 px-4 py-2.5">
-                <span className="font-mono">{v.key}</span>
-                <span className="text-muted">on slot {v.slot}</span>
+              <div key={v.id} className="flex flex-wrap items-center gap-2 px-4 py-3">
+                <span className="font-medium">{v.key}</span>
+                <span className="text-muted">on {v.slot}</span>
                 <Chip tone={v.status === 'draft' ? 'warn' : v.status === 'approved' ? 'live' : 'off'}>{v.status}</Chip>
-                {v.status === 'draft' && <Link className="ml-auto text-xs text-accent underline" href={`/approvals/?site=${c.site}`}>Review in Approvals</Link>}
+                {v.status === 'draft' && <Link className="ml-auto inline-flex items-center gap-1 rounded-sm text-[13px] font-medium text-ink-2 transition-colors hover:text-ink" href={`/approvals/?site=${c.site}`}>Review <ChevronRight className="size-3.5" aria-hidden /></Link>}
               </div>
             ))}
           </Card>
         </section>
       )}
       <section>
-        <SectionTitle hint="exactly as the agent sent them">Arguments</SectionTitle>
-        <pre className="overflow-x-auto rounded-lg border border-line bg-surface p-4 font-mono text-[12px] leading-relaxed whitespace-pre-wrap" data-testid="audit-arguments">{JSON.stringify(c.arguments, null, 2)}</pre>
+        <SectionTitle icon={Braces} hint="as sent">Arguments</SectionTitle>
+        <pre className="overflow-x-auto rounded-lg border border-line bg-surface p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap sm:p-5" data-testid="audit-arguments">{JSON.stringify(c.arguments, null, 2)}</pre>
       </section>
     </div>
   );
@@ -64,9 +65,8 @@ function AuditLog() {
   const param = useParam('site');
   const sites = useQuery({ queryKey: ['sites'], queryFn: () => api.get<SiteRow[]>('/sites'), enabled: !param });
   const site = param ?? (sites.data?.length === 1 ? sites.data[0].id : null);
-  const title = <><div className="text-xs text-muted">{site ?? 'Audit'}</div><h1 className="font-serif text-3xl">Audit log</h1></>;
   return (
-    <Shell site={site} title={title}>
+    <Shell site={site} title="Audit log" help="Every tool call an agent makes leaves a record here, refused or not: who called what, for whom, why, and what it wrote.">
       {site ? (
         <div className="max-w-4xl"><McpTailCard site={site} /></div>
       ) : sites.isLoading ? (
@@ -76,8 +76,8 @@ function AuditLog() {
       ) : (
         <Card className="max-w-xl divide-y divide-line text-[13px]">
           {sites.data.map((s) => (
-            <Link key={s.id} href={`/audit/?site=${s.id}`} className="block px-4 py-2.5 hover:bg-surface-2/60">
-              <span className="font-mono">{s.id}</span> <span className="text-muted">tool calls</span>
+            <Link key={s.id} href={`/audit/?site=${s.id}`} className="flex items-center gap-2 px-4 py-3 transition-colors hover:bg-surface-2/60">
+              <Globe className="size-4 text-muted" aria-hidden /><span className="font-mono">{s.id}</span> <span className="text-muted">tool calls</span><ChevronRight className="ml-auto size-4 text-muted" aria-hidden />
             </Link>
           ))}
         </Card>
@@ -91,7 +91,7 @@ function Page() {
   const q = useQuery({ queryKey: ['mcp-call', id], queryFn: () => api.get<McpCallDetail>(`/mcp-calls/${id}`), enabled: !!id });
   if (!id) return <AuditLog />;
   return (
-    <Shell site={q.data?.site ?? null} title={<><div className="text-xs text-muted">{q.data?.site ?? 'Audit'} · MCP audit log</div><h1 className="font-serif text-3xl">Tool call #{id}</h1></>}>
+    <Shell site={q.data?.site ?? null} title={`Tool call #${id}`} crumbs={q.data ? <Crumb href={`/audit/?site=${q.data.site}`}>Audit log</Crumb> : undefined}>
       {q.isError ? <Empty>That tool call was not found.</Empty> : q.data ? <Record c={q.data} /> : <Loading />}
     </Shell>
   );

@@ -44,6 +44,11 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0270_assets", include_str!("../migrations/0270_assets.sql")),
     ("0280_asset_widths", include_str!("../migrations/0280_asset_widths.sql")),
     ("0290_preview_url", include_str!("../migrations/0290_preview_url.sql")),
+    ("0300_templates", include_str!("../migrations/0300_templates.sql")),
+    ("0301_history_settings", include_str!("../migrations/0301_history_settings.sql")),
+    ("0310_propensity", include_str!("../migrations/0310_propensity.sql")),
+    ("0320_advisor", include_str!("../migrations/0320_advisor.sql")),
+    ("0321_advisor_decide", include_str!("../migrations/0321_advisor_decide.sql")),
 ];
 
 /// Arbitrary constant: "prb" in ASCII.

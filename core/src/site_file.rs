@@ -53,6 +53,14 @@ pub struct SiteFile {
     /// block; `enabled: false` turns it off.
     #[serde(default)]
     pub history: Option<crate::history::Spec>,
+    /// The template facts' settings ([`crate::history::Settings`]): look-back and what a visit
+    /// is. Omitted: keep the current settings; `{}` resets every one to its default.
+    #[serde(default)]
+    pub history_settings: Option<crate::history::Settings>,
+    /// The advisor's thresholds ([`crate::advisor::pause::Settings`]). Omitted: keep the current
+    /// settings; `{}` resets every one to its default.
+    #[serde(default)]
+    pub advisor_settings: Option<crate::advisor::pause::Settings>,
     pub slots: Vec<SlotSpec>,
 }
 
@@ -128,6 +136,10 @@ pub struct VariantSpec {
     /// edit in the dashboard survives re-applying an unchanged file. Omitted: the share stands.
     #[serde(default)]
     pub traffic_share: Option<f32>,
+    /// A copy slot's variant only (P1): template paths it cannot do without; a visitor lacking
+    /// one is not offered it. Never on the baseline.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 fn default_metric() -> String {
@@ -167,6 +179,12 @@ impl SiteFile {
         }
         if let Some(h) = &self.history {
             h.validate()?;
+        }
+        if let Some(h) = &self.history_settings {
+            h.validate().map_err(|e| anyhow::anyhow!("history_settings: {e}"))?;
+        }
+        if let Some(a) = &self.advisor_settings {
+            a.validate().map_err(|e| anyhow::anyhow!("advisor_settings: {e}"))?;
         }
         check_attribution("site", self.attribution.as_deref())?;
         if let Some(u) = &self.preview_url {
@@ -236,6 +254,8 @@ pub fn validate_slot(slot: &SlotSpec) -> Result<()> {
                 bail!("slot {k:?}: variant {:?} traffic_share must be above 0 and at most 0.5", v.key);
             }
         }
+        crate::copy::validate_requires(&v.requires, slot.is_copy(), v.baseline || (slot.is_sorted() && i == 0))
+            .map_err(|e| anyhow::anyhow!("slot {k:?}: variant {:?}: {e}", v.key))?;
         match (v.baseline, &v.html) {
             (true, Some(_)) => bail!("slot {k:?}: baseline {:?} must not carry html; it is the page's own content", v.key),
             (false, None) if !slot.is_picker() && !slot.is_sorted() && !slot.is_copy() => bail!("slot {k:?}: variant {:?} needs html", v.key),
@@ -344,6 +364,12 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         let v = h.enabled.then(|| serde_json::to_value(h)).transpose()?;
         sqlx::query("UPDATE sites SET history = $2 WHERE id = $1").bind(&file.site).bind(v).execute(&mut *tx).await?;
     }
+    if let Some(h) = &file.history_settings {
+        sqlx::query("UPDATE sites SET history_settings = $2 WHERE id = $1").bind(&file.site).bind(h.stored()).execute(&mut *tx).await?;
+    }
+    if let Some(a) = &file.advisor_settings {
+        sqlx::query("UPDATE sites SET advisor_settings = $2 WHERE id = $1").bind(&file.site).bind(a.stored()).execute(&mut *tx).await?;
+    }
     if let Some(features) = &file.features {
         sqlx::query("DELETE FROM site_features WHERE site_id = $1").bind(&file.site).execute(&mut *tx).await?;
         for f in features {
@@ -402,9 +428,9 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             let prev = before.iter().find(|(k, ..)| k == &v.key);
             let (share, file_changed) = file_share(baseline, v.traffic_share, prev.map(|p| (p.2, p.3)));
             let id: i64 = sqlx::query_scalar(
-                "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at, approved_model_version, traffic_share, file_share)
-                 VALUES ($1, $2, $3, $4, 'approved', $5, now(), (SELECT version FROM models WHERE slot_id = $1), $6, $7)
-                 ON CONFLICT (slot_id, key) DO UPDATE SET payload = EXCLUDED.payload, is_baseline = EXCLUDED.is_baseline,
+                "INSERT INTO variants (slot_id, key, payload, is_baseline, status, approved_by, approved_at, approved_model_version, traffic_share, file_share, requires)
+                 VALUES ($1, $2, $3, $4, 'approved', $5, now(), (SELECT version FROM models WHERE slot_id = $1), $6, $7, $8)
+                 ON CONFLICT (slot_id, key) DO UPDATE SET payload = EXCLUDED.payload, is_baseline = EXCLUDED.is_baseline, requires = EXCLUDED.requires,
                      status = 'approved', approved_by = EXCLUDED.approved_by, approved_at = now(),
                      approved_model_version = COALESCE(variants.approved_model_version, EXCLUDED.approved_model_version),
                      traffic_share = EXCLUDED.traffic_share, file_share = EXCLUDED.file_share
@@ -417,6 +443,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
             .bind(APPROVER)
             .bind(share)
             .bind(if baseline { None } else { v.traffic_share })
+            .bind(&v.requires)
             .fetch_one(&mut *tx)
             .await?;
             let previous = prev.and_then(|p| p.2);

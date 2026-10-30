@@ -3,6 +3,14 @@
 //! - `GET /api/sites/{site}/privacy`, `POST /api/sites/{site}/privacy`: the consent mode and
 //!   the `fields_allowed` list. A POST changes only what it names; `"fields_allowed": null`
 //!   clears the list (every field is collected).
+//! - `GET /api/sites/{site}/history-settings`, `POST /api/sites/{site}/history-settings`: the
+//!   template facts' settings ([`crate::history::Settings`]): `top_item_days` (1-730, default
+//!   180), `visit` (`day` or `session`) and `session_gap_minutes` (5-1440, default 30). A POST
+//!   replaces the settings; an omitted field is its default. Both answer the effective values
+//!   with `defaults` and `bounds`.
+//! - `GET /api/sites/{site}/advisor-settings`, `POST /api/sites/{site}/advisor-settings`: the
+//!   advisor's thresholds ([`crate::advisor::pause::Settings`]): `min_rows`, `margin`,
+//!   `held_out_days`, `fdr_q`, `cards_per_week`, `quiet_days`. Same shape as history-settings.
 //! - `POST /api/sites/{site}/erase` `{subject, actor, reason?}`: right-to-erase. With an edge
 //!   configured the answer's `edge` says the tombstone was pushed and the edge refuses the
 //!   subject within 60 s (EC4); `edge` is null on a Core without one.
@@ -23,6 +31,8 @@ use std::sync::Arc;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/sites/{site}/privacy", get(read).post(write))
+        .route("/sites/{site}/history-settings", get(read_history_settings).post(write_history_settings))
+        .route("/sites/{site}/advisor-settings", get(read_advisor_settings).post(write_advisor_settings))
         .route("/sites/{site}/erase", post(erase))
         .route("/sites/{site}/erasures", get(erasures))
         .route("/sites/{site}/subjects/{subject}", get(access))
@@ -50,6 +60,52 @@ struct SetPrivacy {
 async fn write(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<SetPrivacy>) -> Result<Json<Value>, ApiError> {
     let out = privacy::set(&state.pool, &site, b.privacy_mode.as_deref(), b.fields_allowed).await?;
     crate::edge::changed(&state.pool, &state.edge, &site).await;
+    Ok(Json(out))
+}
+
+async fn read_history_settings(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
+    let row: Option<Option<Value>> = sqlx::query_scalar("SELECT history_settings FROM sites WHERE id = $1").bind(&site).fetch_optional(&state.pool).await?;
+    let Some(v) = row else { return Err(ApiError::NotFound(format!("unknown site {site:?}"))) };
+    let mut out = crate::history::Settings::parse(v.as_ref()).effective();
+    out["site"] = json!(site);
+    Ok(Json(out))
+}
+
+async fn write_history_settings(
+    State(state): State<Arc<AppState>>,
+    Path(site): Path<String>,
+    Json(b): Json<crate::history::Settings>,
+) -> Result<Json<Value>, ApiError> {
+    b.validate().map_err(ApiError::BadRequest)?;
+    let done = sqlx::query("UPDATE sites SET history_settings = $2 WHERE id = $1").bind(&site).bind(b.stored()).execute(&state.pool).await?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError::NotFound(format!("unknown site {site:?}")));
+    }
+    let mut out = b.effective();
+    out["site"] = json!(site);
+    Ok(Json(out))
+}
+
+async fn read_advisor_settings(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
+    let row: Option<Option<Value>> = sqlx::query_scalar("SELECT advisor_settings FROM sites WHERE id = $1").bind(&site).fetch_optional(&state.pool).await?;
+    let Some(v) = row else { return Err(ApiError::NotFound(format!("unknown site {site:?}"))) };
+    let mut out = crate::advisor::pause::Settings::parse(v.as_ref()).effective();
+    out["site"] = json!(site);
+    Ok(Json(out))
+}
+
+async fn write_advisor_settings(
+    State(state): State<Arc<AppState>>,
+    Path(site): Path<String>,
+    Json(b): Json<crate::advisor::pause::Settings>,
+) -> Result<Json<Value>, ApiError> {
+    b.validate().map_err(ApiError::BadRequest)?;
+    let done = sqlx::query("UPDATE sites SET advisor_settings = $2 WHERE id = $1").bind(&site).bind(b.stored()).execute(&state.pool).await?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError::NotFound(format!("unknown site {site:?}")));
+    }
+    let mut out = b.effective();
+    out["site"] = json!(site);
     Ok(Json(out))
 }
 

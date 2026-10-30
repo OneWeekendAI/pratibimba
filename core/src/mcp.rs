@@ -231,12 +231,16 @@ fn catalogue() -> Vec<Value> {
                      "html": { "type": "string", "description": "The HTML fragment that replaces the slot's content. No scripts or event handlers." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "html"]),
-        tool("propose_copy", "Submit new text and images for a copy slot (kind copy): one value per declared field. A text field takes plain text within its max length, no < or > and no newlines. An image field takes {asset (an id from upload_asset) or url, alt (required, plain text), width?, height?}: this is how to change a picture without writing HTML. Every required field filled. Lands as a DRAFT like propose_variant; list_slots shows the fields.",
+        tool("propose_copy", "Submit new text and images for a copy slot (kind copy): one value per declared field. A text field takes plain text within its max length, no < or > and no newlines. An image field takes {asset (an id from upload_asset) or url, alt (required, plain text), width?, height?}: this is how to change a picture without writing HTML. Every required field filled. Lands as a DRAFT like propose_variant; list_slots shows the fields. \
+A text field may be a template filled per visitor from their own history, with no logic: a placeholder is {path | formatter: arg, ...}, e.g. \"Your usual {visitor.top_item.name | truncate: 20}\". Paths: list_slots' template_paths (with each one's longest value). Formatters: money, int, percent (number paths only), upper, lower, truncate: N (1-500), prefix: \"...\", suffix: \"...\", fallback: \"...\" (shown when the value is missing; prefix and suffix then vanish). The longest possible fill must fit the field's max, so an item name needs truncate. For a literal brace write {{ or }}. \
+requires: paths the visitor must have (e.g. [\"visitor.top_item\"]); a visitor lacking one is served the baseline, so the copy never reads oddly empty.",
              json!({ "slot": slot, "key": { "type": "string", "description": "A new lowercase slug for the variant (a-z, 0-9, - and _)." },
                      "copy": { "type": "object", "additionalProperties": { "oneOf": [ { "type": "string" },
                                    { "type": "object", "properties": { "asset": { "type": "string", "description": "An id upload_asset returned." }, "url": { "type": "string", "description": "https://... or a root-relative /path." },
                                      "alt": { "type": "string", "description": "Required: what the image shows, plain text." }, "width": { "type": "integer" }, "height": { "type": "integer" } }, "required": ["alt"] } ] },
                                "description": "Field name to value: text for a text field, e.g. {\"headline\": \"...\"}; for an image field {\"hero\": {\"asset\": \"<id from upload_asset>\", \"alt\": \"...\"}} (or \"url\" instead of \"asset\")." },
+                     "requires": { "type": "array", "items": { "type": "string" }, "maxItems": crate::copy::MAX_REQUIRES,
+                                   "description": "Optional template paths the visitor must have, e.g. [\"visitor.top_item\"]; anyone lacking one sees the baseline." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["slot", "key", "copy"]),
         tool("create_slot", "Declare a new slot: swap (HTML variants, the default), copy (named plain-text fields with max lengths) or sorted (an order of items). It lands as a DRAFT: its baseline (the page's own content; a sorted slot's first item) is a draft, so the slot is in no manifest and decides nothing until a person approves that baseline in the dashboard, which activates it. The kind's options are checked as the site file checks them. Then propose variants (propose_variant, or propose_copy on a copy slot).",
@@ -491,6 +495,9 @@ struct CopyProposal {
     slot: String,
     key: String,
     copy: crate::copy::Text,
+    /// P1: history paths the variant needs; a visitor lacking one is served the baseline.
+    #[serde(default)]
+    requires: Vec<String>,
     note: Option<String>,
 }
 
@@ -622,9 +629,9 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     // The slot as the site file would declare it, so the site file's rules judge it: a sorted
     // slot's items are its variants; any other kind has the one baseline.
     let variants = match a.items {
-        Some(items) => items.into_iter().map(|key| crate::site_file::VariantSpec { key, baseline: false, html: None, copy: None, traffic_share: None }).collect(),
+        Some(items) => items.into_iter().map(|key| crate::site_file::VariantSpec { key, baseline: false, html: None, copy: None, traffic_share: None, requires: vec![] }).collect(),
         None if sorted => vec![],
-        None => vec![crate::site_file::VariantSpec { key: "baseline".into(), baseline: true, html: None, copy: None, traffic_share: None }],
+        None => vec![crate::site_file::VariantSpec { key: "baseline".into(), baseline: true, html: None, copy: None, traffic_share: None, requires: vec![] }],
     };
     let spec = crate::site_file::SlotSpec {
         key: a.key.clone(),
@@ -857,7 +864,7 @@ async fn kind_spec(
         }
         // Visible follows the items down when there are fewer of them, as create_slot clamps it.
         let visible = new_sorted.and_then(|s| s.visible).unwrap_or(visible.min(items.len() as u32).max(1));
-        let variants = items.into_iter().map(|key| VariantSpec { key, baseline: false, html: None, copy: None, traffic_share: None }).collect();
+        let variants = items.into_iter().map(|key| VariantSpec { key, baseline: false, html: None, copy: None, traffic_share: None, requires: vec![] }).collect();
         (variants, Some(crate::sorted::SortedSpec { visible: Some(visible) }))
     } else {
         let is_copy = kind == crate::copy::KIND;
@@ -867,7 +874,7 @@ async fn kind_spec(
             .map(|(key, baseline, payload, _)| {
                 let text = (is_copy && !baseline).then(|| payload.as_deref().and_then(|p| serde_json::from_str(p).ok())).flatten();
                 let html = (!is_copy && !baseline).then_some(payload).flatten();
-                VariantSpec { key, baseline, html, copy: text, traffic_share: None }
+                VariantSpec { key, baseline, html, copy: text, traffic_share: None, requires: vec![] }
             })
             .collect();
         (variants, new_sorted)
@@ -1139,12 +1146,13 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
         }
         "propose_variant" => {
             let p: Proposal = parse(args)?;
-            propose(pool, site, p, call_row, agent, false).await
+            propose(pool, site, p, &[], call_row, agent, false).await
         }
         "propose_copy" => {
             let p: CopyProposal = parse(args)?;
             let html = crate::copy::payload(&p.copy);
-            propose(pool, site, Proposal { slot: p.slot, key: p.key, html, note: p.note }, call_row, agent, true).await
+            crate::copy::validate_requires(&p.requires, true, false).map_err(ApiError::BadRequest)?;
+            propose(pool, site, Proposal { slot: p.slot, key: p.key, html, note: p.note }, &p.requires, call_row, agent, true).await
         }
         "simulate" => simulate(pool, site, parse(args)?).await,
         "list_audiences" => {
@@ -1227,7 +1235,13 @@ async fn list_slots(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
             })
         })
         .collect();
-    Ok(json!({ "slots": slots }))
+    // P1: what a copy field's template may read, each with the longest value it can fill to
+    // (a field's max must hold it, or the placeholder carries `| truncate: N`).
+    let paths: Vec<Value> = crate::template::PATHS
+        .iter()
+        .map(|p| json!({ "path": p.as_str(), "max": p.max_len(), "number": p.is_number() }))
+        .collect();
+    Ok(json!({ "slots": slots, "template_paths": paths }))
 }
 
 async fn list_variants(pool: &PgPool, site: &str, slot: &str) -> Result<Value, ApiError> {
@@ -1289,7 +1303,8 @@ async fn list_variants(pool: &PgPool, site: &str, slot: &str) -> Result<Value, A
     Ok(json!({ "slot": slot, "variants": variants }))
 }
 
-async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &str, as_copy: bool) -> Result<Value, ApiError> {
+/// `requires` comes only from propose_copy, already checked by `copy::validate_requires`.
+async fn propose(pool: &PgPool, site: &str, p: Proposal, requires: &[String], call_row: i64, agent: &str, as_copy: bool) -> Result<Value, ApiError> {
     if !crate::site_file::is_slug(&p.key) {
         return Err(ApiError::BadRequest("key must be a lowercase slug (a-z, 0-9, - and _)".into()));
     }
@@ -1310,6 +1325,7 @@ async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &
         (Some(spec), true) => {
             crate::copy::check_stored(spec, Some(&p.html)).map_err(ApiError::BadRequest)?;
             let text = crate::copy::read_text(Some(&p.html)).map_err(ApiError::BadRequest)?;
+            crate::copy::check_covered_stored(spec, &text, requires).map_err(ApiError::BadRequest)?;
             crate::assets::check_refs(pool, site, &crate::copy::asset_refs(&text)).await?;
         }
         (None, false) => {}
@@ -1317,13 +1333,14 @@ async fn propose(pool: &PgPool, site: &str, p: Proposal, call_row: i64, agent: &
     let mut tx = pool.begin().await?;
     // The status is a literal: nothing an agent sends can make this row anything but a draft.
     let id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO variants (slot_id, key, payload, author, status, mcp_call_id) VALUES ($1, $2, $3, 'agent', 'draft', $4)
+        "INSERT INTO variants (slot_id, key, payload, author, status, mcp_call_id, requires) VALUES ($1, $2, $3, 'agent', 'draft', $4, $5)
          ON CONFLICT (slot_id, key) DO NOTHING RETURNING id",
     )
     .bind(slot_id)
     .bind(&p.key)
     .bind(&p.html)
     .bind(call_row)
+    .bind(requires)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(id) = id else {

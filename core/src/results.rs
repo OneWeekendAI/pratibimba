@@ -148,6 +148,23 @@ pub struct SlotResult {
     pub learned: bool,
     /// Decisions on this slot (treated and holdout) still in their window.
     pub pending: Pending,
+    /// A1: what the advisor says of this slot; filled by [`advisor`] (the Results route), not by
+    /// [`site`], so the guard and the overview do not pay for the estimate.
+    pub advisor: Option<AdvisorLine>,
+}
+
+/// A1's line on a slot in Results. `state` is `not_enough_data` (an arm under the advisor's
+/// minimum), `card_pending` (a pause card waits in Review) or `approved` (a person paused the
+/// slot's versions at `since`). After approval, `orders_delta` is the slot's treated-vs-holdout
+/// lift since `since` and `before` the same over an equal window before it: the same holdout
+/// measurement as any arm, as a rate difference (x100 for "per 100").
+#[derive(Clone, Debug, Serialize)]
+pub struct AdvisorLine {
+    pub state: &'static str,
+    pub card: Option<i64>,
+    pub since: Option<DateTime<Utc>>,
+    pub orders_delta: Option<Interval>,
+    pub before: Option<Interval>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -304,6 +321,7 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
             lessons: lessons.max(0) as u64,
             learned: lessons > 0,
             pending: slot_pending,
+            advisor: None,
         });
     }
     Ok(Some(SiteResult {
@@ -319,6 +337,50 @@ pub async fn site(pool: &PgPool, site: &str, since: DateTime<Utc>, now: DateTime
         pending: site_pending,
         slots: out,
     }))
+}
+
+/// The slot's treated-vs-holdout lift over decisions created in `[from, to)`, closed by `to`.
+async fn slot_lift(pool: &PgPool, site: &str, slot: i64, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Option<Interval>> {
+    let (mut t, mut h) = (Counts::default(), Counts::default());
+    for (s, _, held, n, c, credit, r, r2) in counts(pool, site, from, to).await? {
+        if s == slot {
+            if held { &mut h } else { &mut t }.add(n as u64, c as u64, credit, r, r2);
+        }
+    }
+    Ok(stats::lift_cs_credit(t.pair(), h.pair(), ALPHA))
+}
+
+/// Fill each slot's [`AdvisorLine`]: the newest open or approved pause card, else the advisor's
+/// "not enough data yet". A slot the advisor has nothing to say about keeps `None`.
+pub async fn advisor(pool: &PgPool, r: &mut SiteResult, now: DateTime<Utc>) -> Result<()> {
+    let cards: Vec<(i64, i64, String, DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT DISTINCT ON (slot_id) slot_id, id, status, created_at, decided_at FROM advisor_cards
+          WHERE site_id = $1 AND kind = 'pause_slot' AND status IN ('pending', 'approved') ORDER BY slot_id, id DESC",
+    )
+    .bind(&r.site)
+    .fetch_all(pool)
+    .await?;
+    let assessed = crate::advisor::run::assess(pool, &r.site, now).await?;
+    for s in &mut r.slots {
+        s.advisor = match cards.iter().find(|c| c.0 == s.id) {
+            Some((_, id, status, created, decided)) if status == "approved" => {
+                let since = decided.unwrap_or(*created);
+                Some(AdvisorLine {
+                    state: "approved",
+                    card: Some(*id),
+                    since: Some(since),
+                    orders_delta: slot_lift(pool, &r.site, s.id, since, now).await?,
+                    before: slot_lift(pool, &r.site, s.id, since - (now - since), since).await?,
+                })
+            }
+            Some((_, id, _, created, _)) => Some(AdvisorLine { state: "card_pending", card: Some(*id), since: Some(*created), orders_delta: None, before: None }),
+            None => assessed
+                .iter()
+                .find(|a| a.slot_id == s.id && a.candidate.state == crate::advisor::pause::State::NotEnoughData)
+                .map(|_| AdvisorLine { state: "not_enough_data", card: None, since: None, orders_delta: None, before: None }),
+        };
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]

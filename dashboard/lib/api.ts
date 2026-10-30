@@ -140,13 +140,14 @@ export interface VariantRow {
   approved_by: string | null;
   approved_at: string | null;
   paused_at: string | null;
+  /** Auto-rollback's certificate, or (A1) the advisor card a person approved. */
   pause_reason: null | {
     at: string;
     variant: { n: number; conversions: number; rate: number | null };
     holdout: { n: number; conversions: number; rate: number | null };
     lift: Interval;
     restored_to_version: number | null;
-  };
+  } | { advisor_card: number; by: string };
 }
 export interface CurvePoint {
   t: string;
@@ -266,6 +267,16 @@ export interface SlotResult {
   learned?: boolean;
   /** Decisions on the slot (treated and holdout) still in their window. */
   pending?: Pending;
+  /** A1: the advisor's line on this slot (null when it has nothing to say). */
+  advisor?: AdvisorLine | null;
+}
+/** A1: Results' advisor line. Deltas are rate differences (x100 for "per 100"). */
+export interface AdvisorLine {
+  state: 'not_enough_data' | 'card_pending' | 'approved';
+  card: number | null;
+  since: string | null;
+  orders_delta: Interval | null;
+  before: Interval | null;
 }
 export interface Results {
   results: {
@@ -275,6 +286,8 @@ export interface Results {
     treated: Counts;
     holdout: Counts;
     lift: Interval | null;
+    /** Revenue per visitor, personalised minus holdout, in the site's currency. */
+    revenue_lift?: Interval | null;
     currency?: string;
     pending?: Pending;
     slots: SlotResult[];
@@ -305,8 +318,33 @@ export interface ApprovalCard {
   /** A copy slot (F4): its declared fields, and this draft's values by field. */
   fields?: CopyField[] | null;
   copy?: Record<string, FieldValue> | null;
+  /** P1: the history paths this draft needs; a visitor lacking one gets the page's own. */
+  requires?: string[];
+  /** P1: a templated draft filled for each preview persona. */
+  renders?: Render[] | null;
   checks: Check[];
   comments: { action: string; actor: string; comment: string | null; at: string }[];
+}
+/** A templated draft as one preview persona sees it: filled fields, or the version it falls to. */
+export interface Render {
+  persona: string;
+  label: string;
+  fields: Record<string, FieldValue> | null;
+  falls_to: string | null;
+}
+/** A synthetic visitor for the Preview room (P1). */
+export interface Persona {
+  key: string;
+  label: string;
+  about: string;
+}
+/** The template facts' per-site settings (P1), as `/history-settings` answers them. */
+export interface HistorySettings {
+  top_item_days: number;
+  visit: 'day' | 'session';
+  session_gap_minutes: number;
+  defaults: { top_item_days: number; visit: 'day' | 'session'; session_gap_minutes: number };
+  bounds: { top_item_days: [number, number]; visit: string[]; session_gap_minutes: [number, number] };
 }
 /** G2: a share change an agent proposed for a live variant; it waits for a person. */
 export interface ShareRequest {
@@ -321,7 +359,42 @@ export interface ShareRequest {
   at: string;
   agent: { name: string; justification?: string | null; on_behalf_of?: string | null; token?: string; audit_id?: number; tool?: string };
 }
+/** One estimate in an advisor card, per 100 visits (null under the minimum). */
+export interface AdvisorArm {
+  key: string;
+  uplift: number | null;
+  lo: number | null;
+  hi: number | null;
+  n: number | null;
+}
+/** A1: a pause card the advisor queued; approving it pauses `pauses`. */
+export interface AdvisorCard {
+  id: number;
+  slot: string;
+  metric: string;
+  kind: 'pause_slot';
+  state: 'early' | 'confident';
+  created_at: string;
+  pauses: string[];
+  evidence: {
+    claim: string;
+    rows: number;
+    arms: AdvisorArm[];
+    held_out: AdvisorArm[];
+    visits_per_week: number;
+    margin: number;
+    p: number;
+    window?: { from: string | null; to: string; held_out_to: string };
+  };
+}
+type AdvisorNumbers = { min_rows: number; margin: number; held_out_days: number; fdr_q: number; cards_per_week: number; quiet_days: number };
+/** A1: the advisor's per-site thresholds, as `/advisor-settings` answers them. */
+export interface AdvisorSettings extends AdvisorNumbers {
+  defaults: AdvisorNumbers;
+  bounds: { [K in keyof AdvisorNumbers]: [number, number] };
+}
 export interface Approvals {
+  cards?: AdvisorCard[];
   drafts: ApprovalCard[];
   share_requests: ShareRequest[];
   max_share: number;

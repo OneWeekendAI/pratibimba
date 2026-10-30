@@ -135,6 +135,56 @@ async fn a_reupload_fills_in_variants_for_an_asset_stored_without_them(pool: PgP
 }
 
 #[sqlx::test(migrations = false)]
+async fn backfill_gives_an_old_asset_its_widths_and_a_second_run_changes_nothing(pool: PgPool) {
+    setup_demo(&pool).await;
+    let a = Assets::memory();
+    let app = app_with(&pool, a.clone());
+    let id = upload(&app, picture(1000, 500, image::ImageFormat::Jpeg)).await["id"].as_str().unwrap().to_string();
+    let gif = upload(&app, b"GIF89a\x01\x00\x01\x00\x00\x00\x00;".to_vec()).await["id"].as_str().unwrap().to_string();
+    let small = upload(&app, picture(200, 100, image::ImageFormat::Png)).await["id"].as_str().unwrap().to_string();
+    // As if stored before S12b.
+    sqlx::query("UPDATE assets SET widths = '{}'").execute(&pool).await.unwrap();
+    for w in [320, 640, 960] {
+        a.store.delete(&assets::variant_key("demo", &id, w)).await.unwrap();
+    }
+    assert_eq!(fetch(&app, &format!("/assets/demo/{id}?w=640")).await.0, StatusCode::NOT_FOUND);
+    let first = assets::backfill_widths(&pool, &a).await.unwrap();
+    assert_eq!(first.filled, vec![("demo".to_string(), id.clone())]);
+    assert_eq!(first.skipped, 1, "the small PNG gets none; the GIF is not looked at");
+    let listing = api_get(&app, "/api/sites/demo/assets").await.json();
+    let widths = |want: &str| listing["assets"].as_array().unwrap().iter().find(|x| x["id"] == want).unwrap()["widths"].clone();
+    assert_eq!(widths(&id), json!([320, 640, 960]));
+    assert_eq!(widths(&gif), json!([]));
+    assert_eq!(widths(&small), json!([]));
+    let (status, _, bytes) = fetch(&app, &format!("/assets/demo/{id}?w=640")).await;
+    assert_eq!((status, size_of(&bytes)), (StatusCode::OK, (640, 320)));
+    // Second run: nothing filled, rows and bytes identical.
+    let rows = || sqlx::query_as::<_, (String, Vec<i32>)>("SELECT sha256, widths FROM assets ORDER BY sha256").fetch_all(&pool);
+    let before = rows().await.unwrap();
+    let again = assets::backfill_widths(&pool, &a).await.unwrap();
+    assert_eq!(again.filled, Vec::<(String, String)>::new());
+    assert_eq!(rows().await.unwrap(), before);
+    assert_eq!(fetch(&app, &format!("/assets/demo/{id}?w=640")).await.2, bytes);
+}
+
+#[sqlx::test(migrations = false)]
+async fn gif_and_avif_are_served_as_the_original_with_no_widths(pool: PgPool) {
+    setup_demo(&pool).await;
+    let app = app_with(&pool, Assets::memory());
+    let gif = b"GIF89a\x01\x00\x01\x00\x00\x00\x00;".to_vec();
+    let mut avif = b"\0\0\0\x1cftypavif\0\0\0\0avifmif1".to_vec();
+    avif.extend_from_slice(&[0u8; 32]);
+    for (bytes, mime) in [(gif, "image/gif"), (avif, "image/avif")] {
+        let j = upload(&app, bytes.clone()).await;
+        assert_eq!((j["mime"].as_str().unwrap(), &j["widths"]), (mime, &json!([])), "{j}");
+        let id = j["id"].as_str().unwrap();
+        let (status, headers, body) = fetch(&app, &format!("/assets/demo/{id}")).await;
+        assert_eq!((status, headers["content-type"].to_str().unwrap(), body), (StatusCode::OK, mime, bytes));
+        assert_eq!(fetch(&app, &format!("/assets/demo/{id}?w=320")).await.0, StatusCode::NOT_FOUND);
+    }
+}
+
+#[sqlx::test(migrations = false)]
 async fn gc_deletes_the_variants_bytes_with_the_original(pool: PgPool) {
     setup_demo(&pool).await;
     let a = Assets::memory();

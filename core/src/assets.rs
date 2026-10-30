@@ -771,3 +771,50 @@ pub async fn gc(pool: &PgPool, assets: &Assets, now: DateTime<Utc>) -> Result<Gc
     }
     Ok(Gc { marked, revived, deleted })
 }
+
+/// What [`backfill_widths`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct Backfill {
+    /// Assets that now have widths.
+    pub filled: Vec<(String, String)>,
+    /// Assets looked at that stay without (too small, undecodable, or bytes missing from the store).
+    pub skipped: usize,
+}
+
+/// L1: give every PNG, JPEG and WebP asset stored before S12b (empty `widths`) its responsive
+/// variants. Idempotent: an asset that has widths is never touched, and one that cannot get any
+/// (narrower than the first step, undecodable, bytes gone) is left as it was.
+pub async fn backfill_widths(pool: &PgPool, assets: &Assets) -> Result<Backfill> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT site_id, sha256, mime FROM assets WHERE cardinality(widths) = 0 AND mime IN ('image/png', 'image/jpeg', 'image/webp') ORDER BY site_id, sha256",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut out = Backfill::default();
+    for (site, hash, mime) in rows {
+        let Some(bytes) = assets.store.get(&key(&site, &hash)).await? else {
+            tracing::warn!(site, hash, "asset bytes missing from the store; not backfilled");
+            out.skipped += 1;
+            continue;
+        };
+        let m = mime.clone();
+        let variants = tokio::task::spawn_blocking(move || resized(&m, &bytes)).await?;
+        if variants.is_empty() {
+            out.skipped += 1;
+            continue;
+        }
+        let mut widths: Vec<i32> = vec![];
+        for (vw, vb) in &variants {
+            assets.store.put(&variant_key(&site, &hash, *vw), vb, &mime).await?;
+            widths.push(*vw as i32);
+        }
+        sqlx::query("UPDATE assets SET widths = $3 WHERE site_id = $1 AND sha256 = $2 AND cardinality(widths) = 0")
+            .bind(&site)
+            .bind(&hash)
+            .bind(&widths)
+            .execute(pool)
+            .await?;
+        out.filled.push((site, hash));
+    }
+    Ok(out)
+}

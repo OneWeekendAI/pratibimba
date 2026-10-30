@@ -4,6 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Suspense, useState } from 'react';
 import { Shell } from '@/components/shell';
+import { Check, Copy, KeyRound, Link2, List, Plus, Trash2, Webhook } from 'lucide-react';
 import { Button, Card, Chip, Empty, Loading, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
 import { api, ApiError, type WebhookCreated, type WebhookDelivery, type WebhookEvent, type WebhookList, type WebhookSubscription } from '@/lib/api';
 import { ago } from '@/lib/format';
@@ -29,19 +30,22 @@ function AddEndpoint({ site, types, onCreated }: { site: string; types: WebhookE
   });
   const toggle = (e: WebhookEvent) => setEvents((xs) => (xs.includes(e) ? xs.filter((x) => x !== e) : [...xs, e]));
   return (
-    <Card className="space-y-4 p-4" data-testid="webhook-add">
-      <input className={`${inputClass} w-full font-mono`} placeholder="https://example.com/pratibimba" aria-label="Endpoint URL" value={url} onChange={(e) => setUrl(e.target.value)} />
+    <Card className="space-y-4 p-5" data-testid="webhook-add">
+      <label className="relative flex items-center">
+        <Link2 className="pointer-events-none absolute left-2.5 size-4 text-muted" aria-hidden />
+        <input className={`${inputClass} w-full pl-8 font-mono`} placeholder="https://example.com/pratibimba" aria-label="Endpoint URL" value={url} onChange={(e) => setUrl(e.target.value)} />
+      </label>
       <fieldset className="flex flex-wrap gap-x-5 gap-y-2">
         <legend className="sr-only">Events</legend>
         {types.map((t) => (
-          <label key={t} className="inline-flex items-center gap-2 font-mono text-[12.5px]">
-            <input type="checkbox" checked={events.includes(t)} onChange={() => toggle(t)} className="accent-[color:var(--accent)]" />
+          <label key={t} className="inline-flex cursor-pointer items-center gap-2 font-mono text-[12.5px] text-ink-2">
+            <input type="checkbox" checked={events.includes(t)} onChange={() => toggle(t)} className="size-3.5 accent-[color:var(--primary)]" />
             {t}
           </label>
         ))}
       </fieldset>
-      <div className="flex items-center gap-3">
-        <Button disabled={!url.trim() || events.length === 0 || add.isPending} onClick={() => add.mutate()}>
+      <div className="flex items-center gap-3 border-t border-line pt-4">
+        <Button icon={Plus} disabled={!url.trim() || events.length === 0 || add.isPending} onClick={() => add.mutate()}>
           Add endpoint
         </Button>
         {error && <span role="alert" className="text-xs text-pause-ink">{error}</span>}
@@ -53,12 +57,13 @@ function AddEndpoint({ site, types, onCreated }: { site: string; types: WebhookE
 function Secret({ c, onDone }: { c: WebhookCreated; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
   return (
-    <Card className="space-y-2 border-[color:var(--warn)] p-4" data-testid="webhook-secret">
-      <div className="text-[13px] font-medium">Signing secret for {c.url}. Copy it now; it is not shown again.</div>
-      <div className="flex items-center gap-2">
-        <code className="min-w-0 flex-1 truncate rounded bg-surface-2 px-2 py-1.5 font-mono text-[12px]" data-testid="webhook-secret-value">{c.secret}</code>
+    <Card className="space-y-3 bg-warn-soft p-4" data-testid="webhook-secret">
+      <div className="flex items-center gap-1.5 text-[13px] font-medium"><KeyRound className="size-4 text-warn-ink" aria-hidden />Signing secret for {c.url}. Copy it now; it is not shown again.</div>
+      <div className="flex flex-wrap items-center gap-2">
+        <code className="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[12px]" data-testid="webhook-secret-value">{c.secret}</code>
         <Button
           variant="ghost"
+          icon={copied ? Check : Copy}
           onClick={async () => {
             try {
               await navigator.clipboard.writeText(c.secret);
@@ -77,26 +82,26 @@ function Secret({ c, onDone }: { c: WebhookCreated; onDone: () => void }) {
 function Deliveries({ id }: { id: number }) {
   const q = useQuery({ queryKey: ['webhook-deliveries', id], queryFn: () => api.get<{ deliveries: WebhookDelivery[] }>(`/webhooks/${id}/deliveries`), refetchInterval: 5000 });
   if (!q.data) return <Loading />;
-  if (q.data.deliveries.length === 0) return <div className="px-4 py-3 text-[13px] text-muted">Nothing sent yet.</div>;
+  if (q.data.deliveries.length === 0) return <div className="px-4 py-4 text-[13px] text-muted">Nothing sent yet.</div>;
   return (
     <table className="w-full text-[12.5px]" data-testid="webhook-deliveries">
-      <thead className="text-left text-[11px] tracking-wide text-muted uppercase">
+      <thead className="border-b border-line text-left text-[12px] text-muted">
         <tr>
-          <th className="px-4 py-2 font-medium">Event</th>
-          <th className="px-4 py-2 font-medium">Status</th>
-          <th className="px-4 py-2 font-medium">Attempts</th>
-          <th className="px-4 py-2 font-medium">Response</th>
-          <th className="px-4 py-2 font-medium">Created</th>
+          <th className="h-9 px-4 font-normal">Event</th>
+          <th className="h-9 px-4 font-normal">Status</th>
+          <th className="h-9 px-4 font-normal">Attempts</th>
+          <th className="h-9 px-4 font-normal">Response</th>
+          <th className="h-9 px-4 font-normal">Created</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-line">
         {q.data.deliveries.map((d) => (
           <tr key={d.id}>
-            <td className="px-4 py-2 font-mono">{d.event}</td>
-            <td className="px-4 py-2"><Chip tone={STATUS[d.status]}>{d.status}</Chip></td>
-            <td className="px-4 py-2 tabular-nums">{d.attempts}</td>
-            <td className="px-4 py-2 text-ink-2">{d.last_status ?? d.last_error ?? '–'}</td>
-            <td className="px-4 py-2 text-muted">{ago(d.created_at)}</td>
+            <td className="h-10 px-4 font-mono">{d.event}</td>
+            <td className="h-10 px-4"><Chip tone={STATUS[d.status]}>{d.status}</Chip></td>
+            <td className="h-10 px-4 tabular-nums">{d.attempts}</td>
+            <td className="h-10 px-4 text-ink-2">{d.last_status ?? d.last_error ?? '–'}</td>
+            <td className="h-10 px-4 text-muted">{ago(d.created_at)}</td>
           </tr>
         ))}
       </tbody>
@@ -113,25 +118,25 @@ function Endpoint({ s, site }: { s: WebhookSubscription; site: string }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks', site] }),
   });
   return (
-    <Card data-testid={`webhook-${s.id}`}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+    <div data-testid={`webhook-${s.id}`}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3.5">
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-[13px]">{s.url}</div>
-          <div className="mt-0.5 font-mono text-[11.5px] text-muted">{s.events.join(' · ')}</div>
+          <div className="mt-1 flex flex-wrap gap-1">{s.events.map((e) => <span key={e} className="rounded bg-surface-2 px-1.5 py-px font-mono text-[11.5px] text-ink-2">{e}</span>)}</div>
         </div>
-        <div className="text-[12.5px] text-ink-2 tabular-nums" data-testid="webhook-counts">
-          {s.counts.delivered} delivered · {s.counts.pending} pending
-          {s.counts.failed > 0 && <span className="text-pause-ink"> · {s.counts.failed} failed</span>}
+        <div className="text-[12.5px] text-muted tabular-nums" data-testid="webhook-counts">
+          {s.counts.delivered} delivered, {s.counts.pending} pending
+          {s.counts.failed > 0 && <span className="text-pause-ink">, {s.counts.failed} failed</span>}
         </div>
-        <Button variant="ghost" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <Button variant="ghost" icon={List} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
           {open ? 'Hide deliveries' : 'Deliveries'}
         </Button>
-        <Button variant="danger" disabled={remove.isPending} onClick={() => (confirming ? remove.mutate() : setConfirming(true))} onBlur={() => setConfirming(false)}>
+        <Button variant="danger" icon={Trash2} disabled={remove.isPending} onClick={() => (confirming ? remove.mutate() : setConfirming(true))} onBlur={() => setConfirming(false)}>
           {confirming ? 'Confirm delete' : 'Delete'}
         </Button>
       </div>
-      {open && <div className="border-t border-line"><Deliveries id={s.id} /></div>}
-    </Card>
+      {open && <div className="overflow-x-auto border-t border-line bg-paper/60"><Deliveries id={s.id} /></div>}
+    </div>
   );
 }
 
@@ -140,26 +145,26 @@ function Page() {
   const [created, setCreated] = useState<WebhookCreated | null>(null);
   const q = useQuery({ queryKey: ['webhooks', site], queryFn: () => api.get<WebhookList>(`/sites/${site}/webhooks`), enabled: !!site, refetchInterval: 5000 });
   return (
-    <Shell site={site} title={<><div className="text-xs text-muted">{site}</div><h1 className="font-serif text-3xl">Webhooks</h1></>}>
+    <Shell site={site} title="Webhooks" help="Pratibimba posts to these URLs when something changes. Each request is signed with HMAC-SHA256 using the endpoint's secret.">
       {!site ? (
         <Empty>No site given.</Empty>
       ) : !q.data ? (
         <Loading />
       ) : (
-        <div className="max-w-4xl space-y-8">
+        <div className="max-w-4xl space-y-12">
           <section className="space-y-3">
-            <SectionTitle hint="signed with HMAC-SHA256">Add an endpoint</SectionTitle>
+            <SectionTitle icon={Plus}>Add an endpoint</SectionTitle>
             {created && <Secret c={created} onDone={() => setCreated(null)} />}
             <AddEndpoint site={site} types={q.data.event_types} onCreated={setCreated} />
           </section>
           <section>
-            <SectionTitle>Endpoints</SectionTitle>
+            <SectionTitle icon={Webhook}>Endpoints</SectionTitle>
             {q.data.subscriptions.length === 0 ? (
-              <Empty>No endpoints yet.</Empty>
+              <Empty icon={Webhook}>No endpoints yet.</Empty>
             ) : (
-              <div className="space-y-3">
+              <Card className="divide-y divide-line">
                 {q.data.subscriptions.map((s) => <Endpoint key={s.id} s={s} site={site} />)}
-              </div>
+              </Card>
             )}
           </section>
         </div>

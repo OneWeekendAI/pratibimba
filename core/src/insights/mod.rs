@@ -5,7 +5,8 @@
 //!
 //! - `rollup` (every `ROLLUP_EVERY`): `rollup_hourly`, `rollup_daily`, `rollup_journey`, the
 //!   per-visitor activity weeks, and segment backfill. See `rollup`.
-//! - `nightly` (every 24 h): `rollup_retention` and segment discovery. See `discover`.
+//! - `nightly` (every 24 h): `rollup_retention`, segment discovery (see `discover`), then the
+//!   A1 advisor's cards (`crate::advisor::run`).
 //!
 //! Simulator sandboxes (`sites.sandbox_of`) are skipped, as the learning worker skips them.
 //!
@@ -51,6 +52,8 @@ pub async fn retention(pool: &PgPool) -> Result<()> {
 pub struct NightlyStats {
     pub rollup: rollup::RollupStats,
     pub drafts: u64,
+    /// A1 advisor cards written ([`crate::advisor::run`]).
+    pub cards: u64,
 }
 
 /// Rollups, then retention and discovery (which read the rollups).
@@ -58,8 +61,9 @@ pub async fn nightly(pool: &PgPool, now: DateTime<Utc>) -> Result<NightlyStats> 
     let r = rollup::run(pool, now).await?;
     retention(pool).await?;
     let drafts = discover::run(pool, now).await?;
+    let cards = crate::advisor::run::run(pool, now).await?;
     rollup::set_cursor(pool, "nightly", now).await?;
-    Ok(NightlyStats { rollup: r, drafts })
+    Ok(NightlyStats { rollup: r, drafts, cards })
 }
 
 /// Called from the worker loop: run whatever is due, if no other process holds the lock.

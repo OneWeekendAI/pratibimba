@@ -470,7 +470,10 @@ Set per site in the site file (`"privacy_mode"`):
 Not needed to self-host. For decisions at the CDN, [`deploy/proxy-worker`](deploy/proxy-worker)
 is a Cloudflare Worker that reads a per-site snapshot Core writes to Workers KV and decides at
 the edge for consented visitors, falling back to Core otherwise. Set the `PRB_EDGE_*` variables
-on Core; [`deploy/README.md`](deploy/README.md) has the steps.
+on Core; [`deploy/README.md`](deploy/README.md) has the steps. Create the Cloudflare API token
+for `PRB_EDGE_KV_TOKEN` scoped to **Workers KV Storage: Edit** on your account only, nothing
+else, because Core holds it. A visitor the KV snapshot does not know yet (a new subject, or a
+cold `gone/` read) is decided by Core, which refuses an erased subject.
 
 ### Without Compose
 
@@ -596,8 +599,9 @@ Uploads are made responsive for you. A PNG, JPEG or WebP is also stored at each 
 `/assets/<site>/<id>?w=640`. The resizing happens inside Core when you upload, with no outside
 service. A decision tells the renderer which widths exist, and all three installs write
 `srcset` and `sizes` for you. `sizes` caps the image at the field's `width`, or at the image's
-own width when the field gives none. SVG, GIF and AVIF are served as uploaded. An image
-uploaded before this feature gets its widths when you upload it again.
+own width when the field gives none. SVG, GIF and AVIF are served as uploaded, with no
+`srcset`. An image uploaded before this feature gets its widths from `pratibimba assets backfill`
+(safe to re-run), or when you upload it again.
 
 **A swap variant** changes the layout. Its HTML can rearrange the region, for example the
 image beside the headline instead of below it:
@@ -649,7 +653,6 @@ symlinked package outside the app).
 | `examples/next/` | plain Next.js example |
 | `examples/edge/` | plain Cloudflare Worker example |
 | `examples/plain/` | script-tag example with a declared `site.json`: a layout swap and an image field |
-| `examples/shop/` | a Next.js store with commerce events, an agent-drafted hero and sorted grid |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
 | `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |

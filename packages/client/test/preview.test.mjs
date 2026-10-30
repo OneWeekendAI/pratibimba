@@ -77,6 +77,49 @@ test('preview_renders_the_first_version_and_the_room_flips_it', async () => {
   assert.equal(p.sent.every((s) => s.origin === ROOM), true, 'posts only to the room');
 });
 
+// B4: the room's persona travels to /preview; a message without one sends none.
+// Mutation: drop `persona` from the /preview body -> red.
+test('preview_forwards_the_rooms_persona', async () => {
+  const p = room();
+  await sleep(30);
+  assert.equal(p.previews()[0].body.persona, undefined, 'no persona before the room names one');
+  p.say({ type: 'prb:visitor', ctx: { returning: true }, persona: 'usual_rajma' });
+  await sleep(30);
+  assert.equal(p.previews().at(-1).body.persona, 'usual_rajma');
+  p.say({ type: 'prb:visitor', ctx: {}, persona: 42 });
+  await sleep(30);
+  assert.equal(p.previews().at(-1).body.persona, undefined, 'a non-string persona is dropped');
+});
+
+// B4: the same copy version, refilled for another persona, is written again.
+// Mutation: versionKey of a copy version is its key alone -> red.
+test('a_persona_switch_rewrites_the_shown_copy_version', async () => {
+  const sent = [];
+  const fake = { postMessage: (msg) => sent.push(msg) };
+  const title = (persona) => (persona === 'usual_rajma' ? 'Your usual rajma-chawal' : 'Your usual thali');
+  const p = load({
+    url: 'https://shop.test/?prb_preview=' + encodeURIComponent(TOKEN),
+    body: '<div id="hero"><h1 data-prb-field="title">Original</h1></div>',
+    preview: (body) => ok({ site: 'demo', parent: ROOM, slots: [{ slot: 'hero', kind: 'copy', kept_out: [], versions: [
+      // An open version comes before the page's own, so it is the one shown after a switch.
+      { id: 2, key: 'usual', status: 'approved', baseline: false, copy: { title: title(body.persona) }, filled: true, why: 'open to every visitor' },
+      { id: 1, key: 'own', status: 'approved', baseline: true, copy: null, why: "the page's own version" },
+    ] }] }),
+    before: (w) => Object.defineProperty(w, 'parent', { value: fake, configurable: true }),
+  });
+  const say = (data) => {
+    const ev = new p.w.MessageEvent('message', { data, origin: ROOM });
+    Object.defineProperty(ev, 'source', { value: fake });
+    p.w.dispatchEvent(ev);
+  };
+  const h1 = () => p.w.document.querySelector('#hero h1').textContent;
+  await sleep(30);
+  assert.equal(h1(), 'Your usual thali');
+  say({ type: 'prb:visitor', ctx: {}, persona: 'usual_rajma' });
+  await sleep(30);
+  assert.equal(h1(), 'Your usual rajma-chawal');
+});
+
 test('a_click_on_a_slot_opens_it_in_the_room_and_does_not_follow_the_link', async () => {
   const p = room();
   await sleep(30);
@@ -109,4 +152,88 @@ test('without_the_parameter_the_page_never_previews', async () => {
   await sleep(30);
   assert.equal(p.calls.filter((c) => c.url.endsWith('/preview')).length, 0);
   assert.equal(p.decides().length, 1);
+});
+
+// The room's explorer: prb:view zones outlines and labels EVERY slot (one version or many), and
+// a click on any of them opens it. prb:view marks:false (the room's thumbnails) draws nothing.
+function explorer() {
+  const sent = [];
+  const fake = { postMessage: (msg, origin) => sent.push({ msg, origin }) };
+  const manifest = {
+    site: 'demo',
+    slots: [
+      { key: 'hero', selector: '#hero', metric: 'click', ttl_secs: 60, variants: [] },
+      { key: 'promo', selector: '#promo', metric: 'click', ttl_secs: 60, variants: [] },
+    ],
+  };
+  const data = {
+    site: 'demo', parent: ROOM,
+    slots: [
+      versions({}).slots[0],
+      { slot: 'promo', kind: 'swap', kept_out: [], versions: [{ id: 9, key: 'own', status: 'approved', baseline: true, payload: null, why: "the page's own version" }] },
+    ],
+  };
+  const p = load({
+    url: 'https://shop.test/?prb_preview=' + encodeURIComponent(TOKEN),
+    manifest,
+    preview: () => ok(data),
+    before: (w) => {
+      Object.defineProperty(w, 'parent', { value: fake, configurable: true });
+      // jsdom has no layout: give every element a box, so slots and their chips have a place.
+      w.HTMLElement.prototype.getBoundingClientRect = () => ({ top: 10, left: 10, width: 100, height: 50, bottom: 60, right: 110 });
+    },
+  });
+  p.say = (msg) => {
+    const ev = new p.w.MessageEvent('message', { data: msg, origin: ROOM });
+    Object.defineProperty(ev, 'source', { value: fake });
+    p.w.dispatchEvent(ev);
+  };
+  p.sent = sent;
+  p.mark = (id) => {
+    const el = p.w.document.getElementById(id);
+    return [el, ...el.querySelectorAll('[data-prb-mark]')].map((x) => x.getAttribute('data-prb-mark') || '').join(' ').trim();
+  };
+  p.chips = () => [...p.w.document.querySelectorAll('#prb-zones [data-prb-zone]')].map((c) => c.textContent);
+  p.last = () => sent.filter((s) => s.msg.type === 'prb:state').at(-1).msg;
+  return p;
+}
+
+test('the_room_hears_which_messages_this_sdk_understands', async () => {
+  const p = explorer();
+  await sleep(30);
+  assert.deepEqual([...p.sent.find((s) => s.msg.type === 'prb:hello').msg.can], ['view']);
+});
+
+test('zones_outline_and_label_every_slot_and_any_one_opens_on_a_click', async () => {
+  const p = explorer();
+  await sleep(30);
+  assert.equal(p.mark('promo'), '', 'before zones, a one-version slot is not marked');
+  assert.deepEqual(p.chips(), []);
+  p.say({ type: 'prb:view', zones: true });
+  assert.deepEqual([...p.w.document.querySelectorAll('#prb-zones [data-prb-zone-box]')].map((b) => b.getAttribute('data-prb-zone-box')), ['hero', 'promo'], 'one box per slot');
+  assert.match(p.mark('hero'), /\bzone\b/);
+  assert.match(p.mark('promo'), /\bzone\b/, 'a one-version slot is a compartment too');
+  assert.deepEqual(p.chips(), ['hero', 'promo']);
+  p.w.document.getElementById('promo').dispatchEvent(new p.w.MouseEvent('mouseover', { bubbles: true }));
+  assert.match(p.mark('promo'), /\bhot\b/);
+  assert.doesNotMatch(p.mark('hero'), /\bhot\b/);
+  p.w.document.getElementById('promo').dispatchEvent(new p.w.MouseEvent('click', { bubbles: true }));
+  assert.equal(p.last().picked, 'promo', 'a click on a one-version slot opens it in zones');
+  assert.match(p.mark('promo'), /\bpicked\b/);
+  await sleep(40);
+  assert.deepEqual(p.chips(), ['hero', 'promo'], 'the chips survive their own redraw');
+  p.say({ type: 'prb:view', zones: false });
+  assert.equal(p.w.document.getElementById('prb-zones'), null, 'zones off removes the chips');
+  assert.doesNotMatch(p.mark('promo'), /\bzone\b/);
+});
+
+test('marks_off_draws_nothing_but_the_pick_still_renders', async () => {
+  const p = explorer();
+  await sleep(30);
+  p.say({ type: 'prb:view', marks: false });
+  p.say({ type: 'prb:pick', slot: 'hero', index: 1 });
+  assert.equal(p.hero().textContent, 'Spring');
+  assert.equal(p.mark('hero'), '', 'a thumbnail frame shows no outline');
+  assert.equal(p.w.document.getElementById('prb-preview-marks').textContent, '');
+  assert.equal(p.last().picked, 'hero');
 });

@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/sites/{site}/slots/{slot}/variants", post(create_draft))
         .route("/sites/{site}/decisions", get(decisions))
         .route("/sites/{site}/approvals", get(approvals))
+        .route("/personas", get(personas))
         .route("/sites/{site}/install", get(install))
         .route("/sites/{site}/mcp-tokens", post(issue_mcp_token))
         .route("/sites/{site}/mcp-calls", get(mcp_calls))
@@ -52,6 +53,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/variants/{id}/reject", post(reject))
         .route("/variants/{id}/comment", post(comment))
         .route("/variants/{id}/audience", post(set_audience))
+        .route("/advisor-cards/{id}/approve", post(approve_card))
+        .route("/advisor-cards/{id}/reject", post(reject_card))
         .route("/retire-requests/{id}/confirm", post(confirm_retire))
         .route("/retire-requests/{id}/decline", post(decline_retire))
         .route("/variants/{id}/traffic-share", post(edit_share))
@@ -293,7 +296,8 @@ async fn stream(State(state): State<Arc<AppState>>, Path(site): Path<String>) ->
 
 async fn site_results(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
     let now = Utc::now();
-    let r = results::site(&state.pool, &site, results::ALL_TIME, now).await?.ok_or_else(|| ApiError::NotFound(format!("unknown site {site:?}")))?;
+    let mut r = results::site(&state.pool, &site, results::ALL_TIME, now).await?.ok_or_else(|| ApiError::NotFound(format!("unknown site {site:?}")))?;
+    results::advisor(&state.pool, &mut r, now).await?;
     let learnings: Vec<(i64, String, Option<String>, Option<String>, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT l.id, l.kind, s.key, v.key, l.sentence, l.created_at FROM learnings l
            LEFT JOIN slots s ON s.id = l.slot_id LEFT JOIN variants v ON v.id = l.variant_id
@@ -491,6 +495,9 @@ struct NewDraft {
     note: Option<String>,
     #[serde(default)]
     author_name: Option<String>,
+    /// A copy slot only (P1): template paths the draft cannot do without.
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 pub const MAX_PAYLOAD: usize = 64 * 1024;
@@ -512,20 +519,26 @@ async fn create_draft(
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("unknown slot {slot:?} on site {site:?}")))?;
+    crate::copy::validate_requires(&b.requires, spec.is_some(), false).map_err(ApiError::BadRequest)?;
     // A copy slot's draft is its fields as a JSON object (F4), checked as an agent's would be.
+    // It is read in the door form (strings are template language) and stored re-serialised, so a
+    // template is kept parsed and a `{{` is stored as the one brace it means (P1).
+    let mut payload = b.html.clone();
     if let Some(spec) = &spec {
-        crate::copy::check_stored(spec, Some(&b.html)).map_err(|e| ApiError::BadRequest(format!("copy slot: {e}")))?;
-        let text = crate::copy::read_text(Some(&b.html)).map_err(ApiError::BadRequest)?;
+        let text = crate::copy::read_draft(spec, &b.html).map_err(|e| ApiError::BadRequest(format!("copy slot: {e}")))?;
+        crate::copy::check_covered_stored(spec, &text, &b.requires).map_err(|e| ApiError::BadRequest(format!("copy slot: {e}")))?;
         crate::assets::check_refs(&state.pool, &site, &crate::copy::asset_refs(&text)).await?;
+        payload = crate::copy::payload(&text);
     }
     let mut tx = state.pool.begin().await?;
     let id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO variants (slot_id, key, payload, author, status) VALUES ($1, $2, $3, 'human', 'draft')
+        "INSERT INTO variants (slot_id, key, payload, author, status, requires) VALUES ($1, $2, $3, 'human', 'draft', $4)
          ON CONFLICT (slot_id, key) DO NOTHING RETURNING id",
     )
     .bind(slot_id)
     .bind(&b.key)
-    .bind(&b.html)
+    .bind(&payload)
+    .bind(&b.requires)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(id) = id else {
@@ -544,16 +557,43 @@ async fn create_draft(
     Ok((StatusCode::CREATED, Json(json!({ "id": id, "status": "draft" }))))
 }
 
+/// The Preview room's synthetic visitors (P1), for its picker.
+async fn personas() -> Json<Value> {
+    Json(json!({ "personas": crate::personas::all().iter().map(|p| json!({ "key": p.key, "label": p.label, "about": p.about })).collect::<Vec<_>>() }))
+}
+
+/// A templated copy draft as each persona would see it: its filled fields, or `null` and the key
+/// of the version that visitor falls to (`requires` names a fact the persona lacks). `None` for
+/// a draft with no template.
+fn renders(payload: Option<&str>, spec: &Value, requires: &[String], baseline: &str) -> Option<Value> {
+    let (_, templated) = crate::copy::render(payload, Some(spec), None);
+    if !templated {
+        return None;
+    }
+    let out = crate::personas::all()
+        .iter()
+        .map(|p| {
+            let f = p.facts.as_ref();
+            if crate::template::missing(requires, f) {
+                json!({ "persona": p.key, "label": p.label, "fields": null, "falls_to": baseline })
+            } else {
+                json!({ "persona": p.key, "label": p.label, "fields": crate::copy::render(payload, Some(spec), f).0, "falls_to": null })
+            }
+        })
+        .collect();
+    Some(Value::Array(out))
+}
+
 async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Json<Value>, ApiError> {
     site_origin(&state, &site).await?;
     let (forbidden, facts): (Vec<String>, Option<String>) =
         sqlx::query_as("SELECT forbidden_claims, facts FROM sites WHERE id = $1").bind(&site).fetch_one(&state.pool).await?;
     #[allow(clippy::type_complexity)]
-    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>, bool, Option<Value>)> = sqlx::query_as(
+    let drafts: Vec<(i64, String, String, Option<String>, String, DateTime<Utc>, i64, Option<Value>, bool, Option<Value>, Vec<String>)> = sqlx::query_as(
         "SELECT v.id, s.key, v.key, v.payload, v.author, v.created_at, s.id,
                 CASE WHEN c.id IS NOT NULL THEN jsonb_build_object('name', c.agent, 'justification', c.justification,
                      'on_behalf_of', c.on_behalf_of, 'token', k.name, 'call_id', c.call_id, 'at', c.created_at,
-                     'audit_id', c.id, 'tool', c.tool) END, v.is_baseline, s.copy
+                     'audit_id', c.id, 'tool', c.tool) END, v.is_baseline, s.copy, v.requires
            FROM variants v JOIN slots s ON s.id = v.slot_id
            LEFT JOIN mcp_calls c ON c.id = v.mcp_call_id LEFT JOIN mcp_tokens k ON k.id = c.token_id
           WHERE s.site_id = $1 AND v.status = 'draft' ORDER BY v.created_at, v.id",
@@ -564,7 +604,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let now = Utc::now();
     let r = results::site(&state.pool, &site, now - Duration::days(7), now).await?.expect("site exists");
     let mut cards = vec![];
-    for (id, slot, key, payload, author, created, slot_id, agent, activates_slot, copy_spec) in drafts {
+    for (id, slot, key, payload, author, created, slot_id, agent, activates_slot, copy_spec, requires) in drafts {
         let sr = r.slots.iter().find(|s| s.id == slot_id);
         let live: Vec<&results::VariantResult> = sr.map(|s| s.variants.iter().filter(|v| v.status == "approved").collect()).unwrap_or_default();
         let champ = live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline));
@@ -588,6 +628,19 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
             // A copy slot (F4): its declared fields and this draft's text, parsed.
             "fields": copy_spec.as_ref().map(|s| s["fields"].clone()),
             "copy": copy_spec.as_ref().and_then(|_| crate::copy::parse(payload.as_deref())),
+            // P1: the history paths this draft needs; a visitor lacking one is served the baseline.
+            "requires": requires,
+            // P1: a templated draft filled for each preview persona.
+            "renders": match copy_spec.as_ref() {
+                Some(spec) => {
+                    let base: Option<String> = sqlx::query_scalar("SELECT key FROM variants WHERE slot_id = $1 AND is_baseline AND status = 'approved' ORDER BY id LIMIT 1")
+                        .bind(slot_id)
+                        .fetch_optional(&state.pool)
+                        .await?;
+                    renders(payload.as_deref(), spec, &requires, base.as_deref().unwrap_or("the page's own version"))
+                }
+                None => None,
+            },
             "champion": champion, "checks": checks::run(&if copy_spec.is_some() { crate::copy::plain(payload.as_deref()) } else { payload.clone().unwrap_or_default() }, &checks::Context { forbidden_claims: &forbidden, author: &author, facts: facts.as_deref() }),
             "comments": comments.into_iter().map(|(a, by, c, at)| json!({ "action": a, "actor": by, "comment": c, "at": at })).collect::<Vec<_>>(),
         }));
@@ -595,7 +648,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
     let recent: Vec<(String, String, String, String, Option<String>, Option<f32>, DateTime<Utc>)> = sqlx::query_as(
         "SELECT a.action, a.actor, s.key, v.key, a.comment, a.traffic_share, a.created_at
            FROM approvals a JOIN variants v ON v.id = a.variant_id JOIN slots s ON s.id = v.slot_id
-          WHERE s.site_id = $1 AND a.action IN ('approve', 'reject', 'retire', 'keep', 'share') ORDER BY a.created_at DESC LIMIT 20",
+          WHERE s.site_id = $1 AND a.action IN ('approve', 'reject', 'retire', 'keep', 'share', 'pause') ORDER BY a.created_at DESC LIMIT 20",
     )
     .bind(&site)
     .fetch_all(&state.pool)
@@ -644,6 +697,7 @@ async fn approvals(State(state): State<Arc<AppState>>, Path(site): Path<String>)
         })
         .collect();
     Ok(Json(json!({
+        "cards": advisor_cards(&state.pool, &site).await?,
         "drafts": cards, "retirements": retirements, "share_requests": share_requests,
         "plugin_requests": crate::plugins::open_requests(&state.pool, &site).await?, "max_share": 0.5, "default_share": 0.1,
         "recent": recent.into_iter().map(|(a, by, slot, key, c, share, at)| json!({
@@ -880,6 +934,94 @@ async fn decline_share(State(state): State<Arc<AppState>>, Path(id): Path<i64>, 
     }
     tx.commit().await?;
     Ok(Json(json!({ "id": id, "status": "declined" })))
+}
+
+/// A1: the advisor's open cards for the Review queue, oldest first, each with the slot's metric
+/// and the versions approving it would pause.
+async fn advisor_cards(pool: &sqlx::PgPool, site: &str) -> Result<Vec<Value>, ApiError> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(i64, String, String, String, String, Value, DateTime<Utc>, Vec<String>)> = sqlx::query_as(
+        "SELECT c.id, s.key, s.metric, c.kind, c.state, c.evidence, c.created_at,
+                ARRAY(SELECT v.key FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved' AND NOT v.is_baseline ORDER BY v.key)
+           FROM advisor_cards c JOIN slots s ON s.id = c.slot_id
+          WHERE c.site_id = $1 AND c.status = 'pending' ORDER BY c.created_at, c.id",
+    )
+    .bind(site)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, slot, metric, kind, st, evidence, at, pauses)| {
+            json!({ "id": id, "slot": slot, "metric": metric, "kind": kind, "state": st, "evidence": evidence, "created_at": at, "pauses": pauses })
+        })
+        .collect())
+}
+
+/// Lock an open advisor card: `(site, slot_id, slot key)`.
+async fn open_card(tx: &mut sqlx::PgConnection, id: i64) -> Result<(String, i64, String), ApiError> {
+    let row: Option<(String, String, i64, String)> = sqlx::query_as(
+        "SELECT c.status, c.site_id, c.slot_id, s.key FROM advisor_cards c JOIN slots s ON s.id = c.slot_id WHERE c.id = $1 FOR UPDATE OF c",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((status, site, slot_id, slot)) = row else {
+        return Err(ApiError::NotFound(format!("unknown advisor card {id}")));
+    };
+    if status != "pending" {
+        return Err(ApiError::Conflict(format!("advisor card {id} is already {status}")));
+    }
+    Ok((site, slot_id, slot))
+}
+
+/// A person approves a pause card: every approved non-baseline variant of the slot is paused,
+/// so the slot serves only the page's own. One transaction with the card and the audit rows.
+async fn approve_card(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<RetireDecision>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let mut tx = state.pool.begin().await?;
+    let (site, slot_id, slot) = open_card(&mut tx, id).await?;
+    let reason = json!({ "advisor_card": id, "by": who });
+    let paused: Vec<(i64, String)> = sqlx::query_as(
+        "UPDATE variants SET status = 'paused', paused_at = now(), pause_reason = $2
+          WHERE slot_id = $1 AND status = 'approved' AND NOT is_baseline RETURNING id, key",
+    )
+    .bind(slot_id)
+    .bind(&reason)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE advisor_cards SET status = 'approved', decided_by = $2, decided_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(&who)
+        .execute(&mut *tx)
+        .await?;
+    for (vid, _) in &paused {
+        sqlx::query("INSERT INTO approvals (variant_id, action, actor, comment, advisor_card_id) VALUES ($1, 'pause', $2, $3, $4)")
+            .bind(vid)
+            .bind(&who)
+            .bind(&b.comment)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    crate::edge::changed(&state.pool, &state.edge, &site).await;
+    let keys: Vec<String> = paused.into_iter().map(|(_, k)| k).collect();
+    Ok(Json(json!({ "id": id, "status": "approved", "slot": slot, "paused": keys })))
+}
+
+/// A person rejects a card: nothing changes on the slot, and it stays quiet for `quiet_days`.
+async fn reject_card(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(b): Json<RetireDecision>) -> Result<Json<Value>, ApiError> {
+    let who = actor(&b.actor)?;
+    let mut tx = state.pool.begin().await?;
+    let (_, _, slot) = open_card(&mut tx, id).await?;
+    sqlx::query("UPDATE advisor_cards SET status = 'rejected', decided_by = $2, decided_at = now(), evidence = evidence || jsonb_build_object('rejected_because', $3::text) WHERE id = $1")
+        .bind(id)
+        .bind(&who)
+        .bind(b.comment.as_deref().map(str::trim).filter(|c| !c.is_empty()))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "id": id, "status": "rejected", "slot": slot })))
 }
 
 /// Lock an open retirement proposal: `(variant_id, site, slot key, variant key)`.

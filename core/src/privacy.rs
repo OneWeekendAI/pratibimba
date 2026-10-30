@@ -371,7 +371,8 @@ pub async fn erase_after(pool: &PgPool, site: &str, subject: &str, actor: &str, 
         .execute(&mut *tx)
         .await?
         .rows_affected();
-    let decisions = sqlx::query("UPDATE decisions SET subject = $3 WHERE site_id = $1 AND subject = ANY($2)")
+    // `filled` is copy written from the subject's history (P1): it goes with the subject.
+    let decisions = sqlx::query("UPDATE decisions SET subject = $3, filled = NULL WHERE site_id = $1 AND subject = ANY($2)")
         .bind(site)
         .bind(&forms)
         .bind(&token)

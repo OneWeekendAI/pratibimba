@@ -111,3 +111,21 @@ async fn traffic_share_is_capped_at_half_by_the_schema(pool: PgPool) {
         .await;
     assert!(ok.is_ok(), "{ok:?}");
 }
+
+async fn column_exists(pool: &PgPool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2)",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_adds_requires_and_filled(pool: PgPool) {
+    db::migrate(&pool).await.unwrap();
+    assert!(column_exists(&pool, "variants", "requires").await, "variants.requires");
+    assert!(column_exists(&pool, "decisions", "filled").await, "decisions.filled");
+}

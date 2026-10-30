@@ -26,6 +26,75 @@ pub const MAX_VIEWS: usize = 16;
 /// The predicate keys that read history.
 pub const KEYS: [&str; 5] = ["days_since_last_purchase", "purchase_count", "lifetime_value", "cart_abandoned", "viewed"];
 pub const BUCKETS: [&str; 4] = ["none", "low", "mid", "high"];
+/// P1 template facts: the default look-back of `top_item`, `last_order_items` and `visit_count`, in days.
+pub const TOP_ITEM_DAYS: u32 = 180;
+pub const MAX_TOP_ITEM_DAYS: u32 = 730;
+/// How many ids of the last order `last_order_items` keeps.
+pub const MAX_LAST_ORDER_ITEMS: usize = 3;
+/// What a visit is by default: a distinct UTC day with any event.
+pub const VISIT_DAY: &str = "day";
+/// A visit as a session: events with no gap longer than `session_gap_minutes` between them.
+pub const VISIT_SESSION: &str = "session";
+pub const SESSION_GAP_MINUTES: u32 = 30;
+pub const SESSION_GAP_BOUNDS: (u32, u32) = (5, 1440);
+
+/// The site's P1 fact settings (owner decision 2026-10-23: every default is a per-site setting).
+/// Stored in `sites.history_settings` (NULL = all defaults); set by the site file's
+/// `history_settings:` block or `POST /api/sites/{site}/history-settings`. An absent field is its
+/// default.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    /// Look-back of `top_item`, `last_order_items` and `visit_count`, 1 to 730 days (default 180).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_item_days: Option<u32>,
+    /// `day` (default: a distinct UTC day with any event) or `session`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visit: Option<String>,
+    /// With `visit: session`: the gap that starts a new visit, 5 to 1440 minutes (default 30).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_gap_minutes: Option<u32>,
+}
+
+impl Settings {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.top_item_days.is_some_and(|d| !(1..=MAX_TOP_ITEM_DAYS).contains(&d)) {
+            return Err(format!("top_item_days is 1 to {MAX_TOP_ITEM_DAYS}"));
+        }
+        let session = match self.visit.as_deref() {
+            None | Some(VISIT_DAY) => false,
+            Some(VISIT_SESSION) => true,
+            Some(v) => return Err(format!("visit {v:?} is {VISIT_DAY:?} (a distinct day with any event) or {VISIT_SESSION:?}")),
+        };
+        let (lo, hi) = SESSION_GAP_BOUNDS;
+        match self.session_gap_minutes {
+            Some(_) if !session => Err(format!("session_gap_minutes applies only with visit: {VISIT_SESSION:?}")),
+            Some(g) if !(lo..=hi).contains(&g) => Err(format!("session_gap_minutes is {lo} to {hi}")),
+            _ => Ok(()),
+        }
+    }
+
+    /// The settings with every default filled in, as the API shows them.
+    pub fn effective(&self) -> Value {
+        json!({
+            "top_item_days": self.top_item_days.unwrap_or(TOP_ITEM_DAYS),
+            "visit": self.visit.as_deref().unwrap_or(VISIT_DAY),
+            "session_gap_minutes": self.session_gap_minutes.unwrap_or(SESSION_GAP_MINUTES),
+            "defaults": { "top_item_days": TOP_ITEM_DAYS, "visit": VISIT_DAY, "session_gap_minutes": SESSION_GAP_MINUTES },
+            "bounds": { "top_item_days": [1, MAX_TOP_ITEM_DAYS], "visit": [VISIT_DAY, VISIT_SESSION],
+                        "session_gap_minutes": [SESSION_GAP_BOUNDS.0, SESSION_GAP_BOUNDS.1] },
+        })
+    }
+
+    /// The stored column: NULL when everything is a default.
+    pub fn stored(&self) -> Option<Value> {
+        (*self != Settings::default()).then(|| serde_json::to_value(self).expect("settings serialise"))
+    }
+
+    pub fn parse(v: Option<&Value>) -> Settings {
+        v.and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+    }
+}
 
 /// The site file's `history:` block.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -124,14 +193,28 @@ pub struct Facts {
     /// Index into [`BUCKETS`].
     pub ltv_bucket: u8,
     pub cart_abandoned: bool,
-    /// `(item id, category, days ago)` of the recent non-order item events.
+    /// `(item id, category, days ago)` of the recent non-order item events, newest first.
     pub touches: Vec<(String, Option<String>, f64)>,
+    /// P1: the item in most orders inside the look-back, and how many orders hold it (ties: the
+    /// most recent order, then the id ascending). Orders, not quantity.
+    pub top_item: Option<(String, i64)>,
+    /// P1: the newest order's item ids inside the look-back, in the order given, repeats dropped,
+    /// at most [`MAX_LAST_ORDER_ITEMS`].
+    pub last_order_items: Vec<String>,
+    /// P1: visits inside the look-back (a distinct UTC day with any event, or a session; see [`Settings`]).
+    pub visit_count: i64,
 }
 
-/// The history subquery of decide's snapshot: `{orders, last_order_days, ltv, last_cart_days, last_cart_ordered, touches}`
-/// for the subject `subj` names, or NULL. It expects the `t` (with `currency`, `at`), `subj` CTEs and
-/// `$1` site; `needed` is the SQL condition that the site or slot reads history.
+/// The history subquery of decide's snapshot: `{orders, last_order_days, ltv, last_cart_days, touches,
+/// top_item, last_items, visits}` for the subject `subj` names, or NULL. It expects the `t` (with
+/// `currency`, `at`, `history_settings`), `subj` CTEs and `$1` site; `needed` is the SQL condition
+/// that the site or slot reads history.
+///
+/// The P1 facts read `live_events` like the rest (so an erasure, which hides events, covers them)
+/// over the site's look-back (`history_settings.top_item_days`, default [`TOP_ITEM_DAYS`]).
 pub fn sql(needed: &str) -> String {
+    let back = format!("make_interval(days => COALESCE((t.history_settings->>'top_item_days')::int, {TOP_ITEM_DAYS}))");
+    let mine = format!("o.site_id = $1 AND o.subject = (SELECT v FROM subj) AND o.received_at <= t.at AND o.received_at > t.at - {back}");
     format!(
         "CASE WHEN (t.privacy_mode = 'full' OR (t.privacy_mode = 'consent_aware' AND $5::bool IS TRUE))
                 AND (t.fields_allowed IS NULL OR '{FIELD}' = ANY(t.fields_allowed)) AND ({needed}) THEN
@@ -145,7 +228,26 @@ pub fn sql(needed: &str) -> String {
                                      WHERE site_id = $1 AND subject = (SELECT v FROM subj) AND order_id IS NULL AND jsonb_typeof(items) = 'array'
                                        AND received_at <= t.at AND received_at > t.at - interval '{MAX_VIEW_DAYS} days'
                                      ORDER BY received_at DESC LIMIT {MAX_TOUCH_EVENTS}) r, jsonb_array_elements(r.items) it
-                             WHERE jsonb_typeof(it) = 'object'))
+                             WHERE jsonb_typeof(it) = 'object'),
+                'top_item', (SELECT jsonb_build_array(q.id, q.n)
+                               FROM (SELECT it->>'id' AS id, count(DISTINCT o.order_id) AS n, max(o.received_at) AS last
+                                       FROM live_events o, jsonb_array_elements(o.items) it
+                                      WHERE {mine} AND o.order_id IS NOT NULL AND jsonb_typeof(o.items) = 'array'
+                                        AND jsonb_typeof(it) = 'object' AND jsonb_typeof(it->'id') = 'string'
+                                      GROUP BY 1 ORDER BY n DESC, last DESC, id ASC LIMIT 1) q),
+                'last_items', (SELECT COALESCE(jsonb_agg(it->>'id' ORDER BY k), '[]')
+                                 FROM (SELECT o.items FROM live_events o
+                                        WHERE {mine} AND o.order_id IS NOT NULL AND jsonb_typeof(o.items) = 'array'
+                                        ORDER BY o.received_at DESC LIMIT 1) r, jsonb_array_elements(r.items) WITH ORDINALITY e(it, k)
+                                WHERE jsonb_typeof(it) = 'object' AND jsonb_typeof(it->'id') = 'string'),
+                'visits', CASE WHEN t.history_settings->>'visit' = '{VISIT_SESSION}' THEN
+                              (SELECT count(*) FROM (SELECT o.received_at - lag(o.received_at) OVER (ORDER BY o.received_at) AS gap
+                                                       FROM live_events o WHERE {mine}) g
+                                WHERE g.gap IS NULL
+                                   OR g.gap > make_interval(mins => COALESCE((t.history_settings->>'session_gap_minutes')::int, {SESSION_GAP_MINUTES})))
+                          ELSE
+                              (SELECT count(DISTINCT (o.received_at AT TIME ZONE 'UTC')::date) FROM live_events o WHERE {mine})
+                          END)
               FROM live_events h WHERE h.site_id = $1 AND h.subject = (SELECT v FROM subj) AND h.received_at <= t.at)
          END"
     )
@@ -183,7 +285,24 @@ impl Facts {
                     .collect()
             })
             .unwrap_or_default();
-        Some(Facts { days_since_last_purchase: last_order.map(f64::floor), purchase_count, ltv_bucket, cart_abandoned, touches })
+        let top_item = v.get("top_item").and_then(Value::as_array).and_then(|a| Some((a.first()?.as_str()?.to_string(), a.get(1)?.as_i64()?)));
+        let mut last_order_items: Vec<String> = vec![];
+        for id in v.get("last_items").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            if last_order_items.len() < MAX_LAST_ORDER_ITEMS && !last_order_items.iter().any(|x| x == id) {
+                last_order_items.push(id.to_string());
+            }
+        }
+        let visit_count = v.get("visits").and_then(Value::as_i64).unwrap_or(0);
+        Some(Facts {
+            days_since_last_purchase: last_order.map(f64::floor),
+            purchase_count,
+            ltv_bucket,
+            cart_abandoned,
+            touches,
+            top_item,
+            last_order_items,
+            visit_count,
+        })
     }
 
     /// The learner dimensions of these facts under `spec`, by model key.
@@ -313,6 +432,28 @@ mod tests {
     fn row(orders: i64, last_order: Option<f64>, ltv: f64, last_cart: Option<f64>) -> Value {
         json!({ "orders": orders, "last_order_days": last_order, "ltv": ltv, "last_cart_days": last_cart,
                 "touches": [["f1", "filters", 1.0], ["k1", "kaapi", 40.0]] })
+    }
+
+    // P1's text facts are not learner dimensions: the model's dimension count must not move.
+    // Mutation: add a `top_item_count` key to `values` -> red.
+    #[test]
+    fn values_dimensions_unchanged() {
+        let mut r = row(2, Some(41.5), 600.0, Some(1.2));
+        r["top_item"] = json!(["rajma-chawal", 9]);
+        r["last_items"] = json!(["dal"]);
+        r["visits"] = json!(7);
+        let keys: Vec<String> = Facts::from_row(&r, &spec()).unwrap().values(&spec()).into_keys().collect();
+        assert_eq!(
+            keys,
+            ["cart_abandoned", "days_since_last_purchase", "lifetime_value", "purchase_count", "viewed.filters"].map(|k| format!("{PREFIX}{k}"))
+        );
+    }
+
+    // Mutation: accept any visit name -> red.
+    #[test]
+    fn settings_refuse_an_unknown_visit_definition() {
+        let s = Settings { visit: Some("hour".into()), ..Default::default() };
+        assert!(s.validate().unwrap_err().contains("session"));
     }
 
     #[test]

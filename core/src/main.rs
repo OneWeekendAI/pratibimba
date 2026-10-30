@@ -1,4 +1,4 @@
-//! `pratibimba serve | worker | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> ...`
+//! `pratibimba serve | worker | migrate | backfill-propensity | advise <site> | apply <site.json> | mcp-token <site> <name> | simulate <site> ...`
 //!
 //! One binary, several entry points, so the HTTP server and the learning worker always agree
 //! on schema and policy. Configuration is environment only:
@@ -21,15 +21,18 @@ use anyhow::{Context, Result, bail};
 use pratibimba::{db, http, site_file, worker};
 use std::time::Duration;
 
-const USAGE: &str = "usage: pratibimba <serve | worker [--once] | migrate | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]
+const USAGE: &str = "usage: pratibimba <serve | worker [--once] | migrate | backfill-propensity | advise <site> | apply <site.json> | mcp-token <site> <name> | simulate <site> [options]
                   | erase <site> <subject> --by <actor> [--reason R] | erasures <site>
-                  | backup [dir-or-file] | backup --daily <dir> [--at HH:MM] | restore <file>>
+                  | assets backfill | backup [dir-or-file] | backup --daily <dir> [--at HH:MM] | restore <file>>
 
 erase <site> <subject>: right-to-erase one visitor; the subject is tombstoned and never comes back.
 backup [dir-or-file]: a timestamped SQL dump (pg_dump) of the database; default: the current directory.
 backup --daily <dir> [--at HH:MM]: stay running and take one dump a day at that UTC time (default
   03:00, or PRB_BACKUP_AT); one is taken at start when the newest in <dir> is older than the last
   scheduled time, and a failed run is retried after five minutes.
+assets backfill: give every PNG, JPEG and WebP upload stored before responsive widths (S12b) its 320/640/960/1280/1920 variants (only those narrower than the original); safe to re-run.
+backfill-propensity: give every settled decision its propensity (A1), real sites and sandboxes, in batches of 500, until none is left.
+advise <site>: run the A1 advisor for one site now (a sandbox at its simulated clock) and print the cards written.
 restore <file>: load a backup into an EMPTY database (PRB_DB), in one transaction.
 
 simulate <site>: run synthetic visitors against the site's sandbox (<site>~sim), never the site itself.
@@ -149,6 +152,25 @@ async fn main() -> Result<()> {
             db::migrate(&pool).await?;
             println!("migrations applied");
         }
+        Some("backfill-propensity") => {
+            db::migrate(&pool).await?;
+            let total = worker::backfill_propensity(&pool, 500).await?;
+            println!("propensity filled for {total} decisions");
+        }
+        Some("advise") => {
+            let site = args.get(1).context(USAGE)?;
+            db::migrate(&pool).await?;
+            let sim: Option<Option<chrono::DateTime<chrono::Utc>>> =
+                sqlx::query_scalar("SELECT sim_now FROM sites WHERE id = $1").bind(site).fetch_optional(&pool).await?;
+            let Some(sim) = sim else { anyhow::bail!("unknown site {site:?}") };
+            let now = sim.unwrap_or_else(chrono::Utc::now);
+            let n = pratibimba::advisor::run::run_site(&pool, site, now).await?;
+            for a in pratibimba::advisor::run::assess(&pool, site, now).await? {
+                let claim = if a.candidate.state == pratibimba::advisor::pause::State::Confident { a.evidence["claim"].as_str().unwrap_or("") } else { "" };
+                println!("{} {} rows={} p={:.4} arms={} held_out={} {claim}", a.slot_key, a.candidate.state.as_str(), a.candidate.rows, a.candidate.p, a.evidence["arms"], a.evidence["held_out"]);
+            }
+            println!("advisor wrote {n} cards for {site}");
+        }
         Some("apply") => {
             let path = args.get(1).context(USAGE)?;
             db::migrate(&pool).await?;
@@ -165,6 +187,14 @@ async fn main() -> Result<()> {
         Some("simulate") => {
             db::migrate(&pool).await?;
             simulate(&pool, &args[1..]).await?;
+        }
+        Some("assets") if args.get(1).map(String::as_str) == Some("backfill") => {
+            let assets = pratibimba::assets::Assets::from_env()?;
+            let done = pratibimba::assets::backfill_widths(&pool, &assets).await?;
+            println!("backfilled {} assets ({} left without widths)", done.filled.len(), done.skipped);
+            for (site, id) in &done.filled {
+                println!("  {site}/{id}");
+            }
         }
         Some("erase") => {
             let (Some(site), Some(subject)) = (args.get(1), args.get(2)) else { bail!(USAGE) };

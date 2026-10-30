@@ -106,3 +106,22 @@ test('queue on: a decide Core refused as gone teaches the PoP, so the next /e is
   assert.equal(e.status, 410);
   assert.equal(h.queued.length, 0);
 });
+
+// L1d: a new subject's first decide may miss gone/ cold. The edge must not decide it itself then;
+// it forwards to Core, which holds the authority and refuses an erased subject.
+for (const queueWrites of ['on', 'off']) {
+  test(`queue ${queueWrites}: a gone/ miss for a subject the PoP has not seen forwards to Core, and Core's 410 reaches the visitor`, async () => {
+    const h = harness({ kv: snapshot({ mode: 'cookieless' }), beaconSnap: snapshot({ mode: 'cookieless' }), queueWrites });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => (new URL(String(url)).pathname === '/decide' ? Response.json({ error: 'this subject was erased; start a new one' }, { status: 410 }) : realFetch(url, init));
+    try {
+      const r = await h.call(req('dora'));
+      assert.equal(r.status, 410);
+      assert.equal(r.headers.get('x-prb-decided-by'), 'core');
+      assert.equal(r.headers.get('x-prb-edge-fallback'), 'unseen-cookieless');
+      assert.equal(h.queued.length, 0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+}

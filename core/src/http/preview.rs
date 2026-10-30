@@ -16,7 +16,7 @@
 //! decide sequence is the same with or without previews in between. Traffic share, holdout,
 //! experiments and cold start do not apply: the room shows every version, not one draw.
 
-use super::decide::{ArmRow, Ctx, GateRow, gate_by_audience};
+use super::decide::{ArmRow, Ctx, GateRow, close_by_requires, gate_by_audience};
 use super::{ApiError, AppState};
 use axum::{
     Json, Router,
@@ -97,6 +97,11 @@ pub struct PreviewRequest {
     pub token: String,
     #[serde(default)]
     pub ctx: Ctx,
+    /// P1: a synthetic visitor from [`crate::personas`] whose history fills templates and
+    /// decides `requires`. None: as before, no history (templates show their fallbacks) and
+    /// nothing is closed by `requires`.
+    #[serde(default)]
+    pub persona: Option<String>,
 }
 
 fn refused(msg: &str) -> Response {
@@ -110,14 +115,25 @@ async fn preview(State(state): State<Arc<AppState>>, Json(req): Json<PreviewRequ
     let Some(claims) = verify(admin, &req.token, chrono::Utc::now().timestamp()) else {
         return refused("preview token is not valid or has expired");
     };
-    match versions(&state.pool, &claims.site, &req.ctx).await {
+    let persona = match req.persona.as_deref().map(|k| crate::personas::find(k).ok_or(k)) {
+        None => None,
+        Some(Ok(p)) => Some(p),
+        Some(Err(k)) => {
+            let known: Vec<&str> = crate::personas::all().iter().map(|p| p.key).collect();
+            return ApiError::BadRequest(format!("unknown persona {k:?}; one of {}", known.join(", "))).into_response();
+        }
+    };
+    match versions(&state.pool, &claims.site, &req.ctx, persona.as_ref()).await {
         Ok(slots) => Json(json!({ "site": claims.site, "parent": claims.parent, "slots": slots })).into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-/// Every slot of `site` with the versions `ctx` is eligible for, in the room's order. Reads only.
-pub async fn versions(pool: &sqlx::PgPool, site: &str, ctx: &Ctx) -> Result<Vec<Value>, ApiError> {
+/// Every slot of `site` with the versions `ctx` (and `persona`'s history) is eligible for, in the
+/// room's order. Reads only. With a persona, a version whose `requires` the persona lacks stays
+/// listed, marked `closed`, with no copy and the version the visitor falls to in its `why`.
+pub async fn versions(pool: &sqlx::PgPool, site: &str, ctx: &Ctx, persona: Option<&crate::personas::Persona>) -> Result<Vec<Value>, ApiError> {
+    let facts = persona.and_then(|p| p.facts.as_ref());
     if ctx.tz_offset.is_some_and(|m| !crate::insights::localtime::valid_offset(m)) {
         return Err(ApiError::BadRequest("ctx.tz_offset is minutes east of UTC, -720 to 840".into()));
     }
@@ -133,13 +149,15 @@ pub async fn versions(pool: &sqlx::PgPool, site: &str, ctx: &Ctx) -> Result<Vec<
             Ctx { tz_offset: Some(crate::insights::localtime::zone_offset(z, at)), ..ctx.clone() }
         }
     };
-    let rows: Vec<(String, String, Option<Value>, Value, Value)> = sqlx::query_as(
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, Option<Value>, Value, Value, Option<Value>)> = sqlx::query_as(
         "SELECT s.key, s.kind, s.sorted,
-                COALESCE((SELECT jsonb_agg(jsonb_build_array(v.id, v.key, v.payload, v.is_baseline, v.traffic_share, v.status) ORDER BY v.id)
+                COALESCE((SELECT jsonb_agg(jsonb_build_array(v.id, v.key, v.payload, v.is_baseline, v.traffic_share, v.status, v.requires) ORDER BY v.id)
                             FROM variants v WHERE v.slot_id = s.id AND v.status IN ('approved', 'draft')), '[]'),
                 COALESCE((SELECT jsonb_agg(jsonb_build_array(v.id, v.key, g.id, g.name, g.predicate, g.status) ORDER BY g.id, v.id)
                             FROM variants v JOIN segments g ON g.id = v.audience_id
-                           WHERE v.slot_id = s.id AND v.status IN ('approved', 'draft')), '[]')
+                           WHERE v.slot_id = s.id AND v.status IN ('approved', 'draft')), '[]'),
+                s.copy
            FROM slots s WHERE s.site_id = $1 ORDER BY s.key",
     )
     .bind(site)
@@ -147,12 +165,20 @@ pub async fn versions(pool: &sqlx::PgPool, site: &str, ctx: &Ctx) -> Result<Vec<
     .await?;
     let bad = || ApiError::Internal(anyhow::anyhow!("preview: malformed variant rows"));
     let mut out = Vec::with_capacity(rows.len());
-    for (key, kind, sorted, variants, gates) in rows {
-        let all: Vec<(i64, String, Option<String>, bool, Option<f32>, String)> = serde_json::from_value(variants).map_err(|_| bad())?;
+    for (key, kind, sorted, variants, gates, copy_spec) in rows {
+        #[allow(clippy::type_complexity)]
+        let all: Vec<(i64, String, Option<String>, bool, Option<f32>, String, Vec<String>)> = serde_json::from_value(variants).map_err(|_| bad())?;
         let gates: Vec<GateRow> = serde_json::from_value(gates).map_err(|_| bad())?;
         let gate_of: Vec<(i64, String)> = gates.iter().map(|g| (g.0, g.3.clone())).collect();
-        let mut arms: Vec<ArmRow> = all.iter().map(|(id, k, p, b, s, _)| (*id, k.clone(), p.clone(), *b, *s)).collect();
-        let audiences = gate_by_audience(gates, &ctx, at, night, None, &mut arms);
+        let mut arms: Vec<ArmRow> = all.iter().map(|(id, k, p, b, s, _, _)| (*id, k.clone(), p.clone(), *b, *s)).collect();
+        let audiences = gate_by_audience(gates, &ctx, at, night, facts, &mut arms);
+        // With a persona, `requires` closes arms as decide does; the room still lists them.
+        let requires: Vec<(i64, Vec<String>)> = all.iter().map(|a| (a.0, a.6.clone())).collect();
+        let mut open = arms.clone();
+        if persona.is_some() {
+            close_by_requires(&mut open, &requires, facts);
+        }
+        let falls_to = arms.iter().find(|a| a.3).map(|a| a.1.clone()).unwrap_or_else(|| "the page's own version".into());
         let kept_out: Vec<Value> = audiences
             .as_array()
             .into_iter()
@@ -205,8 +231,18 @@ pub async fn versions(pool: &sqlx::PgPool, site: &str, ctx: &Ctx) -> Result<Vec<
                             why = format!("draft, not live yet; {why}");
                         }
                         let mut v = json!({ "id": id, "key": k, "status": status, "baseline": baseline, "why": why });
-                        if kind == "copy" {
-                            v["copy"] = crate::copy::parse(payload.as_deref()).unwrap_or(Value::Null);
+                        if !open.iter().any(|a| a.0 == *id) {
+                            let needs = requires.iter().find(|r| r.0 == *id).map(|r| r.1.join(", ")).unwrap_or_default();
+                            v["closed"] = json!(true);
+                            v["why"] = json!(format!("needs {needs}; this visitor falls to {falls_to}"));
+                            v["copy"] = Value::Null;
+                        } else if kind == "copy" {
+                            // A template is filled from the persona's history (none: its fallbacks).
+                            let (copy, templated) = crate::copy::render(payload.as_deref(), copy_spec.as_ref(), facts);
+                            v["copy"] = copy;
+                            if templated {
+                                v["filled"] = json!(true);
+                            }
                         } else {
                             v["payload"] = json!(payload);
                         }

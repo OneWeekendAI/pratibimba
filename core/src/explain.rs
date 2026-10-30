@@ -281,6 +281,7 @@ struct Row {
     revenue: Option<f64>,
     experiment: Option<String>,
     ranking: Option<Vec<i64>>,
+    filled: Option<Value>,
 }
 
 /// Re-run the policy a decision stored: its pick and its scores, ascending id. What the replay
@@ -301,7 +302,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
                 d.features, d.scores, d.policy, d.policy_version, d.seed, d.in_holdout, d.created_at, d.exposed_at,
                 d.outcome, d.outcome_at, d.settled_at, d.audiences, d.corrected_at, d.cold_start, d.credit,
                 d.revenue::float8 AS revenue,
-                CASE WHEN d.allocation = 'experiment' THEN e.name END AS experiment, d.ranking
+                CASE WHEN d.allocation = 'experiment' THEN e.name END AS experiment, d.ranking, d.filled
            FROM decisions d JOIN slots s ON s.id = d.slot_id LEFT JOIN experiments e ON e.id = d.experiment_id WHERE d.id = $1",
     )
     .bind(id)
@@ -335,6 +336,7 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         revenue,
         experiment,
         ranking,
+        filled,
     }) = row
     else {
         return Ok(None);
@@ -468,8 +470,14 @@ pub async fn detail(pool: &PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Optio
         order: order.clone(),
         lessons,
     };
-    let is_copy: bool = sqlx::query_scalar("SELECT copy IS NOT NULL FROM slots WHERE id = $1").bind(slot_id).fetch_one(pool).await?;
-    let copy = if is_copy { crate::copy::parse(shown.2.as_deref()) } else { None };
+    let spec: Option<Value> = sqlx::query_scalar("SELECT copy FROM slots WHERE id = $1").bind(slot_id).fetch_one(pool).await?;
+    // What the visitor saw: the filled text the decision stored (P1), else the stored fields
+    // (a template with no facts shows its fallbacks; never its parsed form).
+    let copy = match (&spec, filled) {
+        (None, _) => None,
+        (Some(_), Some(f)) => Some(f),
+        (Some(_), None) => Some(crate::copy::render(shown.2.as_deref(), spec.as_ref(), None).0).filter(|v| !v.is_null()),
+    };
     Ok(Some(Detail {
         id,
         copy,

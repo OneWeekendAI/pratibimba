@@ -196,7 +196,7 @@ async fn the_history_read_skips_item_events_older_than_ninety_days(pool: PgPool)
     setup(&pool, "full", block()).await;
     old_and_recent_views(&pool).await;
     let q = format!(
-        "WITH t AS (SELECT 'full'::text AS privacy_mode, NULL::text[] AS fields_allowed, 'USD'::text AS currency, now() AS at),
+        "WITH t AS (SELECT 'full'::text AS privacy_mode, NULL::text[] AS fields_allowed, 'USD'::text AS currency, now() AS at, NULL::jsonb AS history_settings),
               subj AS (SELECT 'dev'::text AS v)
          SELECT {} FROM t",
         pratibimba::history::sql("true").replace("$5::bool", "false").replace("$1", "'demo'")
@@ -204,4 +204,168 @@ async fn the_history_read_skips_item_events_older_than_ninety_days(pool: PgPool)
     let row: Value = sqlx::query_scalar(&q).fetch_one(&pool).await.unwrap();
     let ids: Vec<&str> = row["touches"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap()).collect();
     assert_eq!(ids, vec!["recent"], "{row}");
+}
+
+// ---- P1 facts: top item, last order's items, visit count (B2) ----
+
+/// The history subquery for `subject` on site `demo`, read as [`pratibimba::history::Facts`], with
+/// the site's own stored settings (what decide's snapshot reads).
+async fn facts_of(pool: &PgPool, subject: &str) -> pratibimba::history::Facts {
+    let q = format!(
+        "WITH t AS (SELECT privacy_mode, fields_allowed, currency, COALESCE(sim_now, now()) AS at, history_settings FROM sites WHERE id = 'demo'),
+              subj AS (SELECT '{subject}'::text AS v)
+         SELECT {} FROM t",
+        pratibimba::history::sql("true").replace("$5::bool", "false").replace("$1", "'demo'")
+    );
+    let row: Value = sqlx::query_scalar(&q).fetch_one(pool).await.unwrap();
+    pratibimba::history::Facts::from_row(&row, &pratibimba::history::Spec::parse(None)).unwrap()
+}
+
+async fn order(pool: &PgPool, subject: &str, id: &str, days: f64, items: Value) {
+    event(pool, subject, "purchase", days, Some((id, 10.0)), Some(items)).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn top_item_is_most_ordered(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    for i in 0..9 {
+        order(&pool, "asha", &format!("r{i}"), 10.0 + f64::from(i), json!([{ "id": "rajma-chawal" }])).await;
+    }
+    order(&pool, "asha", "t1", 1.0, json!([{ "id": "thali" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.top_item, Some(("rajma-chawal".to_string(), 9)));
+}
+
+#[sqlx::test(migrations = false)]
+async fn top_item_counts_orders_not_quantity(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    order(&pool, "asha", "o1", 5.0, json!([{ "id": "a", "quantity": 10 }])).await;
+    order(&pool, "asha", "o2", 4.0, json!([{ "id": "b" }])).await;
+    order(&pool, "asha", "o3", 3.0, json!([{ "id": "b" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.top_item, Some(("b".to_string(), 2)));
+}
+
+// Mutation: drop `order_id IS NOT NULL` from the top-item read -> red.
+#[sqlx::test(migrations = false)]
+async fn top_item_ignores_add_to_cart(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    for _ in 0..5 {
+        event(&pool, "asha", "add_to_cart", 2.0, None, Some(json!([{ "id": "a" }]))).await;
+    }
+    order(&pool, "asha", "o1", 1.0, json!([{ "id": "b" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.top_item, Some(("b".to_string(), 1)));
+}
+
+// Mutation: order the tie by id only, either way (drop the most-recent-order key) -> red.
+// The most recent item is neither the first nor the last id, so no id order can pass for it.
+#[sqlx::test(migrations = false)]
+async fn top_item_tie_goes_to_the_most_recent_order(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    order(&pool, "asha", "o1", 9.0, json!([{ "id": "aloo" }])).await;
+    order(&pool, "asha", "o2", 2.0, json!([{ "id": "mango" }])).await;
+    order(&pool, "asha", "o3", 5.0, json!([{ "id": "zeera" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.top_item, Some(("mango".to_string(), 1)));
+}
+
+#[sqlx::test(migrations = false)]
+async fn top_item_outside_lookback_ignored(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    order(&pool, "asha", "o1", 200.0, json!([{ "id": "rajma-chawal" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.top_item, None);
+}
+
+// Mutation: hard-code the 180-day default in the look-back (ignore the setting) -> red.
+#[sqlx::test(migrations = false)]
+async fn top_item_lookback_follows_the_site_setting(pool: PgPool) {
+    setup(&pool, "full", json!({ "history_settings": { "top_item_days": 90 } })).await;
+    order(&pool, "asha", "o1", 100.0, json!([{ "id": "rajma-chawal" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.top_item, None, "100 days ago is outside a 90-day look-back");
+}
+
+#[sqlx::test(migrations = false)]
+async fn last_order_items_caps_at_three(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    order(&pool, "asha", "o1", 9.0, json!([{ "id": "old" }])).await;
+    order(&pool, "asha", "o2", 1.0, json!([{ "id": "dal" }, { "id": "roti" }, { "id": "dal" }, { "id": "lassi" }, { "id": "kheer" }])).await;
+    assert_eq!(facts_of(&pool, "asha").await.last_order_items, vec!["dal", "roti", "lassi"]);
+}
+
+// Mutation: count(*) instead of count(DISTINCT day) -> red.
+#[sqlx::test(migrations = false)]
+async fn visit_count_counts_days_not_events(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    for h in [0.0, 0.1, 0.2] {
+        event(&pool, "asha", "click", 10.0 + h / 24.0, None, None).await;
+        event(&pool, "asha", "click", 3.0 + h / 24.0, None, None).await;
+    }
+    assert_eq!(facts_of(&pool, "asha").await.visit_count, 2);
+}
+
+// Mutation: ignore `visit: session` (always count days) -> red.
+#[sqlx::test(migrations = false)]
+async fn visit_count_by_session_follows_the_site_setting(pool: PgPool) {
+    setup(&pool, "full", json!({ "history_settings": { "visit": "session", "session_gap_minutes": 30 } })).await;
+    // One day, three bursts two hours apart, each of two events a minute apart: three sessions.
+    for burst in 0..3 {
+        for m in 0..2 {
+            let mins = f64::from(burst * 120 + m);
+            event(&pool, "asha", "click", 5.0 - mins / 1440.0, None, None).await;
+        }
+    }
+    assert_eq!(facts_of(&pool, "asha").await.visit_count, 3);
+}
+
+// Mutation: drop the hiding of erased subjects (read `events`, not `live_events`) -> red.
+#[sqlx::test(migrations = false)]
+async fn erased_subject_has_no_top_item(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    order(&pool, "asha", "o1", 1.0, json!([{ "id": "rajma-chawal" }])).await;
+    let r = api_post(&admin_app(&pool), "/api/sites/demo/erase", json!({ "subject": "asha", "actor": "owner" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let f = facts_of(&pool, "asha").await;
+    assert_eq!((f.top_item, f.last_order_items.len(), f.visit_count), (None, 0, 0));
+}
+
+// ---- P1 settings API (B2) ----
+
+#[sqlx::test(migrations = false)]
+async fn history_settings_default_when_unset(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    let r = api_get(&admin_app(&pool), "/api/sites/demo/history-settings").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let j = r.json();
+    assert_eq!((&j["top_item_days"], &j["visit"], &j["session_gap_minutes"]), (&json!(180), &json!("day"), &json!(30)), "{j}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn history_settings_post_is_read_back_and_used(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    order(&pool, "asha", "o1", 100.0, json!([{ "id": "rajma-chawal" }])).await;
+    let app = admin_app(&pool);
+    let r = api_post(&app, "/api/sites/demo/history-settings", json!({ "top_item_days": 60, "visit": "session", "session_gap_minutes": 45 })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let j = api_get(&app, "/api/sites/demo/history-settings").await.json();
+    assert_eq!((&j["top_item_days"], &j["visit"], &j["session_gap_minutes"]), (&json!(60), &json!("session"), &json!(45)), "{j}");
+    assert_eq!(facts_of(&pool, "asha").await.top_item, None, "the API's look-back is the one the facts use");
+}
+
+#[sqlx::test(migrations = false)]
+async fn history_settings_out_of_bounds_refused(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    let r = api_post(&admin_app(&pool), "/api/sites/demo/history-settings", json!({ "top_item_days": 0 })).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
+    assert!(r.text.contains("1 to 730"), "{}", r.text);
+}
+
+#[sqlx::test(migrations = false)]
+async fn history_settings_gap_without_session_refused(pool: PgPool) {
+    setup(&pool, "full", json!({})).await;
+    let r = api_post(&admin_app(&pool), "/api/sites/demo/history-settings", json!({ "visit": "day", "session_gap_minutes": 20 })).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
+}
+
+#[sqlx::test(migrations = false)]
+async fn history_settings_bad_value_refused_in_site_file(pool: PgPool) {
+    pratibimba::db::migrate(&pool).await.unwrap();
+    let e = pratibimba::site_file::apply(&pool, &file_from(site("full", json!({ "history_settings": { "visit": "hour" } })))).await.unwrap_err().to_string();
+    assert!(e.contains("day") && e.contains("session"), "{e}");
 }

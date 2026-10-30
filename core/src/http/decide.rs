@@ -127,12 +127,14 @@ pub struct DecideResponse {
     pub explanation: Value,
 }
 
-/// A copy decision carries its fields as `copy`, never as a payload. An image field naming an
+/// A copy decision carries its fields as `copy`, never as a payload: `copy` is the fields as
+/// [`crate::copy::render`] filled them (plain strings and images only; no `tpl` leaves Core), or
+/// `None` for another kind. An image field naming an
 /// uploaded asset that has responsive variants (S12b) also gets `widths` (the stored steps) and
 /// `natural_width`, from [`SNAPSHOT`]'s `asset_widths`, so a renderer can write a `srcset`.
-fn with_copy(mut resp: DecideResponse, is_copy: bool, asset_widths: Option<&Value>) -> DecideResponse {
-    if is_copy {
-        let mut copy = crate::copy::parse(resp.payload.take().as_deref()).unwrap_or(Value::Null);
+fn with_copy(mut resp: DecideResponse, copy: Option<Value>, asset_widths: Option<&Value>) -> DecideResponse {
+    if let Some(mut copy) = copy {
+        resp.payload = None;
         if let (Some(fields), Some(sizes)) = (copy.as_object_mut(), asset_widths.and_then(Value::as_object)) {
             for v in fields.values_mut() {
                 let Some(img) = v.as_object_mut() else { continue };
@@ -229,7 +231,7 @@ pub async fn batch_handler(
 /// One approved arm: `(id, key, payload, is_baseline, traffic_share)`.
 pub(crate) type ArmRow = (i64, String, Option<String>, bool, Option<f32>);
 /// A recent decision: `(id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start,
-/// experiment_id, allocation, created_at)`.
+/// experiment_id, allocation, created_at)`. Its `filled` copy is [`SlotSnapshot::sticky_filled`].
 type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>, Option<Value>, Option<i64>, String, chrono::DateTime<chrono::Utc>);
 
 /// Everything one decide reads, in one statement (one round trip). Binds: `$1` site, `$2` slot,
@@ -247,11 +249,14 @@ type StickyRow = (Uuid, i64, Value, Value, i64, i64, bool, String, Option<Value>
 ///
 /// The visitor's history ([`crate::history`]) is one more column of the same statement, read only
 /// for an identified request on a site that admits `history` and uses it (a `history:` block, or
-/// an approved variant of this slot gated on a history rule).
+/// an approved variant of this slot gated on a history rule, or one that `requires` a template path
+/// or holds a template, P1).
 static SNAPSHOT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let needed = format!(
         "t.history IS NOT NULL OR EXISTS (SELECT 1 FROM variants v JOIN segments g ON g.id = v.audience_id
-                                            WHERE v.slot_id = s.id AND v.status = 'approved' AND g.predicate ?| array['{}'])",
+                                            WHERE v.slot_id = s.id AND v.status = 'approved' AND g.predicate ?| array['{}'])
+         OR EXISTS (SELECT 1 FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved'
+                       AND (cardinality(v.requires) > 0 OR (s.copy IS NOT NULL AND strpos(v.payload, '\"tpl\":') > 0)))",
         crate::history::KEYS.join("','")
     );
     SNAPSHOT_SQL.replace("__HISTORY__", &crate::history::sql(&needed))
@@ -259,7 +264,7 @@ static SNAPSHOT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 const SNAPSHOT_SQL: &str = "
 WITH t AS (
     SELECT privacy_mode, fields_allowed, COALESCE(sim_now, now()) AS at, holdout_fraction, paused_at IS NOT NULL AS paused,
-           night_start_hour, night_end_hour, currency, history
+           night_start_hour, night_end_hour, currency, history, history_settings
       FROM sites WHERE id = $1),
 day AS (SELECT (at AT TIME ZONE 'UTC')::date AS d FROM t),
 subj AS (
@@ -273,7 +278,8 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        (SELECT p.salt FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day >= day.d ORDER BY p.day LIMIT 1) AS salt,
        EXISTS (SELECT 1 FROM privacy_salts p, day WHERE p.site_id = $1 AND p.day < day.d) AS stale_salts,
        (SELECT v FROM subj) AS subject,
-       s.id AS slot_id, s.cold_start_exposures, s.sorted AS sorted_spec, s.copy IS NOT NULL AS is_copy, r.ranking AS st_ranking,
+       s.id AS slot_id, s.cold_start_exposures, s.sorted AS sorted_spec, s.copy IS NOT NULL AS is_copy, s.copy AS copy_spec, r.ranking AS st_ranking,
+       r.filled AS st_filled,
        CASE WHEN s.copy IS NOT NULL THEN
            (SELECT jsonb_object_agg(x.sha256, jsonb_build_array(x.width, to_jsonb(x.widths)))
               FROM assets x
@@ -281,7 +287,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
                AND x.sha256 IN (SELECT jsonb_path_query(v.payload::jsonb, 'lax $.*.asset') #>> '{}'
                                   FROM variants v WHERE v.slot_id = s.id AND v.status = 'approved' AND v.payload IS NOT NULL))
        END AS asset_widths,
-       a.arm_ids, a.arm_keys, a.arm_payloads, a.arm_baselines, a.arm_shares,
+       a.arm_ids, a.arm_keys, a.arm_payloads, a.arm_baselines, a.arm_shares, a.arm_requires,
        (SELECT jsonb_agg(jsonb_build_array(v.id, v.key, g.id, g.name, g.predicate, g.status) ORDER BY g.id, v.id)
           FROM variants v JOIN segments g ON g.id = v.audience_id
          WHERE v.slot_id = s.id AND v.status = 'approved') AS gates,
@@ -309,7 +315,8 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
   LEFT JOIN slots s ON s.site_id = $1 AND s.key = $2
   LEFT JOIN LATERAL (
       SELECT array_agg(id ORDER BY id) AS arm_ids, array_agg(key ORDER BY id) AS arm_keys, array_agg(payload ORDER BY id) AS arm_payloads,
-             array_agg(is_baseline ORDER BY id) AS arm_baselines, array_agg(traffic_share ORDER BY id) AS arm_shares
+             array_agg(is_baseline ORDER BY id) AS arm_baselines, array_agg(traffic_share ORDER BY id) AS arm_shares,
+             jsonb_agg(to_jsonb(requires) ORDER BY id) AS arm_requires
         FROM variants WHERE slot_id = s.id AND status = 'approved') a ON true
   LEFT JOIN LATERAL (
       SELECT id, name, arms FROM experiments
@@ -317,7 +324,7 @@ SELECT t.privacy_mode, t.fields_allowed, t.at, t.holdout_fraction, t.paused, t.n
        ORDER BY starts_at LIMIT 1) x ON true
   LEFT JOIN LATERAL (
       SELECT id, variant_id, features, scores, seed, policy_version, in_holdout, policy, audiences, cold_start, experiment_id, allocation, created_at,
-             ranking
+             ranking, filled
         FROM decisions
        WHERE slot_id = s.id AND subject = (SELECT v FROM subj)
          AND created_at > t.at - make_interval(secs => s.decision_ttl_secs::float8) AND created_at <= t.at
@@ -363,6 +370,12 @@ struct SlotSnapshot {
     sorted: Option<Value>,
     /// A copy slot (see [`crate::copy`]).
     is_copy: bool,
+    /// A copy slot's stored field spec, for the fields' `max` when templates are filled.
+    copy_spec: Option<Value>,
+    /// Each approved arm's `requires` (P1), by arm id.
+    requires: Vec<(i64, Vec<String>)>,
+    /// The sticky decision's `filled` copy, when it showed a template.
+    sticky_filled: Option<Value>,
     /// A copy slot's `{sha256: [natural width, [responsive widths]]}` for the assets its
     /// approved variants name (S12b).
     asset_widths: Option<Value>,
@@ -404,6 +417,11 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                 .zip(shares)
                 .map(|((((id, key), payload), base), share)| (id, key, payload, base, share))
                 .collect();
+            let requires: Vec<Vec<String>> = match row.try_get::<Option<Value>, _>("arm_requires")? {
+                None => vec![],
+                Some(v) => serde_json::from_value(v).map_err(|_| bad("arm_requires"))?,
+            };
+            let requires: Vec<(i64, Vec<String>)> = arms.iter().map(|a| a.0).zip(requires).collect();
             let gates: Vec<GateRow> = match row.try_get::<Option<Value>, _>("gates")? {
                 None => vec![],
                 Some(v) => serde_json::from_value(v).map_err(|_| bad("gates"))?,
@@ -473,6 +491,9 @@ async fn snapshot(conn: &mut sqlx::PgConnection, req: &DecideRequest, identified
                 sticky,
                 sorted: row.try_get("sorted_spec")?,
                 is_copy: row.try_get("is_copy")?,
+                copy_spec: row.try_get("copy_spec")?,
+                requires,
+                sticky_filled: row.try_get("st_filled")?,
                 asset_widths: row.try_get("asset_widths")?,
                 sticky_ranking: row.try_get("st_ranking")?,
                 model,
@@ -634,6 +655,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     };
     let is_copy = slot.is_copy;
     let asset_widths = slot.asset_widths.clone();
+    let copy_spec = slot.copy_spec.clone();
     let mut arms = slot.arms;
     // The kill switch: a paused site serves only the page's own content.
     // A sorted slot's items, by key in the declared default order.
@@ -654,9 +676,13 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     // Promoted audiences gate their variants: a visitor outside the audience never gets them.
     let night = crate::insights::localtime::NightWindow { start: night_start as u8, end: night_end as u8 };
     let audiences = gate_by_audience(slot.gates, &ctx, at, night, slot.history.as_ref(), &mut arms);
+    // P1: an arm that requires a fact this visitor lacks is closed, as an audience closes one.
+    close_by_requires(&mut arms, &slot.requires, slot.history.as_ref());
     if arms.is_empty() {
         return Err(ApiError::Conflict(format!("no variant of slot {:?} is open to this visitor's audiences", req.slot)));
     }
+    // A copy decision's fields, filled from this visitor's facts: `(copy, any template)`.
+    let render = |payload: Option<&str>| is_copy.then(|| crate::copy::render(payload, copy_spec.as_ref(), slot.history.as_ref()));
     // The `stated` feature group: present on every decision of a site that has a picker.
     let site_keys = slot.site_keys;
     let said = stated::resolve_with(&site_keys, &ctx.stated, slot.picks)?;
@@ -694,7 +720,13 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
             let lessons = current_lessons.filter(|(v, _)| *v == version).map(|(_, n)| n);
             let resp = response(id, &req.slot, key, payload, &policy, version, lessons, features, &scores, seed as u64, held, &arms, auds, cold, alloc);
             let ranking = if sorted_order.is_some() { slot.sticky_ranking.as_deref() } else { None };
-            return Ok((with_copy(with_order(resp, ranking, &arms), is_copy, asset_widths.as_ref()), made));
+            // The arm is still open (the requires filter ran above), so what it showed stands:
+            // a reload inside the TTL shows the same filled text.
+            let copy = render(resp.payload.as_deref()).map(|(c, templated)| match (templated, slot.sticky_filled) {
+                (true, Some(f)) => f,
+                _ => c,
+            });
+            return Ok((with_copy(with_order(resp, ranking, &arms), copy, asset_widths.as_ref()), made));
         }
     }
 
@@ -767,6 +799,8 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let scores_json = Value::Object(scores.iter().map(|(id, s)| (id.to_string(), json!(s))).collect());
     let id = Uuid::new_v4();
     let (key, payload) = key_of(chosen).expect("chosen arm is in the pool");
+    let copy = render(payload.as_deref());
+    let filled: Option<Value> = copy.as_ref().and_then(|(c, templated)| templated.then(|| c.clone()));
     // One statement writes the decision and its webhook outbox rows, so both land or neither.
     let (hook_key, hook_body) = crate::webhooks::envelope(
         &req.site,
@@ -783,8 +817,8 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
         "WITH gone AS (SELECT EXISTS (SELECT 1 FROM erasures WHERE site_id = $2 AND subject_hash = $20) AS g),
               ins AS (
              INSERT INTO decisions (id, site_id, slot_id, variant_id, subject, pool, features, scores, policy, policy_version, seed, in_holdout, created_at, audiences, cold_start,
-                                    experiment_id, allocation, ranking)
-             SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17, $18, $19, $21 FROM gone WHERE NOT gone.g RETURNING 1),
+                                    experiment_id, allocation, ranking, filled)
+             SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $16, $17, $18, $19, $21, $22 FROM gone WHERE NOT gone.g RETURNING 1),
               hooks AS (
              INSERT INTO webhook_deliveries (subscription_id, event, idempotency_key, payload)
              SELECT id, 'decision', $14, $15 FROM webhook_subscriptions WHERE site_id = $2 AND 'decision' = ANY(events) AND EXISTS (SELECT 1 FROM ins))
@@ -811,6 +845,7 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     .bind(allocation)
     .bind(privacy::subject_hash(&req.site, raw))
     .bind(&ranking)
+    .bind(&filled)
     .fetch_one(&mut *tx)
     .await?;
     if erased {
@@ -821,7 +856,14 @@ pub async fn decide_full(state: &AppState, req: &DecideRequest) -> Result<(Decid
     let made = Made { subject: req.subject.clone(), at, record: rec };
     let alloc = Allocation { kind: allocation, experiment: experiment.as_ref() };
     let resp = response(id, &req.slot, key, payload, policy, version, Some(model.n), features, &scores_json, seed, in_holdout, &arms, audiences, cold, alloc);
-    Ok((with_copy(with_order(resp, ranking.as_deref(), &arms), is_copy, asset_widths.as_ref()), made))
+    Ok((with_copy(with_order(resp, ranking.as_deref(), &arms), copy.map(|c| c.0), asset_widths.as_ref()), made))
+}
+
+/// Drop from `arms` every non-baseline arm whose `requires` names a fact these facts lack (P1;
+/// no facts lack every one). The baseline requires nothing (a CHECK holds it), so it stays and
+/// the pool is never empty.
+pub(crate) fn close_by_requires(arms: &mut Vec<ArmRow>, requires: &[(i64, Vec<String>)], facts: Option<&crate::history::Facts>) {
+    arms.retain(|a| a.3 || !requires.iter().find(|r| r.0 == a.0).is_some_and(|r| crate::template::missing(&r.1, facts)));
 }
 
 /// Who chose the treated arm, for the explanation.
