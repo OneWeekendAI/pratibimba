@@ -186,3 +186,15 @@ test('push: Core\'s snapshot reaches the beacon only with the token, and never g
   assert.deepEqual(await (await push(snapshot({ version: 2 }), TOKEN)).json(), { kept: false, version: 3 });
   assert.equal(h.decides().length, 0, 'a push was forwarded to Core');
 });
+
+test('an edge-decided answer carries CORS for an allowed origin only, as /e does', async () => {
+  const h = harness({ kv: snapshot(), beaconSnap: snapshot() });
+  h.env.SITE_ORIGINS = 'https://shop.example, https://b.example';
+  const ok = await h.call(req(), '/decide', { origin: 'https://shop.example' });
+  assert.equal(ok.headers.get('x-prb-decided-by'), 'edge');
+  assert.equal(ok.headers.get('access-control-allow-origin'), 'https://shop.example');
+  assert.equal(ok.headers.get('vary'), 'origin');
+  const no = await h.call(req(), '/decide', { origin: 'https://evil.example' });
+  assert.equal(no.headers.get('x-prb-decided-by'), 'edge');
+  assert.equal(no.headers.get('access-control-allow-origin'), null);
+});

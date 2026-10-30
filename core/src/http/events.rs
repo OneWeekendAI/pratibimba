@@ -99,7 +99,7 @@ pub async fn handler(State(state): State<Arc<AppState>>, Json(req): Json<EventsR
         subject: crate::privacy::stored_subject(&state.pool, &policy, &site, &raw, identified).await?,
         site,
         events: policy.events(events),
-        tz_offset: policy.tz(tz_offset),
+        tz_offset: policy.tz(tz_offset, identified),
         consent,
     };
     let slots: Vec<(String, i64)> = sqlx::query_as("SELECT key, id FROM slots WHERE site_id = $1").bind(&req.site).fetch_all(&state.pool).await?;

@@ -1083,3 +1083,27 @@ async fn api_refuses_an_unknown_mode(pool: PgPool) {
     let r = api_post(&admin_app(&pool), "/api/sites/demo/privacy", json!({ "privacy_mode": "anonymous" })).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
 }
+
+async fn set_mode(pool: &PgPool, mode: &str) {
+    sqlx::query("UPDATE sites SET privacy_mode = $1 WHERE id = 'demo'").bind(mode).execute(pool).await.unwrap();
+}
+
+#[sqlx::test(migrations = false)]
+async fn events_without_consent_store_no_tz_offset(pool: PgPool) {
+    setup(&pool, "full").await;
+    set_mode(&pool, "consent_aware").await;
+    events(&app(&pool), "alice", json!({ "tz_offset": 330, "consent": false, "events": [ev("view", None)] })).await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE tz_offset_min IS NULL").await, 1);
+    events(&app(&pool), "bob", json!({ "tz_offset": 330, "consent": true, "events": [ev("view", None)] })).await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE tz_offset_min = 330").await, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn decide_without_consent_ignores_tz(pool: PgPool) {
+    setup(&pool, "full").await;
+    set_mode(&pool, "consent_aware").await;
+    let d = decided(&app(&pool), "alice", json!({ "tz_offset": 330, "consent": false })).await;
+    assert!(d["explanation"]["features"].get("sin_hour").is_none(), "{}", d["explanation"]);
+    let d = decided(&app(&pool), "bob", json!({ "tz_offset": 330, "consent": true })).await;
+    assert!(d["explanation"]["features"].get("sin_hour").is_some(), "{}", d["explanation"]);
+}

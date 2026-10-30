@@ -394,3 +394,19 @@ async fn a_click_that_arrives_before_its_exposure_waits_for_it(pool: PgPool) {
     assert_eq!(outcome, Some(1), "the click drained before its exposure was lost");
     assert_eq!(count(&pool, "SELECT count(*) FROM pending_events").await, 0);
 }
+
+/// The visitor's clock is kept only for an identified request: a consent_aware site with no
+/// consent stores no tz_offset on the queue path either.
+#[sqlx::test(migrations = false)]
+async fn a_batch_without_consent_stores_no_tz_offset(pool: PgPool) {
+    setup(&pool, "full").await;
+    sqlx::query("UPDATE sites SET privacy_mode = 'consent_aware'").execute(&pool).await.unwrap();
+    let app = edge_app(&pool);
+    let d = json!(Uuid::new_v4());
+    let mut item = events_item("v", vec![ev_for("click", &d)], now());
+    item["request"]["tz_offset"] = json!(330);
+    item["request"]["consent"] = json!(false);
+    assert_eq!(ids(&batch(&app, vec![item]).await, "accepted").len(), 1);
+    let tz: Option<i16> = sqlx::query_scalar("SELECT tz_offset_min FROM events").fetch_one(&pool).await.unwrap();
+    assert_eq!(tz, None);
+}

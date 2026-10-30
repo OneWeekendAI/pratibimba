@@ -287,6 +287,14 @@ export function createWorker(deps = {}) {
     return { erased: await erasedAt(env, site, raw), via: 'kv' };
   }
 
+  /** The CORS headers an answer the Worker makes itself carries: only for an origin the site
+   * allows (SITE_ORIGINS). A preflight is not answered here; it goes to Core like any proxied call. */
+  function corsHeaders(request, env) {
+    const origin = request.headers.get('origin');
+    const allowed = (env.SITE_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
+    return origin && allowed.includes(origin) ? { 'access-control-allow-origin': origin, vary: 'origin' } : {};
+  }
+
   const goneResponse = (extra = {}) => json(GONE_BODY, 410, { 'x-prb-erased': 'yes', 'cache-control': 'no-store', ...extra });
 
   /** What Core's `x-prb-edge` header taught us: the stored subject and its live decisions. */
@@ -430,7 +438,7 @@ export function createWorker(deps = {}) {
     const { erased, via: eraseCheck } = await erasedFor(env, snap, body.site, body.subject);
     if (erased === true) {
       console.log(JSON.stringify({ msg: 'edge refused erased subject', site: body.site, colo: request.cf?.colo }));
-      return goneResponse({ 'x-prb-decided-by': 'edge', 'x-prb-snapshot-version': String(snap.version) });
+      return goneResponse({ ...corsHeaders(request, env), 'x-prb-decided-by': 'edge', 'x-prb-snapshot-version': String(snap.version) });
     }
     if (erased === null) return fallback('erase-check-timeout', snap);
     const t = now();
@@ -471,6 +479,7 @@ export function createWorker(deps = {}) {
       'x-prb-snapshot-version': String(snap.version),
       'x-prb-erase-check': eraseCheck,
       'cache-control': 'no-store',
+      ...corsHeaders(request, env),
     });
   }
 
@@ -502,9 +511,7 @@ export function createWorker(deps = {}) {
     if (raw.byteLength > MAX_QUEUED_BYTES || !queueable(body)) return direct(request, env, raw, 'not-queueable');
     const message = { kind: 'events', received_at: new Date(now()).toISOString(), request: body };
     const headers = { 'x-prb-queued': 'yes', 'cache-control': 'no-store' };
-    const origin = request.headers.get('origin');
-    const allowed = (env.SITE_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
-    if (origin && allowed.includes(origin)) Object.assign(headers, { 'access-control-allow-origin': origin, vary: 'origin' });
+    Object.assign(headers, corsHeaders(request, env));
     // EC4: a subject this PoP knows is erased is refused now; a KV tombstone is checked after
     // the answer (so /e never waits on KV) and drops the events before the send.
     if (await cached(await goneKey(body.site, body.subject))) return goneResponse({ ...headers, 'x-prb-queued': 'no; erased' });

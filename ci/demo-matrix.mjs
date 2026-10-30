@@ -212,8 +212,8 @@ async function startWorker(decide, queue) {
   fs.writeFileSync(wranglerConfig, JSON.stringify({
     name: 'prb-local-proxy',
     main: path.join(ROOT, 'deploy/proxy-worker/src/worker.js'),
-    // miniflare in the installed wrangler supports up to this date; the checked-in config's is newer.
-    compatibility_date: '2026-07-01',
+    // The checked-in config's date, so the matrix runs what ships (it is the newest the local runtime accepts).
+    compatibility_date: fs.readFileSync(path.join(ROOT, 'deploy/proxy-worker/wrangler.jsonc'), 'utf8').match(/^\s*"compatibility_date"\s*:\s*"(\d{4}-\d{2}-\d{2})"/m)[1],
     vars: { ORIGIN: URLS.edge, EDGE_DECIDE: decide, QUEUE_WRITES: queue, EDGE_TOKEN, SITE_ORIGINS: URLS.demo },
     kv_namespaces: [{ binding: 'SNAPSHOTS', id: 'local-snapshots' }],
     durable_objects: { bindings: [{ name: 'BEACON', class_name: 'SiteBeacon' }] },
@@ -563,7 +563,16 @@ async function globalRows() {
       await api(`/sites/${SITE}/privacy`, { fields_allowed: before.fields_allowed ?? null });
     }
   });
-  record('global', 'consent', 'tz | consent off sends no tz', 'SKIP', 'Core gates tz by the site\'s fields_allowed, not by consent: a cookieless visit still stores tz_offset when the field is allowed');
+  await row('global', 'consent', 'tz | consent off sends no tz', async () => {
+    const t0 = psql('SELECT clock_timestamp()');
+    await visit(URLS.direct, { consent: false, subject: `tzoff-${Date.now().toString(36)}` });
+    // Without consent the stored subject is a daily pseudonym, so this visit's rows are the ones after t0.
+    const mine = `site_id='${SITE}' AND received_at > '${t0}'`;
+    await until('cookieless events stored', () => Number(psql(`SELECT count(*) FROM live_events WHERE ${mine}`)) > 0, 20);
+    const n = Number(psql(`SELECT count(*) FROM live_events WHERE ${mine} AND tz_offset_min IS NOT NULL`));
+    need(n === 0, `${n} events of a visit without consent kept a tz_offset`);
+    return 'no tz stored for a visit without consent';
+  });
   await row('global', 'dashboard', 'dashboard | sign in and see the demo site', async () => {
     const ctx = await browser.newContext(RECORD ? { recordVideo: { dir: VIDEOS, size: { width: 1100, height: 720 } }, viewport: { width: 1100, height: 720 } } : {});
     try {

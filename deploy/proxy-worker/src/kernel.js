@@ -448,8 +448,8 @@ export function decide(snap, req, opts) {
     mobile: raw.mobile && allows('mobile'),
     from_ad: raw.from_ad && allows('from_ad'),
     stated: allows('stated') ? raw.stated : [],
-    tz_offset: allows('tz_offset') ? raw.tz_offset : null,
-    tz: allows('tz_offset') ? raw.tz : null,
+    tz_offset: ident && allows('tz_offset') ? raw.tz_offset : null,
+    tz: ident && allows('tz_offset') ? raw.tz : null,
     consent: raw.consent,
     features: raw.features,
   };

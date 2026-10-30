@@ -80,16 +80,18 @@ impl Policy {
             mobile: ctx.mobile && self.allows("mobile"),
             from_ad: ctx.from_ad && self.allows("from_ad"),
             stated: if self.allows("stated") { ctx.stated.clone() } else { vec![] },
-            tz_offset: ctx.tz_offset.filter(|_| self.allows("tz_offset")),
-            tz: ctx.tz.clone().filter(|_| self.allows("tz_offset")),
+            tz_offset: ctx.tz_offset.filter(|_| identified && self.allows("tz_offset")),
+            tz: ctx.tz.clone().filter(|_| identified && self.allows("tz_offset")),
             consent: ctx.consent,
             // Declared features are filtered in decide, which knows which are PII.
             features: ctx.features.clone(),
         }
     }
 
-    pub fn tz(&self, tz: Option<i16>) -> Option<i16> {
-        tz.filter(|_| self.allows("tz_offset"))
+    /// The visitor's clock is kept only for an identified request (the client's own id, i.e.
+    /// consent where the mode asks for it) and a site that collects `tz_offset`.
+    pub fn tz(&self, tz: Option<i16>, identified: bool) -> Option<i16> {
+        tz.filter(|_| identified && self.allows("tz_offset"))
     }
 
     /// The events with every field this site does not collect dropped. A pick or rescore that

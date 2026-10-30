@@ -1,7 +1,7 @@
 {
   "name": "pratibimba-api-proxy",
   "main": "src/worker.js",
-  "compatibility_date": "2026-10-01",
+  "compatibility_date": "2026-07-17",
   "workers_dev": true,
   // Fill in the two placeholders before `wrangler deploy`: ORIGIN (where Core runs, e.g. a
   // Cloud Run URL or your own host) and the KV namespace id (wrangler kv namespace create

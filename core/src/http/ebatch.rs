@@ -203,7 +203,7 @@ async fn write_events(state: &AppState, items: Vec<(DateTime<Utc>, EventsRequest
             }
             privacy::pseudonym(&salts[&key], &req.site, &req.subject)
         };
-        let tz = site.policy.tz(req.tz_offset);
+        let tz = site.policy.tz(req.tz_offset, identified);
         let (special, plain): (Vec<EventIn>, Vec<EventIn>) = req.events.into_iter().partition(is_special);
         for e in special {
             answer.refuse(Some(e.id), "picks, rescores and orders go to /e");
