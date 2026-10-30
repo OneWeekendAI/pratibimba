@@ -653,9 +653,10 @@ symlinked package outside the app).
 | `examples/next/` | plain Next.js example |
 | `examples/edge/` | plain Cloudflare Worker example |
 | `examples/plain/` | script-tag example with a declared `site.json`: a layout swap and an image field |
+| `examples/demo-site/` | the site `ci/demo-matrix.sh` runs against: one swap, copy (plain and template), image and sorted slot |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
-| `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |
+| `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup, `demo-matrix.sh` (the local demo matrix) |
 | `Dockerfile` | one image, several entry points (`serve`, `worker`, `migrate`, `apply`, `backup`, `restore`, `erase`) |
 
 ## HTTP API (summary)
@@ -677,6 +678,27 @@ symlinked package outside the app).
 A late platform webhook can **correct a settled miss** inside the attribution window: the
 decision flips, the model is updated exactly (`+w·x` on log-likelihood, covariance unchanged),
 and a `conversion` webhook refires with `late: true`.
+
+## Local demo matrix
+
+```sh
+ci/demo-matrix.sh              # everything on this machine, prints a PASS / FAIL / SKIP table
+ci/demo-matrix.sh --record     # also records Playwright video to target/demo-matrix/videos (gitignored)
+ci/demo-matrix.sh --prove      # then breaks one thing per category and shows its row go red
+ci/demo-matrix.sh --modes=direct,w-on-on
+```
+
+One command starts Core (with and without an edge), the worker, the proxy Worker under
+`wrangler dev` (miniflare KV, Durable Object and queue, fed by a fake KV API), and
+`examples/demo-site`, then drives real Chromium through every stack mode (Core alone; the
+Worker with edge decide on or off and the write queue on or off). Each mode checks the swap,
+copy (plain, and a template filled from visitor history), uploaded-image (srcset) and sorted
+slots; the new, returning and agent-drafted history audiences; consent on and off; edge decide
+and the queue (response headers); and erase (410, and no `live_events` rows). A row asserts
+something observable and says what it saw. A mode that cannot run (no `wrangler`) is `SKIP`
+with the reason, never `PASS`. It tears down everything it started and drops only its own
+`prb_matrix` database. Needs cargo, node, psql, `wrangler` and Playwright's Chromium
+(`npm install` in `examples/demo-site`, or any sibling example's install is used).
 
 ## Running the tests
 

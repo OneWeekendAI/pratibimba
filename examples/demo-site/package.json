@@ -1,0 +1,6 @@
+{
+  "name": "pratibimba-demo-site",
+  "private": true,
+  "description": "The site ci/demo-matrix.sh runs the local demo matrix against. Needs playwright (npm install here, or any sibling example's node_modules is used).",
+  "devDependencies": { "playwright": "^1.63.0" }
+}

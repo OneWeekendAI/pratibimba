@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- The local demo matrix's site (ci/demo-matrix.sh). Four slots, one per kind. ci/demo-matrix.mjs
+     serves this file with __BASE__ (where Core, or the proxy Worker in front of it, answers) and
+     __COOKIE__ (data-cookie="on" when the page says the visitor consented) filled in, and serves
+     the SDK from packages/client/sdk.js at /__sdk.js with data-base pointing at __BASE__. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pratibimba demo matrix</title>
+  <script src="__BASE__/manifest/matrix.js"></script>
+  <script src="/__sdk.js" data-site="matrix" data-base="__BASE__/" data-timeout="3000" __COOKIE__></script>
+</head>
+<body>
+  <nav>Candle Co. &middot; Shop &middot; About</nav>
+  <!-- swap: the variant replaces the slot's markup -->
+  <section id="hero"><h1>Hand-poured candles</h1><a href="#shop">Shop now</a></section>
+  <!-- copy: the variant writes text into marked fields (a template fills from visitor history) -->
+  <section id="headline"><h2 data-prb-field="headline">Candles for every evening</h2><a data-prb-field="cta" href="#shop">Browse</a></section>
+  <!-- copy with an image field: an uploaded asset arrives with a srcset -->
+  <section id="banner"><img data-prb-field="image" src="/img/own.svg" alt="Our shop" width="640" height="200"></section>
+  <!-- sorted: the children are reordered, never rewritten -->
+  <ul id="grid">
+    <li data-prb-item="amber">Amber</li>
+    <li data-prb-item="birch">Birch</li>
+    <li data-prb-item="cedar">Cedar</li>
+    <li data-prb-item="dune">Dune</li>
+  </ul>
+</body>
+</html>

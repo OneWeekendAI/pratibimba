@@ -1,0 +1,52 @@
+{
+  "site": "matrix",
+  "origin": "http://127.0.0.1:18188",
+  "holdout_fraction": 0,
+  "privacy_mode": "consent_aware",
+  "slots": [
+    {
+      "key": "hero",
+      "selector": "#hero",
+      "metric": "click",
+      "decision_ttl_secs": 600,
+      "variants": [
+        { "key": "baseline", "baseline": true },
+        { "key": "welcome", "html": "<h1>New here? Ten percent off your first candle</h1><a href=\"#shop\">Claim it</a>" },
+        { "key": "gift", "html": "<h1>Welcome back: gift sets, wrapped and ready</h1><a href=\"#shop\">Shop gifts</a>" }
+      ]
+    },
+    {
+      "key": "headline",
+      "selector": "#headline",
+      "kind": "copy",
+      "metric": "click",
+      "decision_ttl_secs": 600,
+      "copy": { "fields": [ { "name": "headline", "max": 40, "required": true }, { "name": "cta", "max": 12 } ] },
+      "variants": [
+        { "key": "own", "baseline": true },
+        { "key": "plain", "copy": { "headline": "Fresh roasts every week", "cta": "Shop" } },
+        { "key": "loyal", "requires": ["visitor.purchase_count"], "copy": { "headline": "You have placed {visitor.purchase_count} orders", "cta": "Reorder" } }
+      ]
+    },
+    {
+      "key": "banner",
+      "selector": "#banner",
+      "kind": "copy",
+      "metric": "click",
+      "decision_ttl_secs": 600,
+      "copy": { "fields": [ { "name": "image", "type": "image", "required": true, "max": 120 } ] },
+      "variants": [
+        { "key": "own", "baseline": true },
+        { "key": "promo", "copy": { "image": { "asset": "__ASSET__", "alt": "Autumn candles, uploaded", "width": 640, "height": 200 } } }
+      ]
+    },
+    {
+      "key": "grid",
+      "selector": "#grid",
+      "kind": "sorted",
+      "metric": "click",
+      "decision_ttl_secs": 600,
+      "variants": [ { "key": "amber" }, { "key": "birch" }, { "key": "cedar" }, { "key": "dune" } ]
+    }
+  ]
+}
