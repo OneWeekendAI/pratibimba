@@ -34,3 +34,14 @@ test('a traffic share compares against the f32 Core stores', () => {
   assert.equal(withinShare(2, s, Math.fround(0.3)), true);
   assert.deepEqual(run(snap({ share: 0.3 }), s).record.pool, [1, 2]);
 });
+
+// A `full` site is identified without the consent flag, but the visitor's clock is used (and so
+// stored in the record's context) only when the request carries consent: true.
+test('identified_without_consent_flag_stores_no_tz', () => {
+  const s = snap();
+  const go = (ctx) => decide(s, { site: 'shop', slot: 'hero', subject: 'v', ctx }, { seed: 1n, at: Date.parse('2026-10-13T12:00:00Z'), sticky: null, picks: [], id: 'x' }).response.explanation.features;
+  assert.equal('sin_hour' in go({ tz_offset: 330 }), false);
+  assert.equal('sin_hour' in go({ tz_offset: 330, consent: false }), false);
+  assert.equal('sin_hour' in go({ tz: 'Asia/Kolkata' }), false);
+  assert.equal('sin_hour' in go({ tz_offset: 330, consent: true }), true);
+});

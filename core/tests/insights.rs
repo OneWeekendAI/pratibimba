@@ -184,7 +184,7 @@ async fn creating_a_demographic_segment_is_refused(pool: PgPool) {
 async fn events_keep_the_reported_offset(pool: PgPool) {
     setup_demo(&pool).await;
     let app = app(&pool);
-    let ev = |tz: Value| json!({ "site": "demo", "subject": "s1", "tz_offset": tz, "events": [{ "id": uuid::Uuid::new_v4(), "name": "click" }] });
+    let ev = |tz: Value| json!({ "site": "demo", "subject": "s1", "tz_offset": tz, "consent": true, "events": [{ "id": uuid::Uuid::new_v4(), "name": "click" }] });
     assert_eq!(post(&app, "/e", ev(json!(330))).await.status, StatusCode::ACCEPTED);
     assert_eq!(post(&app, "/e", ev(Value::Null)).await.status, StatusCode::ACCEPTED);
     assert_eq!(post(&app, "/e", ev(json!(900))).await.status, StatusCode::BAD_REQUEST);

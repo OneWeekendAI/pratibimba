@@ -410,3 +410,22 @@ async fn a_batch_without_consent_stores_no_tz_offset(pool: PgPool) {
     let tz: Option<i16> = sqlx::query_scalar("SELECT tz_offset_min FROM events").fetch_one(&pool).await.unwrap();
     assert_eq!(tz, None);
 }
+
+/// A `full` site is identified without the consent flag, but the clock is kept only with it.
+#[sqlx::test(migrations = false)]
+async fn identified_without_consent_flag_stores_no_tz(pool: PgPool) {
+    setup(&pool, "full").await;
+    let app = edge_app(&pool);
+    let d = json!(Uuid::new_v4());
+    let mut item = events_item("v", vec![ev_for("click", &d)], now());
+    item["request"]["tz_offset"] = json!(330);
+    assert_eq!(ids(&batch(&app, vec![item]).await, "accepted").len(), 1);
+    let tz: Option<i16> = sqlx::query_scalar("SELECT tz_offset_min FROM events").fetch_one(&pool).await.unwrap();
+    assert_eq!(tz, None);
+    let mut item = events_item("w", vec![ev_for("click", &d)], now());
+    item["request"]["tz_offset"] = json!(330);
+    item["request"]["consent"] = json!(true);
+    assert_eq!(ids(&batch(&app, vec![item]).await, "accepted").len(), 1);
+    let n = count(&pool, "SELECT count(*) FROM events WHERE tz_offset_min = 330").await;
+    assert_eq!(n, 1);
+}

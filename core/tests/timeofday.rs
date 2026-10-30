@@ -29,6 +29,7 @@ async fn decide_at(app: &axum::Router, subject: &str, tz: Option<i64>) -> Resp {
     let mut ctx = json!({});
     if let Some(t) = tz {
         ctx["tz_offset"] = json!(t);
+        ctx["consent"] = json!(true);
     }
     post(app, "/decide", json!({ "site": "demo", "slot": "hero", "subject": subject, "ctx": ctx })).await
 }

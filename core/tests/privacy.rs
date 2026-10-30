@@ -316,7 +316,7 @@ async fn decide_drops_an_uncollected_tz_name(pool: PgPool) {
 async fn decide_keeps_a_collected_tz_name(pool: PgPool) {
     setup(&pool, "full").await;
     set_fields(&pool, &["tz_offset"]).await;
-    let d = decided(&app(&pool), "alice", json!({ "tz": "Asia/Kolkata" })).await;
+    let d = decided(&app(&pool), "alice", json!({ "tz": "Asia/Kolkata", "consent": true })).await;
     assert!(d["explanation"]["features"].get("sin_hour").is_some(), "{}", d["explanation"]);
 }
 
@@ -324,7 +324,7 @@ async fn decide_keeps_a_collected_tz_name(pool: PgPool) {
 async fn decide_keeps_a_collected_tz_offset(pool: PgPool) {
     setup(&pool, "full").await;
     set_fields(&pool, &["tz_offset"]).await;
-    let d = decided(&app(&pool), "alice", json!({ "tz_offset": 330 })).await;
+    let d = decided(&app(&pool), "alice", json!({ "tz_offset": 330, "consent": true })).await;
     assert!(d["explanation"]["features"].get("sin_hour").is_some(), "{}", d["explanation"]);
 }
 
@@ -347,7 +347,7 @@ async fn events_drop_an_uncollected_tz_offset(pool: PgPool) {
 async fn events_keep_a_collected_tz_offset(pool: PgPool) {
     setup(&pool, "full").await;
     set_fields(&pool, &["tz_offset"]).await;
-    events(&app(&pool), "alice", json!({ "tz_offset": 330, "events": [ev("view", None)] })).await;
+    events(&app(&pool), "alice", json!({ "tz_offset": 330, "consent": true, "events": [ev("view", None)] })).await;
     assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE tz_offset_min = 330").await, 1);
 }
 
@@ -1104,6 +1104,21 @@ async fn decide_without_consent_ignores_tz(pool: PgPool) {
     set_mode(&pool, "consent_aware").await;
     let d = decided(&app(&pool), "alice", json!({ "tz_offset": 330, "consent": false })).await;
     assert!(d["explanation"]["features"].get("sin_hour").is_none(), "{}", d["explanation"]);
+    let d = decided(&app(&pool), "bob", json!({ "tz_offset": 330, "consent": true })).await;
+    assert!(d["explanation"]["features"].get("sin_hour").is_some(), "{}", d["explanation"]);
+}
+
+/// Identified is not enough: the clock is kept only when the request carries the explicit
+/// consent flag. A `full` site, which is identified without it, stores and uses no tz.
+#[sqlx::test(migrations = false)]
+async fn identified_without_consent_flag_stores_no_tz(pool: PgPool) {
+    setup(&pool, "full").await;
+    let d = decided(&app(&pool), "alice", json!({ "tz_offset": 330 })).await;
+    assert!(d["explanation"]["features"].get("sin_hour").is_none(), "{}", d["explanation"]);
+    events(&app(&pool), "alice", json!({ "tz_offset": 330, "events": [ev("view", None)] })).await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE tz_offset_min IS NULL").await, 1);
+    events(&app(&pool), "bob", json!({ "tz_offset": 330, "consent": true, "events": [ev("view", None)] })).await;
+    assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE tz_offset_min = 330").await, 1);
     let d = decided(&app(&pool), "bob", json!({ "tz_offset": 330, "consent": true })).await;
     assert!(d["explanation"]["features"].get("sin_hour").is_some(), "{}", d["explanation"]);
 }

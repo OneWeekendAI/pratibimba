@@ -117,7 +117,7 @@ async fn a_time_audience_needs_a_known_clock(pool: PgPool) {
     let app = app(&pool);
     let d = shown(&app, "unknown", json!({})).await;
     assert_eq!(d["explanation"]["audiences"][0]["matched"], json!(false), "{d}");
-    let d = shown(&app, "known", json!({ "tz_offset": 330 })).await;
+    let d = shown(&app, "known", json!({ "tz_offset": 330, "consent": true })).await;
     assert_eq!(d["explanation"]["audiences"][0]["matched"], json!(true), "{d}");
 }
 

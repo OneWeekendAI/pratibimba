@@ -44,7 +44,7 @@ fn angle(hour: f64) -> f64 {
 #[sqlx::test(migrations = false)]
 async fn a_named_zone_puts_the_local_clock_in_the_features(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-07T20:00:00Z").await;
-    let r = decide_ctx(&app, "owl", json!({ "tz": "Asia/Kolkata" })).await;
+    let r = decide_ctx(&app, "owl", json!({ "tz": "Asia/Kolkata", "consent": true })).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     let e = &r.json()["explanation"];
     let f = &e["features"];
@@ -58,7 +58,7 @@ async fn a_named_zone_puts_the_local_clock_in_the_features(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_named_day_zone_is_not_night(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-07T20:00:00Z").await;
-    let f = features(&app, "lunch", json!({ "tz": "America/New_York" })).await;
+    let f = features(&app, "lunch", json!({ "tz": "America/New_York", "consent": true })).await;
     assert_eq!(f["is_night_local"], json!(0.0), "{f}");
     assert!((f["sin_hour"].as_f64().unwrap() - angle(16.0).sin()).abs() < 1e-9, "{f}");
 }
@@ -67,7 +67,7 @@ async fn a_named_day_zone_is_not_night(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_zone_is_resolved_with_daylight_saving_in_summer(pool: PgPool) {
     let app = at_clock(&pool, "2026-07-15T21:30:00Z").await;
-    let f = features(&app, "summer", json!({ "tz": "Europe/London" })).await;
+    let f = features(&app, "summer", json!({ "tz": "Europe/London", "consent": true })).await;
     assert_eq!(f["is_night_local"], json!(1.0), "{f}");
 }
 
@@ -76,7 +76,7 @@ async fn a_zone_is_resolved_with_daylight_saving_in_summer(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_zone_is_resolved_at_the_sites_clock_in_winter(pool: PgPool) {
     let app = at_clock(&pool, "2026-01-15T21:30:00Z").await;
-    let f = features(&app, "winter", json!({ "tz": "Europe/London" })).await;
+    let f = features(&app, "winter", json!({ "tz": "Europe/London", "consent": true })).await;
     assert_eq!(f["is_night_local"], json!(0.0), "{f}");
 }
 
@@ -85,14 +85,14 @@ async fn a_zone_is_resolved_at_the_sites_clock_in_winter(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_named_zone_wins_over_an_offset(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-07T20:00:00Z").await;
-    let f = features(&app, "both", json!({ "tz": "Asia/Kolkata", "tz_offset": -240 })).await;
+    let f = features(&app, "both", json!({ "tz": "Asia/Kolkata", "tz_offset": -240, "consent": true })).await;
     assert_eq!(f["is_night_local"], json!(1.0), "{f}");
 }
 
 #[sqlx::test(migrations = false)]
 async fn an_unknown_zone_is_refused(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-07T20:00:00Z").await;
-    let r = decide_ctx(&app, "mars", json!({ "tz": "Mars/Olympus_Mons" })).await;
+    let r = decide_ctx(&app, "mars", json!({ "tz": "Mars/Olympus_Mons", "consent": true })).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
 }
 
@@ -106,7 +106,7 @@ async fn a_named_zone_counts_as_a_known_clock_for_an_audience(pool: PgPool) {
     let aud = r.json()["id"].as_i64().unwrap();
     api_post(&admin, &format!("/api/segments/{aud}/promote"), json!({ "actor": "owner" })).await;
     api_post(&admin, &format!("/api/variants/{}/audience", variant_id(&pool, "gift").await), json!({ "audience": aud, "actor": "owner" })).await;
-    let r = decide_ctx(&app, "zoned", json!({ "tz": "Asia/Kolkata" })).await.json();
+    let r = decide_ctx(&app, "zoned", json!({ "tz": "Asia/Kolkata", "consent": true })).await.json();
     assert_eq!(r["explanation"]["audiences"][0]["matched"], json!(true), "{r}");
 }
 
@@ -116,7 +116,7 @@ async fn a_named_zone_counts_as_a_known_clock_for_an_audience(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_local_saturday_is_weekend_even_when_utc_is_friday(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-09T20:00:00Z").await;
-    let f = features(&app, "sat", json!({ "tz": "Asia/Kolkata" })).await;
+    let f = features(&app, "sat", json!({ "tz": "Asia/Kolkata", "consent": true })).await;
     assert_eq!(f["is_weekend_local"], json!(1.0), "{f}");
 }
 
@@ -124,7 +124,7 @@ async fn a_local_saturday_is_weekend_even_when_utc_is_friday(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_weekday_afternoon_is_business_hours(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-07T08:00:00Z").await;
-    let f = features(&app, "desk", json!({ "tz": "Asia/Kolkata" })).await;
+    let f = features(&app, "desk", json!({ "tz": "Asia/Kolkata", "consent": true })).await;
     assert_eq!(f["is_business_hours_local"], json!(1.0), "{f}");
     assert_eq!(f["is_weekend_local"], json!(0.0), "{f}");
 }
@@ -133,7 +133,7 @@ async fn a_weekday_afternoon_is_business_hours(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_weekday_evening_is_not_business_hours(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-07T13:00:00Z").await;
-    let f = features(&app, "home", json!({ "tz": "Asia/Kolkata" })).await;
+    let f = features(&app, "home", json!({ "tz": "Asia/Kolkata", "consent": true })).await;
     assert_eq!(f["is_business_hours_local"], json!(0.0), "{f}");
 }
 
@@ -141,7 +141,7 @@ async fn a_weekday_evening_is_not_business_hours(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn an_offset_carries_weekend_and_business_hours_too(pool: PgPool) {
     let app = at_clock(&pool, "2026-10-10T10:00:00Z").await;
-    let f = features(&app, "sat-utc", json!({ "tz_offset": 0 })).await;
+    let f = features(&app, "sat-utc", json!({ "tz_offset": 0, "consent": true })).await;
     assert_eq!(f["is_weekend_local"], json!(1.0), "{f}");
     assert_eq!(f["is_business_hours_local"], json!(0.0), "{f}");
 }
