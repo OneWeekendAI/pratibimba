@@ -9,8 +9,10 @@ import { scan, formatText, writeDrafts } from '../src/scan.mjs';
 
 const USAGE = `usage: npx @pratibimba/agent install [options]
 
-Drops the Pratibimba instruction pack into a repo: a Claude Code skill and .mcp.json, a
-Cursor rule and .cursor/mcp.json, and generic instructions plus an MCP snippet in .pratibimba/.
+Drops the Pratibimba instruction pack into a repo: two Claude Code skills (pratibimba, for
+working with slots, and pratibimba-integrate, for adding Pratibimba to an existing site) and
+.mcp.json, the matching Cursor rules and .cursor/mcp.json, and generic instructions plus an
+MCP snippet in .pratibimba/.
 Safe to re-run: it never overwrites a file you edited and only ever touches the
 "pratibimba" entry of an MCP config.
 

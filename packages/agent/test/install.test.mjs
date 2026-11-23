@@ -11,7 +11,9 @@ import { install, mcpUrl } from '../src/install.mjs';
 const run = promisify(execFile);
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.mjs');
 const URL_ = 'https://core.example.com/mcp';
-const PACK = ['.claude/skills/pratibimba/SKILL.md', '.cursor/rules/pratibimba.mdc', '.pratibimba/agent-instructions.md'];
+const GUIDE = ['.claude/skills/pratibimba/SKILL.md', '.cursor/rules/pratibimba.mdc', '.pratibimba/agent-instructions.md'];
+const INTEGRATE = ['.claude/skills/pratibimba-integrate/SKILL.md', '.cursor/rules/pratibimba-integrate.mdc', '.pratibimba/integrate-instructions.md'];
+const PACK = [...GUIDE, ...INTEGRATE];
 const CONFIGS = ['.mcp.json', '.cursor/mcp.json', '.pratibimba/mcp.json'];
 const ALL = [...PACK, ...CONFIGS];
 
@@ -26,7 +28,7 @@ async function seed(dir, p, text) {
 }
 const actions = (report) => Object.fromEntries(report.map((r) => [r.path, r.action]));
 
-// ---- a fresh install writes all six files ----
+// ---- a fresh install writes all nine files ----
 
 for (const p of ALL) {
   test(`fresh install creates ${p}`, async () => {
@@ -203,7 +205,7 @@ const RULES = {
   'create_slot takes copy fields and sorted items': /`create_slot` makes a draft slot\.[\s\S]*`copy` \(give `copy:[\s\S]*`sorted` \(give `items`/,
   'a de-anonymiser only when asked by name': /`deanonymiser`[\s\S]*Do not request one\s+unless the user asked for that plugin by name/,
 };
-for (const p of PACK) {
+for (const p of GUIDE) {
   for (const [name, re] of Object.entries(RULES)) {
     test(`${p} teaches: ${name}`, async () => {
       const dir = await repo();
@@ -216,6 +218,39 @@ for (const p of PACK) {
 test('the Claude Code skill and the Cursor rule carry the front matter their tools need', async () => {
   const dir = await repo();
   await install({ dir, url: URL_ });
-  assert.match(await read(dir, PACK[0]), /^---\nname: pratibimba\ndescription: Use when .+\n---\n/);
-  assert.match(await read(dir, PACK[1]), /^---\ndescription: .+\nglobs:\nalwaysApply: false\n---\n/);
+  assert.match(await read(dir, GUIDE[0]), /^---\nname: pratibimba\ndescription: Use when .+\n---\n/);
+  assert.match(await read(dir, GUIDE[1]), /^---\ndescription: .+\nglobs:\nalwaysApply: false\n---\n/);
 });
+
+test('the integrate skill and its Cursor rule carry their front matter and trigger phrases', async () => {
+  const dir = await repo();
+  await install({ dir, url: URL_ });
+  const skill = await read(dir, INTEGRATE[0]);
+  assert.match(skill, /^---\nname: pratibimba-integrate\ndescription: Use when .+\n---\n/);
+  for (const t of ['add Pratibimba', 'personalise my site', 'install pratibimba']) assert.ok(skill.split('\n---\n')[0].includes(t), t);
+  assert.match(await read(dir, INTEGRATE[1]), /^---\ndescription: .+\nglobs:\nalwaysApply: false\n---\n/);
+});
+
+// ---- the integrate prose: the rules an install into someone else's site must keep ----
+
+const INTEGRATE_RULES = {
+  'the worker must run': /\*\*The worker must run\*\*/,
+  'only baselines in the site file, and re-apply retires': /\*\*Put only baselines in the file\.\*\*[\s\S]*\*\*retires\s+every approved variant of a listed slot that the file no longer names\*\*/,
+  'features are set before the tags': /`window\.__prb_features`[\s\S]*\*\*before\*\* the tags/,
+  'consent order as the SDK reads it': /`data-cookie="on"`[\s\S]*IAB TCF v2 purpose 1[\s\S]*Google Consent\s+Mode `analytics_storage`[\s\S]*`C0002`/,
+  'never let the framework re-render over a slot': /\*\*Never let the framework re-render over a slot\.\*\*/,
+  'exact SDK calls for outcomes': /window\.prb\.track\('signup'\)[\s\S]*window\.prb\.addToCart\(\{ id: 'sku-1', price: 220, quantity: 1 \}\)[\s\S]*window\.prb\.purchase\(\{ order_id, value, currency, items \}\)/,
+  'never approve': /\*\*There is no approve tool\. Never\s+approve, and never say a draft is live\.\*\*/,
+  'custom features are not audience keys': /\*\*Custom `features` are not audience keys\*\*/,
+  'no demographics': /Demographic keys[\s\S]*are refused/,
+  'real traffic only': /## 8\. Verify with real traffic only[\s\S]*Never send synthetic visits or events to the real site/,
+};
+for (const p of INTEGRATE) {
+  for (const [name, re] of Object.entries(INTEGRATE_RULES)) {
+    test(`${p} teaches: ${name}`, async () => {
+      const dir = await repo();
+      await install({ dir, url: URL_ });
+      assert.match(await read(dir, p), re);
+    });
+  }
+}

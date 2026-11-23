@@ -1,0 +1,303 @@
+/* hero slice styles — owned by the hero page agent.
+   "Knock the shelf": a teak pantry shelf on a warm plaster wall at golden hour. */
+
+.hs {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--paper);
+  padding: clamp(36px, 6vw, 72px) 0 clamp(20px, 3vw, 36px);
+}
+/* low sun from the left: one warm wash on the plaster, nothing else */
+.hs-wall {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(120% 90% at -10% 10%, rgba(241, 199, 106, .28), rgba(241, 199, 106, 0) 55%),
+    linear-gradient(180deg, var(--paper) 0%, var(--paper-tint) 100%);
+}
+/* same 1180px column as the header's .wrap, so the headline lines up under the brand */
+.hs-inner {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "copy" "shelf" "aside";
+}
+.hs-copy { grid-area: copy; }
+.hs-shelf { grid-area: shelf; }
+.hs-aside { grid-area: aside; }
+@media (max-width: 640px) { .hs-inner { padding: 0 16px; } }
+
+/* ---- copy ---- */
+.hs-copy { max-width: 40rem; }
+.hs-eyebrow {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 0 var(--s-4);
+  font-family: var(--ui); font-weight: 600;
+  font-size: .72rem; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--leaf);
+}
+.hs-eyebrow::before {
+  content: ''; width: 28px; height: 1.5px; background: currentColor; opacity: .7;
+}
+.hs-title {
+  margin: 0;
+  font-family: var(--display);
+  font-variation-settings: 'opsz' 144;
+  font-weight: 620;
+  font-size: clamp(2.65rem, 7.4vw, 5.6rem);
+  line-height: .95;
+  letter-spacing: -.028em;
+  color: var(--ink);
+  text-wrap: balance;
+}
+.hs-line { display: block; }
+.hs-title em {
+  font-style: italic;
+  font-weight: 520;
+  color: var(--chili);
+  letter-spacing: -.035em;
+  padding-right: .04em; /* italic overhang */
+}
+.hs-tagline {
+  margin: var(--s-5) 0 0;
+  max-width: 30ch;
+  font-family: var(--display);
+  font-variation-settings: 'opsz' 24;
+  font-weight: 400;
+  font-size: clamp(1.06rem, 1.5vw, 1.28rem);
+  line-height: 1.45;
+  color: var(--ink-soft);
+  text-wrap: pretty;
+}
+.hs-cta {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-top: var(--s-6);
+  padding: 15px 26px 15px 28px;
+  border-radius: var(--r-pill);
+  background: var(--ink); color: var(--paper);
+  font-family: var(--ui); font-weight: 700; font-size: .95rem; letter-spacing: .01em;
+  text-decoration: none;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 10px 22px -12px rgba(34, 24, 14, .7);
+  transition: transform var(--dur-quick) var(--ease-out-soft), background var(--dur-quick);
+}
+.hs-cta:hover { background: #000; }
+.hs-cta:active { transform: scale(.97); }
+.hs-cta-arrow { display: inline-block; transition: transform var(--dur-base) var(--ease-out-soft); }
+.hs-cta:hover .hs-cta-arrow { transform: translateX(3px); }
+.hs-cta:focus-visible { outline: 3px solid var(--mustard); outline-offset: 3px; }
+
+/* ---- the one annotation ---- */
+.hs-note {
+  margin: 0;
+  display: flex; align-items: flex-start; gap: 2px;
+  font-family: var(--hand); font-weight: 600;
+  font-size: 1.55rem; line-height: 1;
+  color: var(--chili);
+  transform: rotate(-4deg);
+  pointer-events: none;
+}
+.hs-note-arrow {
+  margin-top: 10px; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* ---- shelf ---- */
+.hs-shelf { margin-top: clamp(24px, 4vw, 40px); min-width: 0; }
+.hs-stage {
+  position: relative;
+  height: 190px; /* replaced by the measured layout before first paint */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.hs-plank {
+  position: absolute; left: 0; right: 0;
+  border-radius: 2px 2px 3px 3px;
+  background:
+    linear-gradient(180deg, var(--teak-light) 0 5px, rgba(0, 0, 0, 0) 5px),
+    repeating-linear-gradient(179.3deg, rgba(0, 0, 0, 0) 0 6px, rgba(60, 30, 10, .16) 6px 7px, rgba(0, 0, 0, 0) 7px 11px),
+    repeating-linear-gradient(180.5deg, rgba(0, 0, 0, 0) 0 3px, rgba(255, 220, 170, .08) 3px 4px, rgba(0, 0, 0, 0) 4px 9px),
+    linear-gradient(180deg, var(--teak) 0%, var(--teak-grain) 60%, var(--teak-deep) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 228, 180, .45),
+    inset 0 5px 0 -4px rgba(60, 30, 10, .35),
+    0 14px 18px -10px rgba(60, 35, 10, .45),
+    0 30px 40px -24px rgba(60, 35, 10, .35);
+}
+.hs-plank-label {
+  position: absolute; bottom: 3px; left: 18px;
+  font-family: var(--ui); font-weight: 600;
+  font-size: .58rem; letter-spacing: .22em; text-transform: uppercase;
+  color: rgba(255, 236, 205, .55);
+  pointer-events: none;
+}
+.hs-shadow {
+  position: absolute; left: 0; height: 12px;
+  margin-left: 6px; /* sun from the left: shadows fall a touch right */
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(50, 26, 6, .42), rgba(50, 26, 6, 0));
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
+.hs-jar {
+  position: absolute; left: 0; top: 0;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+.hs-jar-btn {
+  all: unset;
+  display: block; width: 100%; height: 100%;
+  cursor: pointer;
+  border-radius: 14% / 11%;
+  -webkit-tap-highlight-color: transparent;
+}
+.hs-jar-btn img {
+  display: block; width: 100%; height: 100%;
+  pointer-events: none;
+  filter: drop-shadow(5px 4px 5px rgba(60, 35, 10, .18));
+}
+.hs-jar-btn:focus-visible {
+  outline: 2.5px solid var(--mustard-deep);
+  outline-offset: 3px;
+}
+
+/* price tag tied at the neck; swings in world space (rotation set by physics) */
+.hs-tag {
+  position: absolute;
+  left: 74%; top: 23%;
+  width: 0; height: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .3s;
+}
+.hs-jar.is-in .hs-tag { opacity: 1; }
+.hs-tag::before { /* the string */
+  content: ''; position: absolute; left: -.5px; top: 0;
+  width: 1px; height: calc(var(--tag-w) * .32);
+  background: var(--twine-dark);
+}
+.hs-tag-paper {
+  position: absolute;
+  left: calc(var(--tag-w) * -.5);
+  top: calc(var(--tag-w) * .3);
+  width: var(--tag-w);
+  height: calc(var(--tag-w) * .62);
+  display: grid; place-items: center;
+  padding-top: calc(var(--tag-w) * .08);
+  background: linear-gradient(180deg, var(--kraft-light), var(--kraft));
+  clip-path: polygon(16% 0, 84% 0, 100% 24%, 100% 100%, 0 100%, 0 24%);
+  font-family: var(--ui); font-weight: 700;
+  font-size: calc(var(--tag-w) * .27);
+  letter-spacing: .01em;
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 rgba(90, 60, 25, .25);
+  filter: drop-shadow(1px 2px 1.5px rgba(60, 35, 10, .3));
+}
+.hs-tag-paper::before { /* punched hole */
+  content: ''; position: absolute; left: 50%; top: 9%;
+  width: 3px; height: 3px; margin-left: -1.5px;
+  border-radius: 50%; background: var(--twine-dark);
+}
+
+/* the picked jar: a chili tick on the plank edge under its slot */
+.hs-plank-pick {
+  position: absolute; left: -4px; top: 50%; margin-top: 0;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--chili);
+  box-shadow: 0 0 0 2px rgba(255, 236, 205, .35);
+  transition: transform .45s var(--ease-spring);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hs-plank-pick { transition: none; }
+}
+
+/* glint where glass meets glass */
+.hs-glints { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+.hs-glint {
+  position: absolute; left: 0; top: 0; width: 28px; height: 28px;
+  opacity: 0;
+}
+.hs-glint svg { display: block; overflow: visible; }
+.hs-glint path {
+  fill: none; stroke: var(--mustard-deep); stroke-width: 2; stroke-linecap: round;
+}
+
+/* the label reader: the knocked jar's facts, and the deliberate way in */
+.hs-aside { margin-top: var(--s-3); }
+.hs-label {
+  display: grid; gap: 6px; justify-items: start;
+  animation: hs-label-in .5s cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes hs-label-in { from { opacity: 0; transform: translateY(10px); } }
+.hs-cap-kind {
+  font-family: var(--ui); font-weight: 600; font-size: .7rem;
+  letter-spacing: .2em; text-transform: uppercase; color: var(--leaf);
+}
+.hs-cap-name {
+  font-family: var(--display); font-variation-settings: 'opsz' 96;
+  font-weight: 600; font-size: clamp(1.6rem, 3vw, 2.3rem); line-height: 1;
+  letter-spacing: -.02em; color: var(--ink);
+}
+.hs-cap-blurb {
+  font-family: var(--display); font-variation-settings: 'opsz' 18;
+  font-size: .98rem; line-height: 1.45; color: var(--ink-soft); max-width: 34ch;
+}
+.hs-cap-row { display: flex; align-items: baseline; gap: 18px; margin-top: 4px; }
+.hs-cap-price {
+  font-family: var(--ui); font-weight: 700; font-size: 1.05rem; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.hs-cap-link {
+  font-family: var(--ui); font-weight: 700; font-size: .92rem; color: var(--chili);
+  text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 4px;
+  padding: 8px 0;
+}
+.hs-cap-link:focus-visible { outline: 2.5px solid var(--mustard-deep); outline-offset: 3px; border-radius: 4px; }
+.hs-sr {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* wide: headline and label reader on the left, the pantry on the right running off the wall */
+@media (min-width: 900px) {
+  .hs { padding: clamp(28px, 4vw, 52px) 0 clamp(24px, 3vw, 40px); }
+  .hs-inner {
+    grid-template-columns: minmax(0, 25rem) minmax(0, 1fr);
+    grid-template-rows: 1fr auto auto 1fr;
+    grid-template-areas: ". shelf" "copy shelf" "aside shelf" ". shelf";
+    column-gap: clamp(24px, 3vw, 48px);
+  }
+  .hs-title { font-size: clamp(3.2rem, 5.2vw, 4.4rem); }
+  .hs-tagline { font-size: 1.12rem; margin-top: var(--s-4); }
+  .hs-cta { margin-top: var(--s-5); }
+  .hs-shelf {
+    margin: 0;
+    /* bleed to the viewport's right edge; .hs clips the scrollbar overlap */
+    margin-right: calc(min(0px, (1180px - 100vw) / 2) - 24px);
+  }
+  .hs-aside { margin-top: var(--s-5); }
+  .hs-caption { min-height: 150px; }
+  .hs-note { transform: rotate(-3deg); transform-origin: 0 50%; }
+  .hs-note-arrow--up { display: none; }
+  .hs-note-arrow--side { margin: 6px 0 0 6px; }
+}
+@media (max-width: 899px) {
+  .hs-caption { min-height: 0; }
+  .hs-note-arrow--side { display: none; }
+  .hs-note { flex-direction: row-reverse; justify-content: flex-end; gap: 6px; transform: rotate(-2deg); font-size: 1.35rem; padding-top: 4px; }
+  .hs-note-arrow { transform: scale(-1, -1); margin-top: -18px; }
+}
+@media (max-width: 420px) {
+  .hs-title { font-size: clamp(2.4rem, 12vw, 3.2rem); }
+  .hs-note { font-size: 1.25rem; }
+  .hs-note-arrow { width: 60px; height: 48px; }
+  .hs-plank-label { font-size: .5rem; bottom: 1px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hs-cta, .hs-cta-arrow { transition: none; }
+  .hs-label { animation: none; }
+}

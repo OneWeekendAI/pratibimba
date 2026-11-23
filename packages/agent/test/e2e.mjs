@@ -44,8 +44,9 @@ step(`copied examples/next to ${app}`);
 const out = execFileSync('node', [CLI, 'install', '--url', `http://127.0.0.1:${port}`], { cwd: app, encoding: 'utf8' });
 assert.match(out, /created\s+\.mcp\.json/);
 assert.match(out, /created\s+\.claude\/skills\/pratibimba\/SKILL\.md/);
+assert.match(out, /created\s+\.claude\/skills\/pratibimba-integrate\/SKILL\.md/);
 const again = execFileSync('node', [CLI, 'install', '--url', `http://127.0.0.1:${port}`], { cwd: app, encoding: 'utf8' });
-assert.equal(again.match(/^unchanged /gm)?.length, 6, again);
+assert.equal(again.match(/^unchanged /gm)?.length, 9, again);
 step('installed the pack, and a second install changed nothing');
 
 // The slot the pack tells the agent to search for is there to be found.

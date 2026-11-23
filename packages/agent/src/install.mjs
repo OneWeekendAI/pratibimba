@@ -1,7 +1,7 @@
 // The instruction pack: files that teach a coding agent to read Pratibimba and submit drafts.
 //
 // Two kinds of file, two rules:
-// - Pack files (the skill, the Cursor rule, the generic instructions) are ours. Absent: write.
+// - Pack files (the two skills, their Cursor rules, the generic instructions) are ours. Absent: write.
 //   Identical: leave. Different: the developer edited it, so keep it unless `force`.
 // - MCP configs (`.mcp.json`, `.cursor/mcp.json`) are shared with other servers. We only ever
 //   touch `mcpServers.pratibimba`; every other key stays as it was. A file we cannot parse is
@@ -91,6 +91,27 @@ export async function packFiles({ url, tokenEnv }) {
     '',
     guide,
   ].join('\n');
+  const integrate = fill(await readFile(join(here, '..', 'pack', 'integrate.md'), 'utf8'), { MCP_URL: url, TOKEN_ENV: tokenEnv });
+  const integrateSkill = [
+    '---',
+    'name: pratibimba-integrate',
+    'description: Use when the user wants to add Pratibimba to an existing site ("add Pratibimba", "personalise my site", "install pratibimba"): running Core, writing site.json, adding the script tag with consent, marking slots without breaking the framework, wiring click, add_to_cart and purchase events, and leaving every approval to a person.',
+    '---',
+    stamp,
+    '',
+    integrate,
+  ].join('\n');
+  const integrateRule = [
+    '---',
+    'description: Adding Pratibimba to an existing site. Apply when asked to add Pratibimba, personalise the site or install pratibimba: Core, site.json, the script tag, slots, outcome events.',
+    'globs:',
+    'alwaysApply: false',
+    '---',
+    stamp,
+    '',
+    integrate,
+  ].join('\n');
+  const integrateGeneric = [stamp, '', integrate].join('\n');
   const entries = serverEntries(url, tokenEnv);
   return [
     { path: '.claude/skills/pratibimba/SKILL.md', kind: 'pack', content: skill },
@@ -99,6 +120,9 @@ export async function packFiles({ url, tokenEnv }) {
     { path: '.cursor/mcp.json', kind: 'config', entry: entries.cursor },
     { path: '.pratibimba/agent-instructions.md', kind: 'pack', content: generic },
     { path: '.pratibimba/mcp.json', kind: 'config', entry: entries.generic },
+    { path: '.claude/skills/pratibimba-integrate/SKILL.md', kind: 'pack', content: integrateSkill },
+    { path: '.cursor/rules/pratibimba-integrate.mdc', kind: 'pack', content: integrateRule },
+    { path: '.pratibimba/integrate-instructions.md', kind: 'pack', content: integrateGeneric },
   ];
 }
 

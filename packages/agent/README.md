@@ -13,6 +13,8 @@ npx @pratibimba/agent install    # drops the pack into .claude / .cursor / .prat
 npx @pratibimba/agent install --url https://core.example.com
 ```
 
+The pack holds two skills (each also as a Cursor rule and a generic instructions file): `pratibimba`, for reading results and drafting variants, and `pratibimba-integrate`, for adding Pratibimba to an existing site (Core, `site.json`, the script tag and consent, marking slots, outcome events).
+
 Then mint a per-site MCP token in the Pratibimba dashboard. Re-running is safe: it never overwrites a file you edited. See the [main README](https://github.com/OneWeekendAI/pratibimba#readme).
 
 MIT licensed.

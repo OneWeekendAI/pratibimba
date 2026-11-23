@@ -1,0 +1,97 @@
+/* ---------- Header (v2, slice A) ----------
+   Cream paper strip with a teak shelf lip along the bottom; the cart jar
+   stands on that lip. */
+.header {
+  position: sticky; top: 0; z-index: 50;
+  background:
+    linear-gradient(180deg, rgba(250, 246, 238, .96), rgba(243, 236, 224, .96));
+  backdrop-filter: blur(8px);
+}
+.header-row {
+  display: flex; align-items: flex-end; gap: clamp(10px, 3vw, 28px);
+  height: 76px; padding-bottom: 0;
+}
+.header-shelf {
+  height: 7px;
+  background:
+    repeating-linear-gradient(92deg, transparent 0 38px, rgba(60, 30, 10, .12) 38px 39px, transparent 39px 83px),
+    linear-gradient(180deg, var(--teak-light) 0%, var(--teak) 45%, var(--teak-deep) 100%);
+  box-shadow: 0 3px 6px -2px rgba(60, 35, 10, .35);
+}
+
+/* brand */
+.brand {
+  display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink);
+  align-self: center; min-width: 0; border-radius: var(--r-sm);
+}
+.brand-mark { flex: none; transition: transform var(--dur-slow) var(--ease-spring); filter: drop-shadow(1px 2px 1px rgba(60, 35, 10, .25)); }
+.brand:hover .brand-mark { transform: rotate(-24deg); }
+.brand-name {
+  font-family: var(--display); font-weight: 700; font-size: 1.32rem; letter-spacing: -.01em;
+  line-height: 1; font-variation-settings: 'SOFT' 100, 'WONK' 1;
+}
+.brand-name small {
+  display: block; margin-top: 3px; max-width: 34ch;
+  font-family: var(--ui); font-weight: 500; font-size: .66rem; letter-spacing: .01em;
+  color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* nav */
+.nav { display: flex; align-items: center; gap: clamp(6px, 2vw, 22px); margin-left: auto; align-self: center; }
+.nav-link {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 4px; text-decoration: none; color: var(--ink-soft);
+  font-family: var(--ui); font-weight: 600; font-size: .86rem; letter-spacing: .02em;
+  border-radius: var(--r-sm);
+}
+.nav-link .ink-icon { color: var(--teak-deep); transition: transform var(--dur-base) var(--ease-spring); }
+.nav-link:hover { color: var(--ink); }
+.nav-link:hover .ink-icon { transform: translateY(-2px) rotate(-4deg); }
+/* an ink underline that draws in on hover / marks the current page */
+.nav-link::after {
+  content: ''; position: absolute; left: 4px; right: 4px; bottom: 3px; height: 6px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 6' preserveAspectRatio='none'%3E%3Cpath d='M1 4.2C14 2.4 31 1.9 59 3.1' fill='none' stroke='%23b82d18' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / 100% 100%;
+  transform: scaleX(0); transform-origin: left center;
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+.nav-link:hover::after, .nav-link[aria-current='page']::after { transform: scaleX(1); }
+.nav-link[aria-current='page'] { color: var(--ink); }
+.nav-shop .ink-icon + span { margin-top: 2px; }
+
+/* the cart jar */
+.cart-jar {
+  position: relative; display: block; flex: none;
+  width: 56px; height: 70px; margin-bottom: -1px; /* stands on the shelf lip */
+  border-radius: var(--r-sm); color: inherit;
+}
+.cart-jar-svg { display: block; width: 100%; height: 100%; overflow: visible; transition: transform var(--dur-base) var(--ease-spring); transform-origin: 50% 100%; }
+.cart-jar:hover .cart-jar-svg { transform: translateY(-2px) rotate(-3deg); }
+.cart-jar:active .cart-jar-svg { transform: translateY(0) scale(.96); }
+.cj-count { font-family: var(--display); font-weight: 800; font-size: 11.5px; fill: var(--chili); }
+.cj-sticker { animation: cj-stick .5s var(--ease-spring) both; transform-box: fill-box; transform-origin: center; }
+@keyframes cj-stick { from { transform: scale(.2) rotate(-40deg); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.brand:focus-visible, .nav-link:focus-visible, .cart-jar:focus-visible {
+  outline: 2px solid var(--leaf); outline-offset: 3px;
+}
+
+@media (min-width: 1100px) {
+  .brand-name small { max-width: none; }
+}
+@media (max-width: 720px) {
+  .brand-name small { display: none; }
+}
+@media (max-width: 420px) {
+  .header-row { height: 62px; gap: 8px; }
+  .brand { gap: 7px; }
+  .brand-mark { width: 34px; height: 34px; }
+  .brand-name { font-size: 1.15rem; }
+  .nav { gap: 2px; }
+  .nav-link { font-size: .8rem; padding: 8px 5px; gap: 4px; }
+  .nav-link .ink-icon { width: 19px; height: 19px; }
+  .cart-jar { width: 44px; height: 55px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cj-sticker { animation: none; }
+  .brand:hover .brand-mark, .cart-jar:hover .cart-jar-svg, .nav-link:hover .ink-icon { transform: none; }
+}
