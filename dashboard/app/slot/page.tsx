@@ -7,6 +7,7 @@ import { createColumnHelper, tableFeatures, useTable } from '@tanstack/react-tab
 import { Suspense, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { LiftPill } from '@/components/charts';
+import { SlotAgentPanel } from '@/components/agent';
 import { Audiences } from '@/components/audiences';
 import { FieldView } from '@/components/assets';
 import { Preview } from '@/components/preview';
@@ -274,6 +275,7 @@ function Workbench() {
           <div className="p-4">
             <Audiences site={site} slot={slot} variants={s.variants} audiences={s.audiences} />
           </div>
+          <SlotAgentPanel site={site} slot={slot} champion={s.champion} selector={s.selector} lift={s.lift ? `lift ${pp(s.lift.estimate)} (${int(s.treated.n)} treated, ${int(s.holdout.n)} holdout decisions)` : 'no clear lift yet'} />
         </Card>
       </aside>
     </div>

@@ -254,3 +254,15 @@ for (const p of INTEGRATE) {
     });
   }
 }
+
+test('the guide tells the agent to report the pack version its stamp carries, and the Core knows that version', async () => {
+  const dir = await repo();
+  await install({ dir, url: URL_ });
+  const { version } = JSON.parse(await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+  for (const p of GUIDE) {
+    const t = await read(dir, p);
+    assert.ok(t.includes(`pratibimba-pack ${version}.`), p);
+    assert.ok(t.includes(`pack: "${version}"`), `${p} names the version to report`);
+    assert.ok(!t.includes('{{PACK_VERSION}}'), `${p} has no unfilled placeholder`);
+  }
+});

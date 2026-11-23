@@ -1289,3 +1289,39 @@ test('time_travel_is_reached_from_the_stage_rail', async ({ page }) => {
   await expect(page).toHaveURL(/\/app\/time-travel\/\?site=shop/);
   await expect(page.getByRole('heading', { name: 'Time travel' })).toBeVisible();
 });
+
+// The slot workbench's agent sidebar: pack status, a brief that becomes a prompt, a slot-scoped tail.
+test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', async ({ page }) => {
+  await signIn(page);
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const { token } = await (await c.post('/api/sites/shop/mcp-tokens', { data: { name: 'e2e-slot-panel' } })).json();
+  await c.dispose();
+  const current = (await api('/sites/shop/mcp-calls')).pack_version;
+  await mcpCall(token, 'list_variants', { agent: 'Claude Code', justification: 'slot panel e2e', pack: current, slot: 'hero' });
+  await mcpCall(token, 'list_variants', { agent: 'Cursor', justification: 'slot panel e2e, old pack', pack: '0.0.1', slot: 'banner' });
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  const panel = page.getByTestId('slot-agent');
+  await expect(panel.getByTestId('copy-slot-endpoint')).toHaveText(`${CORE}/mcp`);
+  await expect(panel.getByTestId('pack-Claude-Code')).toContainText('pack installed');
+  await expect(panel.getByTestId('pack-Cursor')).toContainText('pack out of date');
+  await expect(panel.getByTestId('pack-Generic-MCP')).toContainText('not installed');
+  // The tail is this slot's calls (what the API says), newest first, and not the banner one.
+  const tail = panel.getByTestId('slot-mcp-tail');
+  const scoped = (await api('/sites/shop/mcp-calls?slot=hero&limit=6')).calls;
+  const banner = (await api('/sites/shop/mcp-calls')).calls.find((x: any) => x.justification === 'slot panel e2e, old pack');
+  expect(scoped.some((x: any) => x.id === banner.id)).toBe(false);
+  await expect(tail.getByTestId('slot-mcp-call')).toHaveCount(scoped.length);
+  await expect(tail.getByTestId('slot-mcp-call').first()).toContainText('list_variants from Claude Code');
+  await expect(tail.locator(`a[href*="id=${banner.id}"]`)).toHaveCount(0);
+  // A new call on the slot arrives without a reload.
+  await mcpCall(token, 'get_results', { agent: 'Claude Code', justification: 'slot panel e2e, live', pack: current, slot: 'hero' });
+  await expect(tail.getByTestId('slot-mcp-call').first()).toContainText('get_results from Claude Code', { timeout: 10_000 });
+  // The brief becomes a prompt with the slot in it; nothing is sent.
+  await panel.getByLabel('Brief').fill('make it warmer for returning buyers');
+  const prompt = panel.getByTestId('copy-prompt');
+  await expect(prompt).toContainText('"hero"');
+  await expect(prompt).toContainText('Brief: make it warmer for returning buyers');
+  // A token is minted on request and shown once, copy-ready.
+  await panel.getByRole('button', { name: 'Mint a token for this site' }).click();
+  await expect(panel.getByTestId('copy-slot-token')).toContainText('prb_mcp_');
+});

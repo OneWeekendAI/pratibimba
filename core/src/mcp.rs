@@ -195,11 +195,17 @@ const TOOLS: [&str; 21] = [
     "list_assets",
 ];
 
+/// The version of the instruction pack (`packages/agent`) this Core ships with. An agent reports the
+/// version in its pack's stamp as `pack`; the dashboard compares it with this. A test keeps it equal
+/// to packages/agent/package.json.
+pub const PACK_VERSION: &str = "0.1.0";
+
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
     let mut p = json!({
         "agent": { "type": "string", "description": "Your name as an agent, e.g. \"Claude Code\" or \"Cursor\". Shown on the approval card." },
         "justification": { "type": "string", "description": "One line: why you are making this call. Required; recorded in the audit log." },
         "on_behalf_of": { "type": "string", "description": "The person you are working for, if known." },
+        "pack": { "type": "string", "description": "The version in the first-line stamp of your instruction pack (`pratibimba-pack 0.1.0`), if you have one. The dashboard shows whether the pack is current." },
     });
     p.as_object_mut().unwrap().extend(props.as_object().unwrap().clone());
     let mut req = vec!["agent", "justification"];
@@ -403,7 +409,7 @@ async fn tools_call(state: &AppState, caller: &Caller, id: &Value, params: &Valu
         Err(e) => return ApiError::from(e).into_response(),
     };
     let mut rest = args.clone();
-    for k in ["agent", "justification", "on_behalf_of"] {
+    for k in ["agent", "justification", "on_behalf_of", "pack"] {
         rest.remove(k);
     }
     let who = Who { agent: audit.agent.as_deref().unwrap_or(""), justification: audit.justification.as_deref().unwrap_or("") };

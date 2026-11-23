@@ -14,8 +14,12 @@ import { ago } from '@/lib/format';
 export const packCommand = (url: string) => `npx @pratibimba/agent install --url ${url}`;
 const OUTCOME: Record<McpCall['outcome'], ChipTone> = { ok: 'live', error: 'warn', refused: 'paused' };
 
-export function useMcp(site: string) {
-  return useQuery({ queryKey: ['mcp', site], queryFn: () => api.get<McpTail>(`/sites/${site}/mcp-calls?limit=25`), refetchInterval: 3000 });
+export function useMcp(site: string, slot?: string) {
+  return useQuery({
+    queryKey: ['mcp', site, slot ?? null],
+    queryFn: () => api.get<McpTail>(`/sites/${site}/mcp-calls?limit=${slot ? 6 : 25}${slot ? `&slot=${encodeURIComponent(slot)}` : ''}`),
+    refetchInterval: 3000,
+  });
 }
 
 function CopyBlock({ text, label }: { text: string; label: string }) {
@@ -165,6 +169,82 @@ export function McpTailCard({ site }: { site: string }) {
           </Link>
         ))}
       </Card>
+    </section>
+  );
+}
+
+const PACK_LABEL: Record<McpTail['packs'][number]['status'], [ChipTone, string]> = {
+  installed: ['live', 'pack installed'],
+  out_of_date: ['warn', 'pack out of date'],
+  not_installed: ['off', 'not installed'],
+};
+
+/** The prompt the developer pastes into their own agent. Built here; nothing sends it anywhere. */
+export function briefPrompt({ site, slot, champion, selector, lift, brief }: { site: string; slot: string; champion: string | null; selector: string; lift: string; brief: string }) {
+  return [
+    `Write a new variant for the Pratibimba slot "${slot}" on site "${site}", using the pratibimba MCP tools.`,
+    `Slot: ${slot} (${selector}). Current champion: ${champion ?? 'none yet'}. Results so far: ${lift}.`,
+    'Read get_site first for the brand rules and facts, and get_results for this slot. Submit a draft; do not expect to approve it.',
+    brief.trim() && `Brief: ${brief.trim()}`,
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * The slot workbench's agent sidebar: endpoint, a token, one status line per agent, a brief that
+ * becomes a prompt to copy (it is never sent to a model by us), and the calls made on this slot.
+ */
+export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site: string; slot: string; champion: string | null; selector: string; lift: string }) {
+  const qc = useQueryClient();
+  const mcp = useMcp(site, slot);
+  const [origin, setOrigin] = useState('');
+  const [token, setToken] = useState<string | null>(null);
+  const [brief, setBrief] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setOrigin(location.origin), []);
+  const mint = useMutation({
+    mutationFn: () => api.post<{ token: string }>(`/sites/${site}/mcp-tokens`, { name: `${slot}-agent` }),
+    onSuccess: (r) => {
+      setToken(r.token);
+      setError(null);
+      qc.invalidateQueries({ queryKey: ['mcp', site] });
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
+  });
+  const calls = mcp.data?.calls ?? [];
+  return (
+    <section className="space-y-3 p-4" data-testid="slot-agent">
+      <SectionTitle help="We do not run your agent or send this brief to a model. You paste the prompt into your own agent; it writes drafts over MCP, and a person approves them in Review.">Have your coding agent write a variant</SectionTitle>
+      <CopyBlock label="slot-endpoint" text={`${origin}${mcp.data?.endpoint ?? '/mcp'}`} />
+      {token ? (
+        <>
+          <CopyBlock label="slot-token" text={token} />
+          <p className="text-xs text-warn-ink">Copy it now; it will not be shown again.</p>
+        </>
+      ) : (
+        <Button variant="ghost" icon={KeyRound} disabled={mint.isPending} onClick={() => mint.mutate()}>Mint a token for this site</Button>
+      )}
+      {error && <p role="alert" className="text-xs text-pause-ink">{error}</p>}
+      <ul className="space-y-1" data-testid="pack-status">
+        {(mcp.data?.packs ?? []).map((p) => {
+          const [tone, label] = PACK_LABEL[p.status];
+          return (
+            <li key={p.agent} className="flex items-center justify-between gap-2 text-[12.5px]" data-testid={`pack-${p.agent.replace(/\s+/g, '-')}`}>
+              <span>{p.agent}</span>
+              <Chip tone={tone}>{label}</Chip>
+            </li>
+          );
+        })}
+      </ul>
+      <textarea className={`${inputClass} h-20 w-full py-2`} value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="What should the variant do?" aria-label="Brief" />
+      <CopyBlock label="prompt" text={briefPrompt({ site, slot, champion, selector, lift, brief })} />
+      <div className="space-y-1.5 text-[12.5px]" data-testid="slot-mcp-tail">
+        {calls.length === 0 && <p className="text-muted">No agent calls on this slot yet.</p>}
+        {calls.map((c) => (
+          <Link key={c.id} href={`/audit/?id=${c.id}`} className="block truncate text-ink-2 hover:text-ink" data-testid="slot-mcp-call">
+            <span className="font-mono">{c.tool}</span> from {c.agent || 'unnamed agent'} <span className="text-muted">{ago(c.at)}</span>
+          </Link>
+        ))}
+      </div>
     </section>
   );
 }

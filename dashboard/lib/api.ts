@@ -445,6 +445,9 @@ export interface McpTail {
   endpoint: string;
   tokens: { name: string; created_at: string; revoked_at: string | null; last_used: string | null; calls: number }[];
   calls: McpCall[];
+  /** The pack version this Core ships; each agent reports the one it was installed with. */
+  pack_version: string;
+  packs: { agent: 'Claude Code' | 'Cursor' | 'Generic MCP'; status: 'installed' | 'out_of_date' | 'not_installed'; version: string | null; last_seen: string | null }[];
 }
 export interface McpCallDetail extends McpCall {
   site: string;

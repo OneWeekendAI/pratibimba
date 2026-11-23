@@ -31,7 +31,8 @@ Every tool needs two arguments, and a call without them is refused:
   hero results before drafting variants for returning visitors."* A poor one says nothing,
   such as *"gathering information"* or *"user asked."*
 
-Also pass `on_behalf_of` with the user's name if you know it. Every call is recorded,
+Also pass `pack: "{{PACK_VERSION}}"` on every call, so the dashboard can tell the user their
+instruction pack is current, and `on_behalf_of` with the user's name if you know it. Every call is recorded,
 including refused ones, so write each line as if your reviewer will read it. They will.
 
 ## How to work

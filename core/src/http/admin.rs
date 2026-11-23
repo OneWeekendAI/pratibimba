@@ -1222,6 +1222,38 @@ fn call_json(r: CallRow) -> Value {
 #[derive(Deserialize)]
 struct CallsQuery {
     limit: Option<i64>,
+    /// Only the calls that name this slot (its `slot` argument, or `key` for create_slot).
+    slot: Option<String>,
+}
+
+/// Which supported agent a self-reported name belongs to.
+fn agent_kind(name: &str) -> &'static str {
+    let n = name.to_ascii_lowercase();
+    if n.contains("claude") {
+        "Claude Code"
+    } else if n.contains("cursor") {
+        "Cursor"
+    } else {
+        "Generic MCP"
+    }
+}
+
+/// Per supported agent: "installed" when its newest call reported the current pack version,
+/// "out_of_date" when it reported another, "not_installed" when it never reported one. Core
+/// cannot read a repo, so this is what the agent says, not a scan.
+fn pack_status(rows: &[(String, Option<String>, DateTime<Utc>)]) -> Vec<Value> {
+    ["Claude Code", "Cursor", "Generic MCP"]
+        .iter()
+        .map(|kind| {
+            let newest = rows.iter().find(|r| agent_kind(&r.0) == *kind);
+            let (status, version) = match newest.and_then(|r| r.1.as_deref()) {
+                Some(v) if v == crate::mcp::PACK_VERSION => ("installed", Some(v)),
+                Some(v) => ("out_of_date", Some(v)),
+                None => ("not_installed", None),
+            };
+            json!({ "agent": kind, "status": status, "version": version, "last_seen": newest.map(|r| r.2) })
+        })
+        .collect()
 }
 
 /// The MCP tail for a site: its tokens (with when each was last used) and its newest tool calls.
@@ -1230,10 +1262,12 @@ async fn mcp_calls(State(state): State<Arc<AppState>>, Path(site): Path<String>,
     let limit = q.limit.unwrap_or(25).clamp(1, 200);
     let calls: Vec<CallRow> = sqlx::query_as(&format!(
         "SELECT {CALL_COLUMNS} FROM mcp_calls c JOIN mcp_tokens k ON k.id = c.token_id
-          WHERE c.site_id = $1 ORDER BY c.created_at DESC, c.id DESC LIMIT $2"
+          WHERE c.site_id = $1 AND ($3::text IS NULL OR c.arguments->>'slot' = $3 OR (c.tool = 'create_slot' AND c.arguments->>'key' = $3))
+          ORDER BY c.created_at DESC, c.id DESC LIMIT $2"
     ))
     .bind(&site)
     .bind(limit)
+    .bind(&q.slot)
     .fetch_all(&state.pool)
     .await?;
     let tokens: Vec<(String, DateTime<Utc>, Option<DateTime<Utc>>, Option<DateTime<Utc>>, i64)> = sqlx::query_as(
@@ -1243,8 +1277,14 @@ async fn mcp_calls(State(state): State<Arc<AppState>>, Path(site): Path<String>,
     .bind(&site)
     .fetch_all(&state.pool)
     .await?;
+    let seen: Vec<(String, Option<String>, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT agent, arguments->>'pack', created_at FROM mcp_calls WHERE site_id = $1 AND outcome <> 'refused' ORDER BY created_at DESC, id DESC LIMIT 500",
+    )
+    .bind(&site)
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(json!({
-        "site": site, "endpoint": "/mcp",
+        "site": site, "endpoint": "/mcp", "pack_version": crate::mcp::PACK_VERSION, "packs": pack_status(&seen),
         "tokens": tokens.into_iter().map(|(name, created, revoked, last, n)| json!({
             "name": name, "created_at": created, "revoked_at": revoked, "last_used": last, "calls": n })).collect::<Vec<_>>(),
         "calls": calls.into_iter().map(call_json).collect::<Vec<_>>(),
