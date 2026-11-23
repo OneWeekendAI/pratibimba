@@ -12,7 +12,7 @@ import { Preview } from '@/components/preview';
 import { Shell, useActor } from '@/components/shell';
 import { ShareSlider } from '@/components/slider';
 import { Button, Card, Chip, Empty, Field, Help, Loading, SectionTitle, Tip, inputClass, type ChipTone } from '@/components/ui';
-import { api, ApiError, type ApprovalCard, type Approvals, type Check as CheckRow, type ShareRequest } from '@/lib/api';
+import { api, ApiError, type ApprovalCard, type Approvals, type Check as CheckRow, type PluginRequest, type RetireRequest, type ShareRequest } from '@/lib/api';
 import { diff, lineDiff, looksLikeCode } from '@/lib/diff';
 import { ago } from '@/lib/format';
 import { useParam } from '@/lib/page';
@@ -283,6 +283,34 @@ function ShareProposal({ r, site, approver }: { r: ShareRequest; site: string; a
   );
 }
 
+/** One proposal row that needs a person: a yes, and a no that must say why. */
+function Proposal({ testid, title, detail, reason, yes, no, path, approver, site }: { testid: string; title: string; detail: string; reason: string; yes: string; no: string; path: string; approver: string; site: string }) {
+  const qc = useQueryClient();
+  const [why, setWhy] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const answer = useMutation({
+    mutationFn: (verb: 'confirm' | 'decline') => api.post(`${path}/${verb}`, { actor: approver, comment: why.trim() || undefined }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['approvals', site] });
+      qc.invalidateQueries({ queryKey: ['sites'] });
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-4 py-3 text-[13px]" data-testid={testid}>
+      <span className="font-medium">{title}</span>
+      <span className="text-muted">{detail}</span>
+      <span className="text-ink-2">“{reason}”</span>
+      <span className="ml-auto flex items-center gap-2">
+        <input className={`${inputClass} h-8 w-44`} aria-label="Why not" placeholder="Why not (to decline)" value={why} onChange={(e) => setWhy(e.target.value)} />
+        <Button icon={Check} onClick={() => answer.mutate('confirm')} disabled={!approver.trim() || answer.isPending}>{yes}</Button>
+        <Button variant="ghost" icon={X} onClick={() => answer.mutate('decline')} disabled={!approver.trim() || !why.trim() || answer.isPending}>{no}</Button>
+      </span>
+      {error && <p role="alert" className="w-full text-[12.5px] text-pause-ink">{error}</p>}
+    </div>
+  );
+}
+
 const RECENT: Record<string, [ChipTone, string]> = { approve: ['live', 'approved'], share: ['accent', 'share changed'], retire: ['off', 'retired'], keep: ['off', 'kept'], pause: ['paused', 'paused'] };
 
 function View() {
@@ -301,6 +329,18 @@ function View() {
         <section>
           <SectionTitle icon={Percent} help="An agent asked to change a live variant's traffic share. Nothing changes until you accept." hint={`${q.data.share_requests.length} waiting`}>Proposed share changes</SectionTitle>
           <Card className="divide-y divide-line">{q.data.share_requests.map((r) => <ShareProposal key={r.id} r={r} site={site} approver={approver} />)}</Card>
+        </section>
+      )}
+      {(q.data.retirements ?? []).length > 0 && (
+        <section>
+          <SectionTitle icon={X} help="An agent asked to retire a live variant. It keeps serving until you retire it." hint={`${q.data.retirements!.length} waiting`}>Proposed retirements</SectionTitle>
+          <Card className="divide-y divide-line">{q.data.retirements!.map((r: RetireRequest) => <Proposal key={r.id} testid={`retire-request-${r.variant}`} title={r.variant} detail={`on ${r.slot}, asked by ${r.agent.name}`} reason={r.reason} yes="Retire" no="Keep" path={`/retire-requests/${r.id}`} approver={approver} site={site} />)}</Card>
+        </section>
+      )}
+      {(q.data.plugin_requests ?? []).length > 0 && (
+        <section>
+          <SectionTitle icon={Code2} help="An agent asked to install a plugin. Nothing is installed until you confirm." hint={`${q.data.plugin_requests!.length} waiting`}>Plugin requests</SectionTitle>
+          <Card className="divide-y divide-line">{q.data.plugin_requests!.map((r: PluginRequest) => <Proposal key={r.id} testid={`plugin-request-${r.plugin}`} title={r.plugin} detail={`asked by ${r.agent.name}`} reason={r.reason} yes="Install" no="Decline" path={`/plugin-requests/${r.id}`} approver={approver} site={site} />)}</Card>
         </section>
       )}
       {q.data.recent.length > 0 && (

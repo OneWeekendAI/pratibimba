@@ -359,6 +359,26 @@ export interface ShareRequest {
   at: string;
   agent: { name: string; justification?: string | null; on_behalf_of?: string | null; token?: string; audit_id?: number; tool?: string };
 }
+type ProposalAgent = { name: string; justification?: string | null; on_behalf_of?: string | null; token?: string; audit_id?: number; tool?: string };
+/** An agent's proposal to retire a live variant; it keeps serving until a person confirms. */
+export interface RetireRequest {
+  id: number;
+  slot: string;
+  variant: string;
+  variant_id: number;
+  reason: string;
+  at: string;
+  agent: ProposalAgent;
+}
+/** An agent's request to install a plugin on the site. */
+export interface PluginRequest {
+  id: number;
+  plugin: string;
+  config: Record<string, unknown> | null;
+  reason: string;
+  at: string;
+  agent: ProposalAgent;
+}
 /** One estimate in an advisor card, per 100 visits (null under the minimum). */
 export interface AdvisorArm {
   key: string;
@@ -397,6 +417,8 @@ export interface Approvals {
   cards?: AdvisorCard[];
   drafts: ApprovalCard[];
   share_requests: ShareRequest[];
+  retirements?: RetireRequest[];
+  plugin_requests?: PluginRequest[];
   max_share: number;
   default_share: number;
   recent: { action: string; actor: string; slot: string; variant: string; comment: string | null; traffic_share: number | null; at: string }[];

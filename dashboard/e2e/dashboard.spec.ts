@@ -848,6 +848,67 @@ test('an_agents_share_proposal_is_accepted_in_approvals', async ({ page }) => {
   await expect(row).toHaveCount(0);
 });
 
+async function agentToken(name: string): Promise<string> {
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const { token } = await (await c.post('/api/sites/shop/mcp-tokens', { data: { name } })).json();
+  await c.dispose();
+  return token;
+}
+const heroVariant = async (key: string) => (await api('/sites/shop/slots/hero')).variants.find((v: { key: string }) => v.key === key);
+
+test('an_agents_retire_proposal_can_be_kept_with_a_reason', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const token = await agentToken('e2e-retire-keep');
+  await mcpCall(token, 'retire_variant', { agent: 'Claude Code', justification: 'free_ship has not moved in weeks', slot: 'hero', variant: 'free_ship' });
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('retire-request-free_ship');
+  await expect(row).toContainText('free_ship has not moved in weeks');
+  await expect(row.getByRole('button', { name: 'Keep' })).toBeDisabled();
+  await row.getByLabel('Why not').fill('seasonal, back in December');
+  await row.getByRole('button', { name: 'Keep' }).click();
+  await expect(row).toHaveCount(0);
+  expect((await heroVariant('free_ship')).status).not.toBe('retired');
+});
+
+test('an_agents_retire_proposal_is_confirmed_in_approvals', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const token = await agentToken('e2e-retire-yes');
+  await mcpCall(token, 'retire_variant', { agent: 'Claude Code', justification: 'free_ship is dead weight', slot: 'hero', variant: 'free_ship' });
+  expect((await heroVariant('free_ship')).status).not.toBe('retired');
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('retire-request-free_ship');
+  await row.getByRole('button', { name: 'Retire' }).click();
+  await expect(row).toHaveCount(0);
+  await expect.poll(async () => (await heroVariant('free_ship')).status).toBe('retired');
+});
+
+test('an_agents_plugin_request_is_listed_and_installed_or_declined', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const token = await agentToken('e2e-plugins');
+  const ask = (plugin: string) => mcpCall(token, 'install_plugin', { agent: 'Claude Code', justification: `wire up ${plugin}`, plugin });
+  await ask('attribution.linear');
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('plugin-request-attribution.linear');
+  await expect(row).toContainText('wire up attribution.linear');
+  await expect(row.getByRole('button', { name: 'Decline' })).toBeDisabled();
+  await row.getByLabel('Why not').fill('not this quarter');
+  await row.getByRole('button', { name: 'Decline' }).click();
+  await expect(row).toHaveCount(0);
+  const linear = async () => (await api('/sites/shop/plugins')).plugins.find((p: { name: string }) => p.name === 'attribution.linear');
+  expect((await linear()).installed).toBeNull();
+  expect((await linear()).request).toMatchObject({ status: 'declined', comment: 'not this quarter' });
+  // Ask again and say yes.
+  await ask('attribution.linear');
+  await page.reload();
+  await page.getByTestId('plugin-request-attribution.linear').getByRole('button', { name: 'Install' }).click();
+  await expect(page.getByTestId('plugin-request-attribution.linear')).toHaveCount(0);
+  expect((await linear()).installed).toMatchObject({ by: 'Ritwik' });
+  await apiPost('/api/plugins/attribution.linear/uninstall', { site: 'shop', actor: 'e2e' });
+});
+
 // S9: a share the site file set says so, and the editor states the re-apply rule. Re-applies
 // shop's file (which approves every listed variant again), so it runs after the shop tests.
 test('a_share_from_the_site_file_says_so_on_its_card', async ({ page }) => {
