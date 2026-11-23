@@ -519,11 +519,11 @@ struct SimulateArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FastForwardArgs {
-    subject: String,
-    days: Option<f64>,
-    seconds: Option<i64>,
-    ctx: Option<crate::http::decide::Ctx>,
+pub(crate) struct FastForwardArgs {
+    pub(crate) subject: String,
+    pub(crate) days: Option<f64>,
+    pub(crate) seconds: Option<i64>,
+    pub(crate) ctx: Option<crate::http::decide::Ctx>,
 }
 
 /// Exactly what an agent may set on a new slot: a swap, copy or sorted slot, never a picker or
@@ -1043,7 +1043,7 @@ async fn simulate(pool: &PgPool, site: &str, a: SimulateArgs) -> Result<Value, A
 }
 
 /// `fast_forward_visitor`: move the sandbox's clock, then decide every slot for one subject.
-async fn fast_forward(pool: &PgPool, site: &str, a: FastForwardArgs) -> Result<Value, ApiError> {
+pub(crate) async fn fast_forward(pool: &PgPool, site: &str, a: FastForwardArgs) -> Result<Value, ApiError> {
     use crate::{http::decide, sim};
     let secs = match (a.days, a.seconds) {
         (Some(d), None) if d.is_finite() => (d * sim::DAY as f64).round() as i64,

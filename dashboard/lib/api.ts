@@ -510,3 +510,18 @@ export interface Asset {
   in_use?: boolean;
   path: string;
 }
+
+/** The sandbox copy of a site (`GET /sites/:site/sim`): its own clock, and a count of what ran in it. */
+export interface SimStatus {
+  sandbox: string;
+  clock: string;
+  decisions: number;
+  conversions: number;
+}
+/** One subject skipped forward (`POST /sites/:site/sim/fast-forward`): what each slot shows at the new clock. */
+export interface FastForward {
+  clock_before: string;
+  clock: string;
+  settled: number;
+  decisions: ({ slot: string; variant: string } | { slot: string; error: string })[];
+}

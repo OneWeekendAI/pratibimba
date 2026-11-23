@@ -1260,3 +1260,32 @@ test('advisor card approve pauses the versions and Results tracks it', async ({ 
   await page.goto('/app/results/?site=cafe');
   await expect(page.getByTestId('result-kitchen_strip').getByTestId('advisor-line')).toContainText('Advisor suggestion: paused');
 });
+
+// Time travel: a sandbox copy of the site, one visitor skipped forward in it.
+test('time_travel_skips_a_visitor_forward_in_the_sandbox', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/time-travel/?site=shop');
+  await expect(page.getByTestId('tt-empty')).toContainText('No sandbox yet');
+  await page.getByRole('button', { name: 'Start a sandbox' }).click();
+  await expect(page.getByTestId('tt-clock')).toBeVisible();
+  const before = new Date((await api('/sites/shop/sim')).clock).getTime();
+  await page.getByLabel('Visitor').fill('meera');
+  await page.getByLabel('Days').fill('7');
+  await page.getByRole('button', { name: 'Skip forward' }).click();
+  const result = page.getByTestId('tt-result');
+  await expect(result).toContainText('meera');
+  for (const slot of ['hero', 'banner']) await expect(result.getByTestId(`tt-slot-${slot}`).getByTestId('tt-variant')).not.toBeEmpty();
+  const after = new Date((await api('/sites/shop/sim')).clock).getTime();
+  expect(Math.round((after - before) / 86_400_000)).toBe(7);
+  // Start over wipes the sandbox clock back to now and clears the answer.
+  await page.getByRole('button', { name: 'Start over' }).click();
+  await expect(result).toBeHidden();
+});
+
+test('time_travel_is_reached_from_the_stage_rail', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/results/?site=shop');
+  await page.getByRole('link', { name: 'Time travel' }).first().click();
+  await expect(page).toHaveURL(/\/app\/time-travel\/\?site=shop/);
+  await expect(page.getByRole('heading', { name: 'Time travel' })).toBeVisible();
+});

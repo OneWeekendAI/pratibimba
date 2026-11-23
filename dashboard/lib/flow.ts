@@ -1,6 +1,6 @@
 // The dashboard's map: five stages a change moves through, each with its pages. Every page says
 // who it is for (developer, everyone, product), so a person can tell which pages are theirs.
-import { Bot, Code2, Eye, FileClock, FilePen, Hammer, Lightbulb, PackageOpen, Radio, ShieldCheck, Telescope, Users, Webhook, Briefcase, Activity, type LucideIcon } from 'lucide-react';
+import { Bot, Clock, Code2, Eye, FileClock, FilePen, Hammer, Lightbulb, PackageOpen, Radio, ShieldCheck, Telescope, Users, Webhook, Briefcase, Activity, type LucideIcon } from 'lucide-react';
 
 export type Audience = 'developer' | 'shared' | 'product';
 
@@ -63,7 +63,10 @@ export const STAGES: Stage[] = [
     label: 'Learn',
     icon: Lightbulb,
     tip: 'What the outcomes taught the model',
-    pages: [{ id: 'results', label: 'Results', icon: Lightbulb, audience: 'product', href: (s) => `/results/?site=${s}`, match: ['/results'], tip: 'Lift against the holdout, and learnings' }],
+    pages: [
+      { id: 'results', label: 'Results', icon: Lightbulb, audience: 'product', href: (s) => `/results/?site=${s}`, match: ['/results'], tip: 'Lift against the holdout, and learnings' },
+      { id: 'time-travel', label: 'Time travel', icon: Clock, audience: 'developer', href: (s) => `/time-travel/?site=${s}`, match: ['/time-travel'], tip: 'Skip a visitor forward in a sandbox copy' },
+    ],
   },
   {
     id: 'observe',

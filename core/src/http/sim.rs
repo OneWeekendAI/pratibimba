@@ -6,6 +6,8 @@
 //! - `DELETE /api/sites/:site/sim`            drop the sandbox
 //! - `POST   /api/sites/:site/sim/visitors`   one cohort at the current clock
 //! - `POST   /api/sites/:site/sim/advance`    `{days | seconds, cohort?}`: time-travel
+//! - `POST   /api/sites/:site/sim/fast-forward` `{subject, days | seconds, ctx?}`: time-travel one
+//!   subject, then decide every slot for them at the new clock (the MCP `fast_forward_visitor`)
 
 use super::{ApiError, AppState};
 use crate::sim::{self, Cohort};
@@ -24,6 +26,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/sites/{site}/sim", get(status).post(reset).delete(delete))
         .route("/sites/{site}/sim/visitors", post(visitors))
         .route("/sites/{site}/sim/advance", post(advance))
+        .route("/sites/{site}/sim/fast-forward", post(fast_forward))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -69,4 +72,8 @@ async fn advance(State(state): State<Arc<AppState>>, Path(site): Path<String>, J
     };
     let days = sim::advance(&state.pool, &site, secs, b.cohort.as_ref()).await?;
     Ok(Json(json!({ "clock": sim::clock(&state.pool, &site).await?, "days": days })))
+}
+
+async fn fast_forward(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<crate::mcp::FastForwardArgs>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(crate::mcp::fast_forward(&state.pool, &site, b).await?))
 }

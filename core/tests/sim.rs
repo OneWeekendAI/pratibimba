@@ -165,6 +165,24 @@ async fn the_sim_api_is_admin_only_and_drives_the_sandbox(pool: PgPool) {
     assert_eq!(sites.as_array().unwrap().len(), 1, "{sites}");
 }
 
+#[sqlx::test(migrations = false)]
+async fn the_fast_forward_api_moves_the_clock_and_decides_for_a_subject(pool: PgPool) {
+    setup_learning(&pool).await;
+    let app = admin_app(&pool);
+    let body = json!({ "subject": "meera", "days": 7 });
+    assert_eq!(post(&app, "/api/sites/demo/sim/fast-forward", body.clone()).await.status, StatusCode::UNAUTHORIZED);
+    // No sandbox yet: a plain 404, not a created one.
+    assert_eq!(api_post(&app, "/api/sites/demo/sim/fast-forward", body.clone()).await.status, StatusCode::NOT_FOUND);
+    api_post(&app, "/api/sites/demo/sim", json!({})).await;
+    let r = api_post(&app, "/api/sites/demo/sim/fast-forward", body).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let j = r.json();
+    assert_eq!(j["sandbox"], "demo~sim");
+    assert!(!j["decisions"].as_array().unwrap().is_empty(), "{j}");
+    let (a, b) = (j["clock_before"].as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap(), j["clock"].as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap());
+    assert_eq!((b - a).num_days(), 7);
+}
+
 // ---- auto-rollback on the sandbox's clock ----
 
 /// The sandbox of a site whose gift converts at 0 against a baseline at 0.5, with a rollback
