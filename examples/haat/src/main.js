@@ -1,6 +1,8 @@
 import './styles.css';
 import './shell.css';
 import './home.css';
+import './listing.css';
+import './product.css';
 import { h, CATEGORIES, cap, cart, byId } from './lib.js';
 import { home } from './pages/home.js';
 import { category } from './pages/category.js';
@@ -64,11 +66,21 @@ app.querySelector('form.search').addEventListener('submit', (e) => {
 });
 
 // Add-to-cart anywhere: update cart storage + badge + toast. No region re-renders.
+// data-add adds one (or the quantity picked in the enclosing [data-qtyscope]); data-add-many adds a list.
 document.addEventListener('click', (e) => {
+  const many = e.target.closest('[data-add-many]');
+  if (many) {
+    const ids = many.dataset.addMany.split(',').filter(Boolean);
+    ids.forEach((id) => cart.add(id));
+    say(ids.length + ' items added to cart');
+    return;
+  }
   const b = e.target.closest('[data-add]');
   if (!b) return;
-  cart.add(b.dataset.add);
-  say('Added: ' + byId.get(b.dataset.add).title);
+  const q = +(b.closest('[data-qtyscope]')?.querySelector('[data-qty]')?.value || 1);
+  const id = b.dataset.add;
+  cart.set(id, (cart.items()[id] || 0) + q);
+  say((q > 1 ? q + ' x ' : 'Added: ') + byId.get(id).title);
 });
 
 const routes = [

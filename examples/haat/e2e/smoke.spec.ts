@@ -114,3 +114,75 @@ test('phone 390px: home has no horizontal overflow and header stays compact', as
   await expect(page.getByRole('searchbox')).toBeVisible();
   await ctx.close();
 });
+
+test('listing: filters really filter, chips clear, search page shares the layout', async ({ page }) => {
+  await page.goto('/#/c/electronics');
+  const cards = page.locator('[data-testid=grid] .card');
+  const n0 = await cards.count();
+  await page.locator('[name=price][value="1000"]').check();
+  const n1 = await cards.count();
+  expect(n1).toBeLessThan(n0);
+  const prices = (await page.locator('[data-testid=grid] .card .price b').allTextContents()).map((t) => +t.replace(/[^\d]/g, ''));
+  for (const v of prices) { expect(v).toBeGreaterThanOrEqual(1000); expect(v).toBeLessThanOrEqual(2499); }
+  await expect(page.getByTestId('count')).toHaveText(`${n1} products`);
+  await page.locator('[name=rating][value="4"]').check();
+  expect(await cards.count()).toBeLessThanOrEqual(n1);
+  await page.locator('[data-chip=price]').click();
+  await page.locator('[data-brand]').first().check();
+  const nb = await cards.count();
+  expect(nb).toBeLessThan(n0);
+  await page.getByRole('button', { name: 'Clear all' }).click();
+  expect(await cards.count()).toBe(n0);
+  await page.getByTestId('f-stock').check();
+  expect(await cards.count()).toBeLessThanOrEqual(n0);
+  await page.goto('/#/search?q=a');
+  await expect(page.getByTestId('filters')).toBeVisible();
+  const s0 = await cards.count();
+  await page.locator('[data-tag=gift]').check();
+  expect(await cards.count()).toBeLessThan(s0);
+});
+
+test('product: gallery thumbs, qty, PIN delivery, FBT add-all', async ({ page }) => {
+  await page.goto('/#/product/p001');
+  const main = page.getByTestId('main-image');
+  const before = await main.innerHTML();
+  await page.getByTestId('thumb').nth(2).click();
+  await expect(main).toHaveAttribute('data-v', '2');
+  expect(await main.innerHTML()).not.toBe(before);
+  await page.getByTestId('pin').fill('110001');
+  await page.getByTestId('pin-check').click();
+  await expect(page.getByTestId('delivery')).toContainText('110001');
+  await page.getByTestId('pin').fill('12');
+  await page.getByTestId('pin-check').click();
+  await expect(page.getByTestId('pin-err')).toContainText('6-digit');
+  await expect(page.getByTestId('histogram')).toBeVisible();
+  await expect(page.getByTestId('review')).toHaveCount(3);
+  await page.getByTestId('qty').selectOption('2');
+  await page.getByTestId('buy').click();
+  await expect(page.getByTestId('cart-count')).toHaveText('2');
+  await page.getByTestId('fbt-add').click();
+  await expect(page.getByTestId('cart-count')).toHaveText('5');
+  await expect(page.getByTestId('also-viewed').locator('.card').first()).toBeVisible();
+  await page.getByTestId('buy-now').click();
+  await expect(page).toHaveURL(/#\/checkout/);
+});
+
+test('phone 390px: listing + product no overflow, filter drawer opens', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  await page.goto('/#/c/electronics');
+  await expect(page.getByTestId('grid').locator('.card').first()).toBeVisible();
+  await expect(page.getByTestId('filters')).toBeHidden();
+  await page.getByTestId('filter-toggle').click();
+  await expect(page.getByTestId('filters')).toBeVisible();
+  await page.locator('[name=price][value="u500"]').check();
+  await page.getByRole('button', { name: /^Show \d+ result/ }).click();
+  await expect(page.getByTestId('filters')).toBeHidden();
+  for (const path of ['/#/c/electronics', '/#/search?q=a', '/#/product/p001']) {
+    await page.goto(path);
+    await page.waitForTimeout(200);
+    const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+    expect(sw, path).toBeLessThanOrEqual(iw);
+  }
+  await ctx.close();
+});
