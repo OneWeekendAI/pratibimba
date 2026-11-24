@@ -9,7 +9,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@pratibimba/next": "file:../../packages/next",
+    "@pratibimba/next": "file:../../../../../packages/next",
     "next": "16.3.8",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const ADMIN_DB = process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres';
 const DB = ADMIN_DB.replace(/\/[^/]*$/, '/prb_next_e2e');
-const BIN = path.resolve(import.meta.dirname, '../../../target/debug/pratibimba');
+const BIN = path.resolve(import.meta.dirname, '../../../../../../target/debug/pratibimba');
 const PORT = process.env.PRB_E2E_CORE_PORT ?? '18081';
 const env = { ...process.env, PRB_DB: DB, RUST_LOG: 'warn', PRB_ADMIN_TOKEN: 'e2e-admin-token', PRB_BIND: `127.0.0.1:${PORT}`, PRB_WORKER_TICK_MS: '200' };
 const kids = [spawn(BIN, ['serve'], { env, stdio: 'inherit' }), spawn(BIN, ['worker'], { env, stdio: 'inherit' })];

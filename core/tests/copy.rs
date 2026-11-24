@@ -598,7 +598,7 @@ site_file_reads! {
     site_file_e2e_reads => "dashboard/e2e/site.json",
     site_file_e2e_kiosk_reads => "dashboard/e2e/kiosk.json",
     site_file_e2e_sorted_reads => "dashboard/e2e/sorted.json",
-    site_file_example_plain_reads => "examples/plain/site.json",
-    site_file_example_next_reads => "examples/next/site.json",
-    site_file_example_edge_reads => "examples/edge/site.json",
+    site_file_fixture_plain_reads => "packages/agent/test/fixtures/plain/site.json",
+    site_file_fixture_next_reads => "packages/agent/test/fixtures/next/site.json",
+    site_file_example_haat_reads => "examples/haat/site.json",
 }

@@ -296,11 +296,11 @@ own infrastructure and change what you need (the Postgres password, the port, th
 ### 2. Declare your site
 
 A site, its slots and its approved variants come from a JSON file you keep in your repo.
-[`examples/plain/site.json`](examples/plain/site.json) is a small one; `origin` is your site's
+[`packages/agent/test/fixtures/plain/site.json`](packages/agent/test/fixtures/plain/site.json) is a small one; `origin` is your site's
 URL (the install wizard probes it) and `site` is the id your pages name.
 
 ```sh
-docker compose run --rm --no-deps -v "$PWD/examples/plain/site.json:/site.json:ro" serve apply /site.json
+docker compose run --rm --no-deps -v "$PWD/packages/agent/test/fixtures/plain/site.json:/site.json:ro" serve apply /site.json
 
 curl -s localhost:8080/decide -H 'content-type: application/json' \
   -d '{"site":"demo","slot":"hero","subject":"visitor-1"}'      # -> {"decision_id":…,"variant":…}
@@ -323,12 +323,12 @@ Open `http://localhost:8080/app/` and sign in with `PRB_ADMIN_TOKEN`. Without th
 
 Pages need no token: a site id is public, like an analytics key.
 
-**See it on a page.** [`examples/plain`](examples/plain) calls Core at `localhost:8080` from
+**See it on a page.** [`packages/agent/test/fixtures/plain`](packages/agent/test/fixtures/plain) calls Core at `localhost:8080` from
 `localhost:5173`, so Core must allow that origin:
 
 ```sh
 PRB_SITE_ORIGIN=http://localhost:5173 docker compose up -d serve
-python3 -m http.server 5173 -d examples/plain       # open http://localhost:5173
+python3 -m http.server 5173 -d packages/agent/test/fixtures/plain       # open http://localhost:5173
 ```
 
 Each fresh visitor (a private window) may get another hero or banner; the dashboard's site page
@@ -566,7 +566,7 @@ A variant can change what a visitor sees, not only what they read. Two ways, bot
 same approval gate:
 
 **An image field** changes a picture without anyone writing HTML. Declare it on a copy slot
-and mark the `<img>` (from [`examples/plain`](examples/plain)):
+and mark the `<img>` (from [`packages/agent/test/fixtures/plain`](packages/agent/test/fixtures/plain)):
 
 ```json
 { "key": "banner", "selector": "#banner", "kind": "copy",
@@ -626,7 +626,7 @@ npx @pratibimba/agent install        # drops the instruction pack into .claude /
 `install` adds two skills: `pratibimba` (read results, draft variants) and
 `pratibimba-integrate` (add Pratibimba to an existing site someone else wrote: Core,
 `site.json`, the script tag and consent, slots, outcome events;
-[`examples/pickly`](examples/pickly) is a site to try it on). Then mint a per-site MCP token in
+[`examples/haat`](examples/haat), the Big Market demo store, shows the result). Then mint a per-site MCP token in
 the dashboard and point your agent at `POST /mcp` on your Core. The agent reads results and drafts variants in real components; a human still has to
 approve every draft before it is served.
 
@@ -655,14 +655,10 @@ symlinked package outside the app).
 | `packages/edge/` | `@pratibimba/edge` SDK |
 | `packages/client/` | the script-tag fallback (embedded in Core via `include_str!`) |
 | `packages/agent/` | `@pratibimba/agent` MCP instruction pack and `scan` CLI |
-| `examples/next/` | plain Next.js example |
-| `examples/edge/` | plain Cloudflare Worker example |
-| `examples/plain/` | script-tag example with a declared `site.json`: a layout swap and an image field |
-| `examples/demo-site/` | the site `ci/demo-matrix.sh` runs against: one swap, copy (plain and template), image and sorted slot |
-| `examples/pickly/` | a plain Vite + React shop with no Pratibimba yet: the starting point for adding it to an existing site |
+| `examples/haat/` | Big Market: a full demo store with 10 slots, a shopper simulator and persona/proof pages |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
-| `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup, `demo-matrix.sh` (the local demo matrix) |
+| `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |
 | `Dockerfile` | one image, several entry points (`serve`, `worker`, `migrate`, `apply`, `backup`, `restore`, `erase`) |
 
 ## HTTP API (summary)
@@ -685,27 +681,6 @@ symlinked package outside the app).
 A late platform webhook can **correct a settled miss** inside the attribution window: the
 decision flips, the model is updated exactly (`+w·x` on log-likelihood, covariance unchanged),
 and a `conversion` webhook refires with `late: true`.
-
-## Local demo matrix
-
-```sh
-ci/demo-matrix.sh              # everything on this machine, prints a PASS / FAIL / SKIP table
-ci/demo-matrix.sh --record     # also records Playwright video to target/demo-matrix/videos (gitignored)
-ci/demo-matrix.sh --prove      # then breaks one thing per category and shows its row go red
-ci/demo-matrix.sh --modes=direct,w-on-on
-```
-
-One command starts Core (with and without an edge), the worker, the proxy Worker under
-`wrangler dev` (miniflare KV, Durable Object and queue, fed by a fake KV API), and
-`examples/demo-site`, then drives real Chromium through every stack mode (Core alone; the
-Worker with edge decide on or off and the write queue on or off). Each mode checks the swap,
-copy (plain, and a template filled from visitor history), uploaded-image (srcset) and sorted
-slots; the new, returning and agent-drafted history audiences; consent on and off; edge decide
-and the queue (response headers); and erase (410, and no `live_events` rows). A row asserts
-something observable and says what it saw. A mode that cannot run (no `wrangler`) is `SKIP`
-with the reason, never `PASS`. It tears down everything it started and drops only its own
-`prb_matrix` database. Needs cargo, node, psql, `wrangler` and Playwright's Chromium
-(`npm install` in `examples/demo-site`, or any sibling example's install is used).
 
 ## Running the tests
 

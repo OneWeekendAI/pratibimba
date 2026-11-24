@@ -147,7 +147,7 @@ for (const [name, file, from, to] of MUTANTS) {
     continue;
   }
   await writeFile(path, text.replace(from, to));
-  const r = spawnSync(process.execPath, ['--test', 'test/install.test.mjs', 'test/scan.test.mjs'], { cwd: dir, encoding: 'utf8', env: { ...process.env, PRB_EXAMPLES: join(pkg, '..', '..', 'examples') } });
+  const r = spawnSync(process.execPath, ['--test', 'test/install.test.mjs', 'test/scan.test.mjs'], { cwd: dir, encoding: 'utf8', env: process.env });
   const failed = (r.stdout.match(/^# fail (\d+)/m) ?? r.stdout.match(/ℹ fail (\d+)/))?.[1];
   if (r.status === 0) {
     console.log(`SURVIVED ${name}`);

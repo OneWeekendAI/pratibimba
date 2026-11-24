@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 import { CORE, NEXT_PORT } from './e2e/env';
 
 // Real Core, real worker, real `next start`, on a fresh database. Build first:
-//   cargo build && (cd examples/next && npm run build)
+//   cargo build && (cd packages/agent/test/fixtures/next && npm run build)
 export default defineConfig({
   testDir: './e2e',
   workers: 1,

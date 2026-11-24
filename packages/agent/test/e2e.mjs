@@ -1,10 +1,10 @@
-// The real check: install the pack into a copy of examples/next, then connect the official MCP
+// The real check: install the pack into a copy of packages/agent/test/fixtures/next, then connect the official MCP
 // SDK client using only what the generated configs say, list the slots and propose a draft
 // against a locally running Core.
 //
 //   PRB_BIN=../../target/debug/pratibimba DATABASE_URL=postgres://…/scratch_db node test/e2e.mjs
 //
-// DATABASE_URL must be a database this script may write to (it applies examples/next/site.json).
+// DATABASE_URL must be a database this script may write to (it applies packages/agent/test/fixtures/next/site.json).
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -32,13 +32,13 @@ const port = await new Promise((ok) => {
   });
 });
 
-// 1. A temp Next.js app: examples/next without its build output and dependencies.
+// 1. A temp Next.js app: packages/agent/test/fixtures/next without its build output and dependencies.
 const app = await mkdtemp(join(tmpdir(), 'prb-next-'));
-await cp(join(root, 'examples', 'next'), app, {
+await cp(join(root, 'packages', 'agent', 'test', 'fixtures', 'next'), app, {
   recursive: true,
   filter: (src) => !/\/(node_modules|\.next|test-results)(\/|$)/.test(src.slice(root.length)),
 });
-step(`copied examples/next to ${app}`);
+step(`copied packages/agent/test/fixtures/next to ${app}`);
 
 // 2. Install the pack the way a developer would.
 const out = execFileSync('node', [CLI, 'install', '--url', `http://127.0.0.1:${port}`], { cwd: app, encoding: 'utf8' });

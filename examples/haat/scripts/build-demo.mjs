@@ -45,7 +45,7 @@ const pcards = personas.map((p) => {
 <details><summary>Why this hero?</summary><p>${esc(p.why.hero)}</p></details>
 <details><summary>Why this badge?</summary><p>${esc(p.why['product-badge'])}</p></details></section>`;
 }).join('');
-writeFileSync(path.join(here, '../demo/personas.html'), shell('Big Market - four shoppers', `<h1>Same store, four shoppers</h1><p class="sub">Each column is a real browser visit to the live store (phone or desktop, ad or search or direct, new or returning, morning or evening) as Pratibimba served it. Nothing here is mocked: the chips are the decided variants and the notes are Core's own explanation of each decision.</p></header><main><div class="grid">${pcards}</div></main></body></html>`, 'p'));
+writeFileSync(path.join(here, '../demo/personas.html'), shell('Big Market - four shoppers', `<h1>Same store, four shoppers</h1><p class="sub">Each column is a real browser visit to the live store (phone or desktop, ad or search or direct, new or returning, morning or evening) as Pratibimba served it. The chips are the variants Core decided and the notes are its own explanation. Each column shows a visit that got the variant typical for that shopper (up to 8 visits tried), so treat it as a picture of what each shopper usually sees, not a random draw.</p></header><main><div class="grid">${pcards}</div></main></body></html>`, 'p'));
 
 // ---- proof
 const series = execFileSync('psql', [DB, '-qAt', '-F', '|', '-c', `SELECT date_trunc('day', created_at)::date, in_holdout, count(*), avg(CASE WHEN outcome > 0 THEN 1 ELSE 0 END) FROM decisions WHERE site_id = 'haat' AND subject LIKE 'sim-%' AND exposed_at IS NOT NULL AND settled_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2`]).toString().trim().split('\n').map((l) => l.split('|'));

@@ -11,7 +11,6 @@ import { scan, writeDrafts, createSlotArgs, DRAFTS_PATH } from '../src/scan.mjs'
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'bin', 'cli.mjs');
-const EXAMPLES = process.env.PRB_EXAMPLES ?? join(here, '..', '..', '..', 'examples');
 const GOLDEN = join(here, 'golden');
 const UPDATE = process.env.UPDATE_GOLDEN === '1';
 
@@ -28,9 +27,9 @@ const at = (r, file, line) => r.candidates.find((c) => c.file === file && c.line
 // ---- golden outputs on the real examples ----
 
 const FIXTURES = join(here, 'fixtures');
-for (const [ex, root] of [['next', EXAMPLES], ['plain', EXAMPLES],
+for (const [ex, root] of [['next', FIXTURES], ['plain', FIXTURES],
   ['vue', FIXTURES], ['svelte', FIXTURES], ['astro', FIXTURES], ['jsx-lt', FIXTURES], ['vue-pug', FIXTURES], ['svelte5', FIXTURES]]) {
-  test(`${root === EXAMPLES ? 'examples' : 'fixtures'}/${ex} matches its golden scan`, async () => {
+  test(`fixtures/${ex} matches its golden scan`, async () => {
     const got = await scan({ dir: join(root, ex) });
     const path = join(GOLDEN, `${ex}.json`);
     if (UPDATE) await writeFile(path, `${JSON.stringify(got, null, 2)}\n`);
@@ -39,14 +38,14 @@ for (const [ex, root] of [['next', EXAMPLES], ['plain', EXAMPLES],
 }
 
 // Hand-written claims about the examples, so the goldens are not the only judge.
-test('examples/next: the hero component is covered because it renders inside <prb.Slot>', async () => {
-  const r = await scan({ dir: join(EXAMPLES, 'next') });
+test('fixtures/next: the hero component is covered because it renders inside <prb.Slot>', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'next') });
   assert.deepEqual(r.existing.map((e) => e.key), ['hero', 'promo']);
   assert.deepEqual(r.candidates, [], 'nav, the slotted hero and the slotted promo leave nothing');
 });
 
-test('examples/plain: site.json selectors mark the HTML hero and the image banner as existing slots, with their declared kinds', async () => {
-  const r = await scan({ dir: join(EXAMPLES, 'plain') });
+test('fixtures/plain: site.json selectors mark the HTML hero and the image banner as existing slots, with their declared kinds', async () => {
+  const r = await scan({ dir: join(FIXTURES, 'plain') });
   assert.deepEqual(r.existing, [{ key: 'hero', kind: 'swap', file: 'index.html', line: 13 }, { key: 'banner', kind: 'copy', file: 'index.html', line: 18 }]);
   assert.deepEqual(r.candidates, []);
 });
