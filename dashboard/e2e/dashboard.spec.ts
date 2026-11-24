@@ -1290,6 +1290,62 @@ test('time_travel_is_reached_from_the_stage_rail', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Time travel' })).toBeVisible();
 });
 
+// The simulator dialog on a slot: a draft against the champion on the sandbox, never the real site.
+async function simDraft(key: string) {
+  const r = await apiPost('/api/sites/shop/slots/hero/variants', { key, html: `<h1>${key}</h1>` });
+  expect(r.ok()).toBe(true);
+}
+async function dropSandbox() {
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  await c.delete('/api/sites/shop/sim');
+  await c.dispose();
+}
+
+test('simulator_dialog_says_a_planted_winner_would_beat_the_champion_and_leaves_the_real_site_alone', async ({ page }) => {
+  test.setTimeout(90_000);
+  await simDraft('sim_winner');
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await page.getByTestId('open-simulator').click();
+  const dialog = page.getByRole('dialog', { name: 'Simulator' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Draft').selectOption('sim_winner');
+  await dialog.getByLabel('Days').fill('8');
+  await dialog.getByLabel('Points better').fill('10');
+  await dialog.getByRole('button', { name: 'Run' }).click();
+  const verdict = dialog.getByTestId('sim-verdict');
+  await expect(verdict).toHaveAttribute('data-verdict', 'better', { timeout: 40_000 });
+  await expect(verdict).toHaveText('The draft would have beaten the champion.');
+  await expect(dialog.getByTestId('sim-rates')).toContainText('sim_winner');
+  // The sandbox ran it: its decisions exist.
+  const sim = await api('/sites/shop/sim');
+  expect(sim.decisions).toBeGreaterThan(500);
+  // The real site is as it was: the draft is still a draft and never served; the sandbox served it.
+  const realAfter = await api('/sites/shop/slots/hero');
+  expect(realAfter.variants.find((v: any) => v.key === 'sim_winner').status).toBe('draft');
+  expect(await api('/sites/shop/decisions?slot=hero&variant=sim_winner&limit=5')).toHaveLength(0);
+  expect((await api('/sites/shop~sim/decisions?slot=hero&variant=sim_winner&limit=5')).length).toBeGreaterThan(0);
+  // Escape closes it.
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await dropSandbox();
+});
+
+test('simulator_dialog_does_not_cry_winner_when_the_draft_is_no_better', async ({ page }) => {
+  test.setTimeout(90_000);
+  await simDraft('sim_even');
+  await signIn(page);
+  await page.goto('/app/slot/?site=shop&slot=hero');
+  await page.getByTestId('open-simulator').click();
+  const dialog = page.getByRole('dialog', { name: 'Simulator' });
+  await dialog.getByLabel('Draft').selectOption('sim_even');
+  await dialog.getByLabel('Days').fill('8');
+  await dialog.getByLabel('Points better').fill('0');
+  await dialog.getByRole('button', { name: 'Run' }).click();
+  await expect(dialog.getByTestId('sim-verdict')).toHaveAttribute('data-verdict', 'unclear', { timeout: 40_000 });
+  await dropSandbox();
+});
+
 // The slot workbench's agent sidebar: pack status, a brief that becomes a prompt, a slot-scoped tail.
 test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', async ({ page }) => {
   await signIn(page);

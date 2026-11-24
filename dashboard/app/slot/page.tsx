@@ -12,6 +12,7 @@ import { Audiences } from '@/components/audiences';
 import { FieldView } from '@/components/assets';
 import { Preview } from '@/components/preview';
 import { ShareEditor } from '@/components/share-editor';
+import { SimulatorButton } from '@/components/simulator';
 import { Crumb, Shell } from '@/components/shell';
 import { Activity, Clock, Crown, FilePlus2, GitBranch, LayoutList, ListOrdered, Magnet, Target, Timer, TrendingUp, Users } from 'lucide-react';
 import { Card, Chip, Empty, Loading, SectionTitle, Tip, inputClass, type ChipTone } from '@/components/ui';
@@ -263,6 +264,7 @@ function Workbench() {
         <Card className="divide-y divide-line xl:sticky xl:top-32">
           <div className="space-y-2.5 p-4 text-[13px] text-ink-2">
             <SectionTitle>Slot</SectionTitle>
+            <SimulatorButton site={site} slot={slot} slotDetail={s} />
             <SlotFact icon={Target} tip="The goal this slot is judged on">Metric <span className="font-mono text-[12.5px] text-ink">{s.metric}</span></SlotFact>
             <SlotFact icon={Timer} tip="How long after a decision a goal still counts">Window {Math.round(s.attribution_window_secs / 60)} min</SlotFact>
             <SlotFact icon={Magnet} tip="How long a visitor keeps the same version">Sticky {s.decision_ttl_secs} s</SlotFact>
