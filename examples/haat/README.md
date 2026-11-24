@@ -1,6 +1,6 @@
-# Haat
+# Big Market
 
-A demo marketplace ("haat" is Hindi for village market) used to show Pratibimba on a store big enough for personalisation to be visible. Original brand and generated flat illustrations; no third-party assets. Demo only: no payments, orders live in `localStorage`.
+A demo marketplace (directory and site id `haat`) used to show Pratibimba on a store big enough for personalisation to be visible. Original brand and generated illustrations (`src/art.js`: one style per category, one motif per product type); no third-party assets. Demo only: no payments, orders live in `localStorage`.
 
 ## Run
 
@@ -15,7 +15,7 @@ npm run gen        # regenerate src/data/catalogue.json (seeded, deterministic)
 
 ## Pages (hash routed)
 
-`#/` home, `#/c/<category>` listing (8 categories), `#/product/<id>`, `#/search?q=`, `#/cart`, `#/checkout`.
+`#/` home, `#/c/<category>` listing (8 categories), `#/product/<id>`, `#/search?q=`, `#/cart`, `#/checkout`, plus the dev route `#/art-sheet` (every product's art in a grid; `?cat=books` filters, `?v=2` shows an art variant).
 
 ## Slot regions
 

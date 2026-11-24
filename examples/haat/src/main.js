@@ -6,19 +6,20 @@ import { product } from './pages/product.js';
 import { search } from './pages/search.js';
 import { cartPage } from './pages/cart.js';
 import { checkout } from './pages/checkout.js';
+import { artSheet } from './pages/art-sheet.js';
 
 // Shell regions (promo bar, header, nav) render ONCE. Only the cart badge text is patched.
 const app = document.getElementById('app');
 app.innerHTML = `
-  <div class="promo" data-slot="promo-bar">Free delivery on orders above ₹499 &middot; Haat, a market for everyday things</div>
+  <div class="promo" data-slot="promo-bar">Free delivery on orders above ₹499. Cash on delivery and UPI accepted.</div>
   <header class="top">
-    <a class="logo" href="#/">Haat<span>haat se, ghar tak</span></a>
-    <form class="search" role="search"><input type="search" name="q" placeholder="Search Haat" aria-label="Search" /><button>Search</button></form>
+    <a class="logo" href="#/"><svg class="mark" viewBox="0 0 28 24" aria-hidden="true"><path d="M2 2h24l-2 7H4z" fill="#fff"/><path d="M4 9a5 5 0 0 0 10 0zM14 9a5 5 0 0 0 10 0z" fill="#d02a68"/><path d="M6 14h16v8H6z" fill="#e59a0c" opacity=".0"/><path d="M4 9v0" /></svg>Big Market</a>
+    <form class="search" role="search"><input type="search" name="q" placeholder="Search Big Market" aria-label="Search" /><button>Search</button></form>
     <a class="cartlink" href="#/cart" data-testid="cart-link">Cart <b data-testid="cart-count">0</b></a>
   </header>
   <nav class="cats">${CATEGORIES.map((c) => `<a href="#/c/${c}">${cap(c)}</a>`).join('')}</nav>
   <main id="view"></main>
-  <footer>Haat is a demo store. No real orders are placed.</footer>
+  <footer>Big Market is a demo store. No real orders are placed.</footer>
   <div class="toast" id="toast" role="status"></div>`;
 const view = document.getElementById('view');
 const badge = app.querySelector('[data-testid=cart-count]');
@@ -50,6 +51,7 @@ const routes = [
   [/^\/search$/, (m, qs) => search(qs.get('q') || '')],
   [/^\/cart$/, () => cartPage()],
   [/^\/checkout$/, () => checkout()],
+  [/^\/art-sheet$/, (m, qs) => artSheet(qs)], // dev route: every product's art in one grid
 ];
 let cleanup = null;
 function render() {
