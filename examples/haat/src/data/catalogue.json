@@ -1,0 +1,2085 @@
+[
+ {
+  "id": "p001",
+  "title": "Kiran Pro Wireless Earbuds",
+  "price": 1019,
+  "mrp": 1100,
+  "rating": 4.3,
+  "reviews": 3580,
+  "stock": 4,
+  "tags": [
+   "budget"
+  ],
+  "category": "electronics",
+  "seed": 308059
+ },
+ {
+  "id": "p002",
+  "title": "Orbit Deluxe Bluetooth Speaker",
+  "price": 4439,
+  "mrp": 4740,
+  "rating": 3.6,
+  "reviews": 101,
+  "stock": 120,
+  "tags": [],
+  "category": "electronics",
+  "seed": 645595
+ },
+ {
+  "id": "p003",
+  "title": "Nadi Heritage Power Bank",
+  "price": 809,
+  "mrp": 840,
+  "rating": 3.8,
+  "reviews": 3953,
+  "stock": 194,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "electronics",
+  "seed": 775219
+ },
+ {
+  "id": "p004",
+  "title": "Zenar Classic Smart Watch",
+  "price": 2149,
+  "mrp": 2330,
+  "rating": 3.9,
+  "reviews": 39,
+  "stock": 158,
+  "tags": [],
+  "category": "electronics",
+  "seed": 911850
+ },
+ {
+  "id": "p005",
+  "title": "Orbit Pro USB-C Charger",
+  "price": 669,
+  "mrp": 690,
+  "rating": 3.9,
+  "reviews": 586,
+  "stock": 98,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "electronics",
+  "seed": 106598
+ },
+ {
+  "id": "p006",
+  "title": "Voltix Compact Webcam",
+  "price": 1079,
+  "mrp": 1110,
+  "rating": 4.5,
+  "reviews": 1509,
+  "stock": 125,
+  "tags": [
+   "budget"
+  ],
+  "category": "electronics",
+  "seed": 290883
+ },
+ {
+  "id": "p007",
+  "title": "Zenar Compact Mechanical Keyboard",
+  "price": 10899,
+  "mrp": 12110,
+  "rating": 4.1,
+  "reviews": 625,
+  "stock": 1,
+  "tags": [
+   "premium"
+  ],
+  "category": "electronics",
+  "seed": 501797
+ },
+ {
+  "id": "p008",
+  "title": "Zenar Compact Gaming Mouse",
+  "price": 8389,
+  "mrp": 9460,
+  "rating": 3.2,
+  "reviews": 2704,
+  "stock": 167,
+  "tags": [
+   "premium",
+   "new"
+  ],
+  "category": "electronics",
+  "seed": 9608
+ },
+ {
+  "id": "p009",
+  "title": "Kiran Deluxe Desk Lamp LED",
+  "price": 779,
+  "mrp": 1150,
+  "rating": 4.1,
+  "reviews": 2902,
+  "stock": 165,
+  "tags": [
+   "budget"
+  ],
+  "category": "electronics",
+  "seed": 879001
+ },
+ {
+  "id": "p010",
+  "title": "Nadi Pro Tablet Stand",
+  "price": 18009,
+  "mrp": 18630,
+  "rating": 3.5,
+  "reviews": 467,
+  "stock": 1,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "electronics",
+  "seed": 807040
+ },
+ {
+  "id": "p011",
+  "title": "Zenar Pro Action Camera",
+  "price": 2219,
+  "mrp": 2350,
+  "rating": 4.3,
+  "reviews": 1111,
+  "stock": 11,
+  "tags": [
+   "gift"
+  ],
+  "category": "electronics",
+  "seed": 788621
+ },
+ {
+  "id": "p012",
+  "title": "Voltix Everyday Noise-Cancelling Headphones",
+  "price": 21469,
+  "mrp": 29950,
+  "rating": 3.6,
+  "reviews": 3295,
+  "stock": 11,
+  "tags": [
+   "premium"
+  ],
+  "category": "electronics",
+  "seed": 194928
+ },
+ {
+  "id": "p013",
+  "title": "Zenar Mini Portable SSD",
+  "price": 569,
+  "mrp": 670,
+  "rating": 3.7,
+  "reviews": 1202,
+  "stock": 3,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "electronics",
+  "seed": 175538
+ },
+ {
+  "id": "p014",
+  "title": "Kiran Classic Monitor 24in",
+  "price": 13479,
+  "mrp": 15250,
+  "rating": 3.2,
+  "reviews": 492,
+  "stock": 128,
+  "tags": [
+   "premium"
+  ],
+  "category": "electronics",
+  "seed": 669937
+ },
+ {
+  "id": "p015",
+  "title": "Kiran Essential Fitness Band",
+  "price": 8899,
+  "mrp": 11160,
+  "rating": 4.2,
+  "reviews": 3072,
+  "stock": 26,
+  "tags": [
+   "premium"
+  ],
+  "category": "electronics",
+  "seed": 525592
+ },
+ {
+  "id": "p016",
+  "title": "Nadi Pro Smart Plug",
+  "price": 7049,
+  "mrp": 8270,
+  "rating": 4.4,
+  "reviews": 24,
+  "stock": 177,
+  "tags": [],
+  "category": "electronics",
+  "seed": 769594
+ },
+ {
+  "id": "p017",
+  "title": "Kiran Smart Router Dual-Band",
+  "price": 22969,
+  "mrp": 25510,
+  "rating": 4.2,
+  "reviews": 5486,
+  "stock": 2,
+  "tags": [
+   "premium",
+   "new"
+  ],
+  "category": "electronics",
+  "seed": 371224
+ },
+ {
+  "id": "p018",
+  "title": "Orbit Mini Laptop Sleeve",
+  "price": 22159,
+  "mrp": 31870,
+  "rating": 4.5,
+  "reviews": 5104,
+  "stock": 84,
+  "tags": [
+   "premium"
+  ],
+  "category": "electronics",
+  "seed": 178660
+ },
+ {
+  "id": "p019",
+  "title": "Voltix Signature Phone Gimbal",
+  "price": 7029,
+  "mrp": 7410,
+  "rating": 4.2,
+  "reviews": 874,
+  "stock": 127,
+  "tags": [
+   "gift"
+  ],
+  "category": "electronics",
+  "seed": 313597
+ },
+ {
+  "id": "p020",
+  "title": "Chulha Heritage Pressure Cooker",
+  "price": 539,
+  "mrp": 560,
+  "rating": 3.9,
+  "reviews": 2462,
+  "stock": 187,
+  "tags": [
+   "gift"
+  ],
+  "category": "kitchen",
+  "seed": 12520
+ },
+ {
+  "id": "p021",
+  "title": "Rasoi Smart Non-stick Tawa",
+  "price": 4499,
+  "mrp": 4800,
+  "rating": 4.5,
+  "reviews": 3746,
+  "stock": 47,
+  "tags": [
+   "premium",
+   "new"
+  ],
+  "category": "kitchen",
+  "seed": 247812
+ },
+ {
+  "id": "p022",
+  "title": "Chulha Pro Spice Box",
+  "price": 3229,
+  "mrp": 3380,
+  "rating": 4.9,
+  "reviews": 1291,
+  "stock": 159,
+  "tags": [
+   "premium"
+  ],
+  "category": "kitchen",
+  "seed": 624206
+ },
+ {
+  "id": "p023",
+  "title": "Chulha Essential Chopping Board",
+  "price": 759,
+  "mrp": 1120,
+  "rating": 4.7,
+  "reviews": 568,
+  "stock": 180,
+  "tags": [
+   "gift",
+   "new"
+  ],
+  "category": "kitchen",
+  "seed": 661104
+ },
+ {
+  "id": "p024",
+  "title": "Rasoi Classic Steel Tiffin",
+  "price": 4689,
+  "mrp": 6640,
+  "rating": 3.7,
+  "reviews": 6799,
+  "stock": 195,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "kitchen",
+  "seed": 477375
+ },
+ {
+  "id": "p025",
+  "title": "Copperlane Classic Mixer Grinder",
+  "price": 189,
+  "mrp": 220,
+  "rating": 4.6,
+  "reviews": 701,
+  "stock": 63,
+  "tags": [
+   "budget"
+  ],
+  "category": "kitchen",
+  "seed": 380832
+ },
+ {
+  "id": "p026",
+  "title": "Annapurna Deluxe Glass Jar Set",
+  "price": 759,
+  "mrp": 810,
+  "rating": 3.9,
+  "reviews": 1236,
+  "stock": 70,
+  "tags": [],
+  "category": "kitchen",
+  "seed": 918241
+ },
+ {
+  "id": "p027",
+  "title": "Annapurna Compact Chai Kettle",
+  "price": 349,
+  "mrp": 380,
+  "rating": 3.8,
+  "reviews": 1323,
+  "stock": 26,
+  "tags": [
+   "budget"
+  ],
+  "category": "kitchen",
+  "seed": 648492
+ },
+ {
+  "id": "p028",
+  "title": "Rasoi Pro Knife Set",
+  "price": 3169,
+  "mrp": 3500,
+  "rating": 4.8,
+  "reviews": 271,
+  "stock": 2,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "kitchen",
+  "seed": 842567
+ },
+ {
+  "id": "p029",
+  "title": "Chulha Signature Air Fryer",
+  "price": 2239,
+  "mrp": 2410,
+  "rating": 4.6,
+  "reviews": 4320,
+  "stock": 45,
+  "tags": [],
+  "category": "kitchen",
+  "seed": 814636
+ },
+ {
+  "id": "p030",
+  "title": "Copperlane Deluxe Cast Iron Kadai",
+  "price": 3549,
+  "mrp": 4320,
+  "rating": 4.5,
+  "reviews": 3233,
+  "stock": 97,
+  "tags": [
+   "premium"
+  ],
+  "category": "kitchen",
+  "seed": 469857
+ },
+ {
+  "id": "p031",
+  "title": "Rasoi Classic Water Bottle",
+  "price": 1209,
+  "mrp": 1860,
+  "rating": 3.8,
+  "reviews": 1944,
+  "stock": 129,
+  "tags": [],
+  "category": "kitchen",
+  "seed": 704604
+ },
+ {
+  "id": "p032",
+  "title": "Annapurna Mini Dinner Set",
+  "price": 429,
+  "mrp": 630,
+  "rating": 4.3,
+  "reviews": 2899,
+  "stock": 107,
+  "tags": [
+   "budget"
+  ],
+  "category": "kitchen",
+  "seed": 190762
+ },
+ {
+  "id": "p033",
+  "title": "Rasoi Everyday Cold Press Juicer",
+  "price": 529,
+  "mrp": 550,
+  "rating": 4.1,
+  "reviews": 243,
+  "stock": 192,
+  "tags": [
+   "gift"
+  ],
+  "category": "kitchen",
+  "seed": 407290
+ },
+ {
+  "id": "p034",
+  "title": "Chulha Mini Rolling Pin",
+  "price": 269,
+  "mrp": 290,
+  "rating": 4.6,
+  "reviews": 146,
+  "stock": 185,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "kitchen",
+  "seed": 664385
+ },
+ {
+  "id": "p035",
+  "title": "Copperlane Everyday Induction Cooktop",
+  "price": 209,
+  "mrp": 240,
+  "rating": 4,
+  "reviews": 6215,
+  "stock": 41,
+  "tags": [
+   "budget"
+  ],
+  "category": "kitchen",
+  "seed": 73499
+ },
+ {
+  "id": "p036",
+  "title": "Tanvi Mini Salad Bowl",
+  "price": 1199,
+  "mrp": 1600,
+  "rating": 3.8,
+  "reviews": 713,
+  "stock": 95,
+  "tags": [
+   "gift"
+  ],
+  "category": "kitchen",
+  "seed": 482323
+ },
+ {
+  "id": "p037",
+  "title": "Rasoi Signature Idli Maker",
+  "price": 399,
+  "mrp": 500,
+  "rating": 4.3,
+  "reviews": 5157,
+  "stock": 78,
+  "tags": [
+   "budget"
+  ],
+  "category": "kitchen",
+  "seed": 519049
+ },
+ {
+  "id": "p038",
+  "title": "Tanvi Pro Coffee Press",
+  "price": 4049,
+  "mrp": 4370,
+  "rating": 4.8,
+  "reviews": 157,
+  "stock": 112,
+  "tags": [
+   "premium"
+  ],
+  "category": "kitchen",
+  "seed": 580882
+ },
+ {
+  "id": "p039",
+  "title": "Pustak Classic Short Stories",
+  "price": 809,
+  "mrp": 900,
+  "rating": 3.2,
+  "reviews": 4548,
+  "stock": 39,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "books",
+  "seed": 397761
+ },
+ {
+  "id": "p040",
+  "title": "Lekhak Everyday Cookbook",
+  "price": 239,
+  "mrp": 270,
+  "rating": 3.5,
+  "reviews": 6128,
+  "stock": 4,
+  "tags": [
+   "gift",
+   "new"
+  ],
+  "category": "books",
+  "seed": 65498
+ },
+ {
+  "id": "p041",
+  "title": "Katha Pro Travel Memoir",
+  "price": 369,
+  "mrp": 400,
+  "rating": 4.6,
+  "reviews": 475,
+  "stock": 190,
+  "tags": [],
+  "category": "books",
+  "seed": 361016
+ },
+ {
+  "id": "p042",
+  "title": "Akshar Mini Science Primer",
+  "price": 389,
+  "mrp": 430,
+  "rating": 3.3,
+  "reviews": 225,
+  "stock": 74,
+  "tags": [],
+  "category": "books",
+  "seed": 628627
+ },
+ {
+  "id": "p043",
+  "title": "Pustak Deluxe Poetry Collection",
+  "price": 779,
+  "mrp": 860,
+  "rating": 3.8,
+  "reviews": 482,
+  "stock": 76,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "books",
+  "seed": 551588
+ },
+ {
+  "id": "p044",
+  "title": "Katha Pro Mystery Novel",
+  "price": 969,
+  "mrp": 1170,
+  "rating": 4,
+  "reviews": 2431,
+  "stock": 3,
+  "tags": [
+   "premium"
+  ],
+  "category": "books",
+  "seed": 613547
+ },
+ {
+  "id": "p045",
+  "title": "Pustak Smart History of Trade",
+  "price": 109,
+  "mrp": 120,
+  "rating": 4.4,
+  "reviews": 1367,
+  "stock": 60,
+  "tags": [
+   "budget"
+  ],
+  "category": "books",
+  "seed": 29707
+ },
+ {
+  "id": "p046",
+  "title": "Akshar Pro Gardening Guide",
+  "price": 1009,
+  "mrp": 1210,
+  "rating": 3.9,
+  "reviews": 557,
+  "stock": 79,
+  "tags": [
+   "premium"
+  ],
+  "category": "books",
+  "seed": 429692
+ },
+ {
+  "id": "p047",
+  "title": "Pustak Signature Chess Openings",
+  "price": 269,
+  "mrp": 300,
+  "rating": 3.5,
+  "reviews": 4710,
+  "stock": 149,
+  "tags": [],
+  "category": "books",
+  "seed": 312768
+ },
+ {
+  "id": "p048",
+  "title": "Katha Smart Children Picture Book",
+  "price": 189,
+  "mrp": 280,
+  "rating": 3.3,
+  "reviews": 5350,
+  "stock": 20,
+  "tags": [
+   "budget"
+  ],
+  "category": "books",
+  "seed": 75533
+ },
+ {
+  "id": "p049",
+  "title": "Katha Mini Business Essays",
+  "price": 279,
+  "mrp": 290,
+  "rating": 3.8,
+  "reviews": 2814,
+  "stock": 91,
+  "tags": [],
+  "category": "books",
+  "seed": 290274
+ },
+ {
+  "id": "p050",
+  "title": "Katha Signature Mythology Retold",
+  "price": 179,
+  "mrp": 200,
+  "rating": 4.7,
+  "reviews": 7046,
+  "stock": 7,
+  "tags": [
+   "budget"
+  ],
+  "category": "books",
+  "seed": 447301
+ },
+ {
+  "id": "p051",
+  "title": "Akshar Deluxe Sketching Handbook",
+  "price": 129,
+  "mrp": 140,
+  "rating": 3.4,
+  "reviews": 455,
+  "stock": 104,
+  "tags": [
+   "budget"
+  ],
+  "category": "books",
+  "seed": 405015
+ },
+ {
+  "id": "p052",
+  "title": "Katha Pro Mindful Living",
+  "price": 509,
+  "mrp": 650,
+  "rating": 4.4,
+  "reviews": 731,
+  "stock": 24,
+  "tags": [],
+  "category": "books",
+  "seed": 12245
+ },
+ {
+  "id": "p053",
+  "title": "Pustak Pro Space Atlas",
+  "price": 99,
+  "mrp": 150,
+  "rating": 4.2,
+  "reviews": 1086,
+  "stock": 22,
+  "tags": [
+   "budget"
+  ],
+  "category": "books",
+  "seed": 909888
+ },
+ {
+  "id": "p054",
+  "title": "Akshar Signature Detective Omnibus",
+  "price": 969,
+  "mrp": 1290,
+  "rating": 4,
+  "reviews": 3487,
+  "stock": 99,
+  "tags": [
+   "premium"
+  ],
+  "category": "books",
+  "seed": 56136
+ },
+ {
+  "id": "p055",
+  "title": "Pustak Smart Learn Python",
+  "price": 489,
+  "mrp": 530,
+  "rating": 4.2,
+  "reviews": 2887,
+  "stock": 124,
+  "tags": [
+   "gift"
+  ],
+  "category": "books",
+  "seed": 791361
+ },
+ {
+  "id": "p056",
+  "title": "Akshar Smart Folk Tales",
+  "price": 119,
+  "mrp": 130,
+  "rating": 3.8,
+  "reviews": 2961,
+  "stock": 72,
+  "tags": [
+   "budget"
+  ],
+  "category": "books",
+  "seed": 511606
+ },
+ {
+  "id": "p057",
+  "title": "Panna Everyday Yoga Basics",
+  "price": 1079,
+  "mrp": 1360,
+  "rating": 3.4,
+  "reviews": 2060,
+  "stock": 83,
+  "tags": [
+   "premium",
+   "new"
+  ],
+  "category": "books",
+  "seed": 371830
+ },
+ {
+  "id": "p058",
+  "title": "Rangrez Pro Cotton Kurta",
+  "price": 5569,
+  "mrp": 5950,
+  "rating": 4.1,
+  "reviews": 106,
+  "stock": 195,
+  "tags": [
+   "premium"
+  ],
+  "category": "fashion",
+  "seed": 240613
+ },
+ {
+  "id": "p059",
+  "title": "Dhaga Deluxe Denim Jacket",
+  "price": 4749,
+  "mrp": 5770,
+  "rating": 4.8,
+  "reviews": 257,
+  "stock": 125,
+  "tags": [
+   "premium"
+  ],
+  "category": "fashion",
+  "seed": 457871
+ },
+ {
+  "id": "p060",
+  "title": "Mehr Compact Running Shoes",
+  "price": 1199,
+  "mrp": 1620,
+  "rating": 3.4,
+  "reviews": 8476,
+  "stock": 17,
+  "tags": [],
+  "category": "fashion",
+  "seed": 474989
+ },
+ {
+  "id": "p061",
+  "title": "Mehr Smart Linen Shirt",
+  "price": 2769,
+  "mrp": 3140,
+  "rating": 3.6,
+  "reviews": 3123,
+  "stock": 45,
+  "tags": [
+   "premium"
+  ],
+  "category": "fashion",
+  "seed": 261459
+ },
+ {
+  "id": "p062",
+  "title": "Mehr Deluxe Silk Dupatta",
+  "price": 299,
+  "mrp": 330,
+  "rating": 4.7,
+  "reviews": 905,
+  "stock": 63,
+  "tags": [
+   "budget",
+   "new"
+  ],
+  "category": "fashion",
+  "seed": 829202
+ },
+ {
+  "id": "p063",
+  "title": "Rangrez Essential Canvas Backpack",
+  "price": 199,
+  "mrp": 220,
+  "rating": 4.4,
+  "reviews": 873,
+  "stock": 154,
+  "tags": [
+   "budget",
+   "gift",
+   "new"
+  ],
+  "category": "fashion",
+  "seed": 122928
+ },
+ {
+  "id": "p064",
+  "title": "Urbane Smart Leather Belt",
+  "price": 309,
+  "mrp": 430,
+  "rating": 4.6,
+  "reviews": 773,
+  "stock": 3,
+  "tags": [
+   "budget"
+  ],
+  "category": "fashion",
+  "seed": 10061
+ },
+ {
+  "id": "p065",
+  "title": "Urbane Essential Wool Shawl",
+  "price": 419,
+  "mrp": 480,
+  "rating": 3.9,
+  "reviews": 4399,
+  "stock": 11,
+  "tags": [
+   "budget"
+  ],
+  "category": "fashion",
+  "seed": 965766
+ },
+ {
+  "id": "p066",
+  "title": "Mehr Signature Sports Tee",
+  "price": 339,
+  "mrp": 370,
+  "rating": 3.7,
+  "reviews": 451,
+  "stock": 2,
+  "tags": [
+   "budget"
+  ],
+  "category": "fashion",
+  "seed": 381782
+ },
+ {
+  "id": "p067",
+  "title": "Thaan Mini Block-print Saree",
+  "price": 749,
+  "mrp": 800,
+  "rating": 4.6,
+  "reviews": 997,
+  "stock": 33,
+  "tags": [],
+  "category": "fashion",
+  "seed": 355696
+ },
+ {
+  "id": "p068",
+  "title": "Mehr Deluxe Sunglasses",
+  "price": 719,
+  "mrp": 860,
+  "rating": 4.6,
+  "reviews": 390,
+  "stock": 36,
+  "tags": [],
+  "category": "fashion",
+  "seed": 464759
+ },
+ {
+  "id": "p069",
+  "title": "Dhaga Essential Wrist Watch",
+  "price": 4909,
+  "mrp": 7310,
+  "rating": 4.6,
+  "reviews": 1356,
+  "stock": 132,
+  "tags": [
+   "premium"
+  ],
+  "category": "fashion",
+  "seed": 446350
+ },
+ {
+  "id": "p070",
+  "title": "Mehr Everyday Chino Trousers",
+  "price": 359,
+  "mrp": 520,
+  "rating": 3.7,
+  "reviews": 444,
+  "stock": 107,
+  "tags": [
+   "budget"
+  ],
+  "category": "fashion",
+  "seed": 200821
+ },
+ {
+  "id": "p071",
+  "title": "Rangrez Compact Kolhapuri Sandals",
+  "price": 359,
+  "mrp": 380,
+  "rating": 4.5,
+  "reviews": 7058,
+  "stock": 72,
+  "tags": [
+   "budget"
+  ],
+  "category": "fashion",
+  "seed": 692348
+ },
+ {
+  "id": "p072",
+  "title": "Rangrez Essential Rain Jacket",
+  "price": 669,
+  "mrp": 720,
+  "rating": 4.3,
+  "reviews": 850,
+  "stock": 165,
+  "tags": [],
+  "category": "fashion",
+  "seed": 734096
+ },
+ {
+  "id": "p073",
+  "title": "Urbane Essential Socks Pack of 5",
+  "price": 2179,
+  "mrp": 2360,
+  "rating": 3.9,
+  "reviews": 3324,
+  "stock": 132,
+  "tags": [
+   "gift"
+  ],
+  "category": "fashion",
+  "seed": 563153
+ },
+ {
+  "id": "p074",
+  "title": "Urbane Compact Tote Bag",
+  "price": 199,
+  "mrp": 260,
+  "rating": 3.8,
+  "reviews": 2709,
+  "stock": 178,
+  "tags": [
+   "budget"
+  ],
+  "category": "fashion",
+  "seed": 483929
+ },
+ {
+  "id": "p075",
+  "title": "Urbane Compact Hoodie",
+  "price": 1249,
+  "mrp": 1290,
+  "rating": 4.2,
+  "reviews": 160,
+  "stock": 3,
+  "tags": [
+   "gift",
+   "new"
+  ],
+  "category": "fashion",
+  "seed": 79027
+ },
+ {
+  "id": "p076",
+  "title": "Dhaga Everyday Cap",
+  "price": 2539,
+  "mrp": 3670,
+  "rating": 3.3,
+  "reviews": 1149,
+  "stock": 4,
+  "tags": [
+   "premium"
+  ],
+  "category": "fashion",
+  "seed": 459612
+ },
+ {
+  "id": "p077",
+  "title": "Sajawat Pro Cotton Bedsheet",
+  "price": 1549,
+  "mrp": 1880,
+  "rating": 4.5,
+  "reviews": 137,
+  "stock": 139,
+  "tags": [
+   "new"
+  ],
+  "category": "home",
+  "seed": 323426
+ },
+ {
+  "id": "p078",
+  "title": "Sajawat Signature Floor Cushion",
+  "price": 1579,
+  "mrp": 1750,
+  "rating": 4.6,
+  "reviews": 1981,
+  "stock": 37,
+  "tags": [],
+  "category": "home",
+  "seed": 565440
+ },
+ {
+  "id": "p079",
+  "title": "Sajawat Compact Wall Clock",
+  "price": 12999,
+  "mrp": 13840,
+  "rating": 3.8,
+  "reviews": 1926,
+  "stock": 38,
+  "tags": [
+   "premium"
+  ],
+  "category": "home",
+  "seed": 570154
+ },
+ {
+  "id": "p080",
+  "title": "Kothi Smart Jute Rug",
+  "price": 1999,
+  "mrp": 2200,
+  "rating": 4.5,
+  "reviews": 1690,
+  "stock": 4,
+  "tags": [],
+  "category": "home",
+  "seed": 541916
+ },
+ {
+  "id": "p081",
+  "title": "Ghar Classic Table Lamp",
+  "price": 429,
+  "mrp": 460,
+  "rating": 4.8,
+  "reviews": 1124,
+  "stock": 63,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 611873
+ },
+ {
+  "id": "p082",
+  "title": "Ghar Mini Storage Basket",
+  "price": 499,
+  "mrp": 520,
+  "rating": 3.5,
+  "reviews": 865,
+  "stock": 8,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 872733
+ },
+ {
+  "id": "p083",
+  "title": "Ghar Deluxe Curtain Pair",
+  "price": 659,
+  "mrp": 730,
+  "rating": 3.5,
+  "reviews": 1304,
+  "stock": 136,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 25631
+ },
+ {
+  "id": "p084",
+  "title": "Kothi Smart Bookshelf",
+  "price": 439,
+  "mrp": 490,
+  "rating": 4.5,
+  "reviews": 1081,
+  "stock": 170,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "home",
+  "seed": 478350
+ },
+ {
+  "id": "p085",
+  "title": "Aangan Classic Photo Frame Set",
+  "price": 289,
+  "mrp": 310,
+  "rating": 3.5,
+  "reviews": 3967,
+  "stock": 182,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 205993
+ },
+ {
+  "id": "p086",
+  "title": "Kothi Mini Ceramic Vase",
+  "price": 299,
+  "mrp": 460,
+  "rating": 3.2,
+  "reviews": 857,
+  "stock": 111,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 325871
+ },
+ {
+  "id": "p087",
+  "title": "Aangan Pro Door Mat",
+  "price": 609,
+  "mrp": 650,
+  "rating": 3.8,
+  "reviews": 3178,
+  "stock": 56,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 154868
+ },
+ {
+  "id": "p088",
+  "title": "Neend Essential Bath Towels",
+  "price": 4549,
+  "mrp": 4970,
+  "rating": 3.4,
+  "reviews": 3378,
+  "stock": 142,
+  "tags": [
+   "premium"
+  ],
+  "category": "home",
+  "seed": 949050
+ },
+ {
+  "id": "p089",
+  "title": "Kothi Smart Wall Mirror",
+  "price": 8969,
+  "mrp": 9550,
+  "rating": 3.9,
+  "reviews": 27,
+  "stock": 78,
+  "tags": [
+   "premium"
+  ],
+  "category": "home",
+  "seed": 127372
+ },
+ {
+  "id": "p090",
+  "title": "Kothi Heritage Study Chair",
+  "price": 869,
+  "mrp": 900,
+  "rating": 4.4,
+  "reviews": 3143,
+  "stock": 4,
+  "tags": [],
+  "category": "home",
+  "seed": 366050
+ },
+ {
+  "id": "p091",
+  "title": "Sajawat Signature Scented Candles",
+  "price": 3149,
+  "mrp": 3290,
+  "rating": 4.3,
+  "reviews": 1032,
+  "stock": 184,
+  "tags": [
+   "new"
+  ],
+  "category": "home",
+  "seed": 889506
+ },
+ {
+  "id": "p092",
+  "title": "Kothi Essential Clothes Rack",
+  "price": 229,
+  "mrp": 260,
+  "rating": 3.3,
+  "reviews": 792,
+  "stock": 185,
+  "tags": [
+   "budget",
+   "new"
+  ],
+  "category": "home",
+  "seed": 817563
+ },
+ {
+  "id": "p093",
+  "title": "Sajawat Mini Quilt",
+  "price": 259,
+  "mrp": 280,
+  "rating": 4.3,
+  "reviews": 15,
+  "stock": 2,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 928888
+ },
+ {
+  "id": "p094",
+  "title": "Kothi Classic Planter Pots",
+  "price": 2079,
+  "mrp": 2200,
+  "rating": 3.4,
+  "reviews": 3641,
+  "stock": 82,
+  "tags": [],
+  "category": "home",
+  "seed": 802929
+ },
+ {
+  "id": "p095",
+  "title": "Neend Deluxe Shoe Rack",
+  "price": 339,
+  "mrp": 360,
+  "rating": 3.4,
+  "reviews": 461,
+  "stock": 1,
+  "tags": [
+   "budget"
+  ],
+  "category": "home",
+  "seed": 330032
+ },
+ {
+  "id": "p096",
+  "title": "Tarang Everyday Wooden Blocks",
+  "price": 649,
+  "mrp": 830,
+  "rating": 4.4,
+  "reviews": 262,
+  "stock": 34,
+  "tags": [],
+  "category": "toys",
+  "seed": 88544
+ },
+ {
+  "id": "p097",
+  "title": "Gudda Everyday Jigsaw 500 pc",
+  "price": 949,
+  "mrp": 1210,
+  "rating": 4.2,
+  "reviews": 4052,
+  "stock": 143,
+  "tags": [],
+  "category": "toys",
+  "seed": 894921
+ },
+ {
+  "id": "p098",
+  "title": "Gudda Signature Remote Car",
+  "price": 959,
+  "mrp": 1010,
+  "rating": 4.7,
+  "reviews": 2015,
+  "stock": 98,
+  "tags": [],
+  "category": "toys",
+  "seed": 396956
+ },
+ {
+  "id": "p099",
+  "title": "Tarang Mini Board Game",
+  "price": 549,
+  "mrp": 610,
+  "rating": 4.5,
+  "reviews": 5527,
+  "stock": 185,
+  "tags": [
+   "gift"
+  ],
+  "category": "toys",
+  "seed": 803519
+ },
+ {
+  "id": "p100",
+  "title": "Khel Everyday Art Kit",
+  "price": 749,
+  "mrp": 830,
+  "rating": 4.2,
+  "reviews": 1361,
+  "stock": 30,
+  "tags": [
+   "new"
+  ],
+  "category": "toys",
+  "seed": 190049
+ },
+ {
+  "id": "p101",
+  "title": "Mela Deluxe Plush Elephant",
+  "price": 339,
+  "mrp": 380,
+  "rating": 4,
+  "reviews": 572,
+  "stock": 1,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "toys",
+  "seed": 329347
+ },
+ {
+  "id": "p102",
+  "title": "Tarang Pro Science Kit",
+  "price": 2469,
+  "mrp": 2910,
+  "rating": 3.2,
+  "reviews": 131,
+  "stock": 82,
+  "tags": [
+   "premium"
+  ],
+  "category": "toys",
+  "seed": 451788
+ },
+ {
+  "id": "p103",
+  "title": "Khel Classic Building Bricks",
+  "price": 3319,
+  "mrp": 4440,
+  "rating": 4.2,
+  "reviews": 1424,
+  "stock": 146,
+  "tags": [
+   "premium"
+  ],
+  "category": "toys",
+  "seed": 484801
+ },
+ {
+  "id": "p104",
+  "title": "Bachpan Compact Play Kitchen",
+  "price": 3179,
+  "mrp": 4000,
+  "rating": 4.8,
+  "reviews": 5464,
+  "stock": 15,
+  "tags": [
+   "premium"
+  ],
+  "category": "toys",
+  "seed": 151039
+ },
+ {
+  "id": "p105",
+  "title": "Khel Essential Puppet Set",
+  "price": 429,
+  "mrp": 530,
+  "rating": 4.7,
+  "reviews": 3698,
+  "stock": 1,
+  "tags": [],
+  "category": "toys",
+  "seed": 912752
+ },
+ {
+  "id": "p106",
+  "title": "Mela Mini Spinning Tops",
+  "price": 219,
+  "mrp": 240,
+  "rating": 3.8,
+  "reviews": 3782,
+  "stock": 128,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "toys",
+  "seed": 182408
+ },
+ {
+  "id": "p107",
+  "title": "Bachpan Heritage Kite Combo",
+  "price": 1369,
+  "mrp": 1800,
+  "rating": 4.5,
+  "reviews": 1153,
+  "stock": 63,
+  "tags": [
+   "gift"
+  ],
+  "category": "toys",
+  "seed": 169919
+ },
+ {
+  "id": "p108",
+  "title": "Tarang Essential Magnetic Tiles",
+  "price": 1149,
+  "mrp": 1380,
+  "rating": 3.6,
+  "reviews": 2582,
+  "stock": 69,
+  "tags": [
+   "gift",
+   "new"
+  ],
+  "category": "toys",
+  "seed": 685855
+ },
+ {
+  "id": "p109",
+  "title": "Tarang Essential Doll House",
+  "price": 1919,
+  "mrp": 2060,
+  "rating": 4,
+  "reviews": 478,
+  "stock": 9,
+  "tags": [
+   "premium"
+  ],
+  "category": "toys",
+  "seed": 973246
+ },
+ {
+  "id": "p110",
+  "title": "Mela Essential Ludo Classic",
+  "price": 449,
+  "mrp": 480,
+  "rating": 4.5,
+  "reviews": 1156,
+  "stock": 135,
+  "tags": [],
+  "category": "toys",
+  "seed": 365553
+ },
+ {
+  "id": "p111",
+  "title": "Gudda Mini Rubik Cube",
+  "price": 219,
+  "mrp": 330,
+  "rating": 4.9,
+  "reviews": 667,
+  "stock": 138,
+  "tags": [
+   "budget"
+  ],
+  "category": "toys",
+  "seed": 625666
+ },
+ {
+  "id": "p112",
+  "title": "Khel Smart Toy Train",
+  "price": 2249,
+  "mrp": 3330,
+  "rating": 3.3,
+  "reviews": 1838,
+  "stock": 45,
+  "tags": [
+   "premium",
+   "new"
+  ],
+  "category": "toys",
+  "seed": 67654
+ },
+ {
+  "id": "p113",
+  "title": "Mela Compact Clay Set",
+  "price": 169,
+  "mrp": 190,
+  "rating": 3.9,
+  "reviews": 14,
+  "stock": 24,
+  "tags": [
+   "budget"
+  ],
+  "category": "toys",
+  "seed": 308677
+ },
+ {
+  "id": "p114",
+  "title": "Tarang Compact Bubble Gun",
+  "price": 149,
+  "mrp": 170,
+  "rating": 4,
+  "reviews": 1298,
+  "stock": 166,
+  "tags": [
+   "budget"
+  ],
+  "category": "toys",
+  "seed": 498960
+ },
+ {
+  "id": "p115",
+  "title": "Khet Essential Basmati Rice 5kg",
+  "price": 439,
+  "mrp": 580,
+  "rating": 4.4,
+  "reviews": 1315,
+  "stock": 154,
+  "tags": [
+   "new"
+  ],
+  "category": "grocery",
+  "seed": 383449
+ },
+ {
+  "id": "p116",
+  "title": "Dehat Everyday Cold-pressed Oil",
+  "price": 329,
+  "mrp": 410,
+  "rating": 4.3,
+  "reviews": 448,
+  "stock": 88,
+  "tags": [
+   "gift"
+  ],
+  "category": "grocery",
+  "seed": 894124
+ },
+ {
+  "id": "p117",
+  "title": "Anaaj Deluxe Assam Tea",
+  "price": 119,
+  "mrp": 140,
+  "rating": 3.8,
+  "reviews": 964,
+  "stock": 145,
+  "tags": [
+   "budget"
+  ],
+  "category": "grocery",
+  "seed": 203201
+ },
+ {
+  "id": "p118",
+  "title": "Dehat Signature Mixed Nuts",
+  "price": 269,
+  "mrp": 380,
+  "rating": 4.4,
+  "reviews": 2941,
+  "stock": 125,
+  "tags": [
+   "gift"
+  ],
+  "category": "grocery",
+  "seed": 336036
+ },
+ {
+  "id": "p119",
+  "title": "Dehat Deluxe Millet Flour",
+  "price": 259,
+  "mrp": 390,
+  "rating": 4.9,
+  "reviews": 1012,
+  "stock": 80,
+  "tags": [],
+  "category": "grocery",
+  "seed": 323085
+ },
+ {
+  "id": "p120",
+  "title": "Dehat Mini Wild Honey",
+  "price": 1249,
+  "mrp": 1800,
+  "rating": 4.9,
+  "reviews": 1673,
+  "stock": 109,
+  "tags": [
+   "premium"
+  ],
+  "category": "grocery",
+  "seed": 508952
+ },
+ {
+  "id": "p121",
+  "title": "Sabzi Classic Masala Combo",
+  "price": 859,
+  "mrp": 1230,
+  "rating": 3.7,
+  "reviews": 4770,
+  "stock": 181,
+  "tags": [
+   "premium"
+  ],
+  "category": "grocery",
+  "seed": 81767
+ },
+ {
+  "id": "p122",
+  "title": "Dehat Compact Filter Coffee",
+  "price": 69,
+  "mrp": 80,
+  "rating": 3.3,
+  "reviews": 846,
+  "stock": 65,
+  "tags": [
+   "budget"
+  ],
+  "category": "grocery",
+  "seed": 684016
+ },
+ {
+  "id": "p123",
+  "title": "Mitti Classic Dark Chocolate",
+  "price": 109,
+  "mrp": 130,
+  "rating": 4.5,
+  "reviews": 1890,
+  "stock": 112,
+  "tags": [
+   "budget",
+   "gift"
+  ],
+  "category": "grocery",
+  "seed": 37320
+ },
+ {
+  "id": "p124",
+  "title": "Sabzi Pro Rolled Oats",
+  "price": 809,
+  "mrp": 1090,
+  "rating": 3.8,
+  "reviews": 2718,
+  "stock": 138,
+  "tags": [
+   "premium"
+  ],
+  "category": "grocery",
+  "seed": 981238
+ },
+ {
+  "id": "p125",
+  "title": "Khet Heritage Ghee 1L",
+  "price": 199,
+  "mrp": 250,
+  "rating": 3.9,
+  "reviews": 863,
+  "stock": 193,
+  "tags": [],
+  "category": "grocery",
+  "seed": 599249
+ },
+ {
+  "id": "p126",
+  "title": "Sabzi Mini Dry Fruit Box",
+  "price": 989,
+  "mrp": 1010,
+  "rating": 4.5,
+  "reviews": 4805,
+  "stock": 102,
+  "tags": [
+   "premium"
+  ],
+  "category": "grocery",
+  "seed": 99828
+ },
+ {
+  "id": "p127",
+  "title": "Khet Mini Pickle Trio",
+  "price": 229,
+  "mrp": 240,
+  "rating": 3.9,
+  "reviews": 8124,
+  "stock": 125,
+  "tags": [],
+  "category": "grocery",
+  "seed": 17293
+ },
+ {
+  "id": "p128",
+  "title": "Anaaj Compact Peanut Butter",
+  "price": 89,
+  "mrp": 140,
+  "rating": 3.8,
+  "reviews": 4063,
+  "stock": 92,
+  "tags": [
+   "budget"
+  ],
+  "category": "grocery",
+  "seed": 574396
+ },
+ {
+  "id": "p129",
+  "title": "Khet Heritage Jaggery Cubes",
+  "price": 49,
+  "mrp": 70,
+  "rating": 3.4,
+  "reviews": 2249,
+  "stock": 20,
+  "tags": [
+   "budget"
+  ],
+  "category": "grocery",
+  "seed": 374217
+ },
+ {
+  "id": "p130",
+  "title": "Sabzi Signature Green Tea",
+  "price": 259,
+  "mrp": 390,
+  "rating": 4,
+  "reviews": 595,
+  "stock": 172,
+  "tags": [],
+  "category": "grocery",
+  "seed": 279756
+ },
+ {
+  "id": "p131",
+  "title": "Mitti Everyday Quinoa",
+  "price": 579,
+  "mrp": 630,
+  "rating": 4.3,
+  "reviews": 70,
+  "stock": 36,
+  "tags": [
+   "premium"
+  ],
+  "category": "grocery",
+  "seed": 200023
+ },
+ {
+  "id": "p132",
+  "title": "Mitti Classic Papad Pack",
+  "price": 329,
+  "mrp": 350,
+  "rating": 3.9,
+  "reviews": 213,
+  "stock": 4,
+  "tags": [],
+  "category": "grocery",
+  "seed": 95141
+ },
+ {
+  "id": "p133",
+  "title": "Mitti Compact Instant Poha",
+  "price": 879,
+  "mrp": 1120,
+  "rating": 4.3,
+  "reviews": 393,
+  "stock": 151,
+  "tags": [
+   "premium"
+  ],
+  "category": "grocery",
+  "seed": 871702
+ },
+ {
+  "id": "p134",
+  "title": "Chandan Essential Face Serum",
+  "price": 2319,
+  "mrp": 2410,
+  "rating": 3.7,
+  "reviews": 3627,
+  "stock": 7,
+  "tags": [
+   "premium"
+  ],
+  "category": "beauty",
+  "seed": 496789
+ },
+ {
+  "id": "p135",
+  "title": "Gulab Compact Sunscreen SPF 50",
+  "price": 109,
+  "mrp": 120,
+  "rating": 4.2,
+  "reviews": 2503,
+  "stock": 16,
+  "tags": [
+   "budget"
+  ],
+  "category": "beauty",
+  "seed": 591405
+ },
+ {
+  "id": "p136",
+  "title": "Neem & Co Mini Hair Oil",
+  "price": 1099,
+  "mrp": 1430,
+  "rating": 4.4,
+  "reviews": 6555,
+  "stock": 128,
+  "tags": [],
+  "category": "beauty",
+  "seed": 167435
+ },
+ {
+  "id": "p137",
+  "title": "Gulab Deluxe Lip Balm Trio",
+  "price": 149,
+  "mrp": 160,
+  "rating": 4.8,
+  "reviews": 1913,
+  "stock": 33,
+  "tags": [
+   "budget"
+  ],
+  "category": "beauty",
+  "seed": 223278
+ },
+ {
+  "id": "p138",
+  "title": "Neem & Co Deluxe Herbal Shampoo",
+  "price": 269,
+  "mrp": 330,
+  "rating": 3.7,
+  "reviews": 113,
+  "stock": 137,
+  "tags": [
+   "budget"
+  ],
+  "category": "beauty",
+  "seed": 494555
+ },
+ {
+  "id": "p139",
+  "title": "Saundarya Essential Body Lotion",
+  "price": 519,
+  "mrp": 560,
+  "rating": 4.4,
+  "reviews": 800,
+  "stock": 143,
+  "tags": [],
+  "category": "beauty",
+  "seed": 187541
+ },
+ {
+  "id": "p140",
+  "title": "Neem & Co Compact Kajal Pencil",
+  "price": 629,
+  "mrp": 670,
+  "rating": 4.1,
+  "reviews": 3294,
+  "stock": 92,
+  "tags": [],
+  "category": "beauty",
+  "seed": 690031
+ },
+ {
+  "id": "p141",
+  "title": "Neem & Co Signature Sandalwood Soap",
+  "price": 349,
+  "mrp": 380,
+  "rating": 4.6,
+  "reviews": 3583,
+  "stock": 109,
+  "tags": [
+   "gift",
+   "new"
+  ],
+  "category": "beauty",
+  "seed": 976522
+ },
+ {
+  "id": "p142",
+  "title": "Roop Signature Beard Kit",
+  "price": 1219,
+  "mrp": 1430,
+  "rating": 3.9,
+  "reviews": 101,
+  "stock": 164,
+  "tags": [],
+  "category": "beauty",
+  "seed": 602841
+ },
+ {
+  "id": "p143",
+  "title": "Saundarya Essential Face Mask Set",
+  "price": 489,
+  "mrp": 530,
+  "rating": 4.3,
+  "reviews": 1455,
+  "stock": 197,
+  "tags": [],
+  "category": "beauty",
+  "seed": 114599
+ },
+ {
+  "id": "p144",
+  "title": "Neem & Co Everyday Perfume 50ml",
+  "price": 2049,
+  "mrp": 2240,
+  "rating": 4.4,
+  "reviews": 888,
+  "stock": 175,
+  "tags": [
+   "premium"
+  ],
+  "category": "beauty",
+  "seed": 646523
+ },
+ {
+  "id": "p145",
+  "title": "Saundarya Everyday Nail Polish Set",
+  "price": 829,
+  "mrp": 920,
+  "rating": 3.4,
+  "reviews": 364,
+  "stock": 83,
+  "tags": [],
+  "category": "beauty",
+  "seed": 947393
+ },
+ {
+  "id": "p146",
+  "title": "Saundarya Signature Moisturiser",
+  "price": 439,
+  "mrp": 490,
+  "rating": 4.2,
+  "reviews": 2585,
+  "stock": 129,
+  "tags": [],
+  "category": "beauty",
+  "seed": 798721
+ },
+ {
+  "id": "p147",
+  "title": "Neem & Co Deluxe Bamboo Comb",
+  "price": 1539,
+  "mrp": 1690,
+  "rating": 4.3,
+  "reviews": 1252,
+  "stock": 175,
+  "tags": [
+   "premium"
+  ],
+  "category": "beauty",
+  "seed": 570090
+ },
+ {
+  "id": "p148",
+  "title": "Neem & Co Heritage Rose Water",
+  "price": 189,
+  "mrp": 200,
+  "rating": 4.4,
+  "reviews": 5932,
+  "stock": 38,
+  "tags": [
+   "budget"
+  ],
+  "category": "beauty",
+  "seed": 668897
+ },
+ {
+  "id": "p149",
+  "title": "Neem & Co Pro Hand Cream",
+  "price": 239,
+  "mrp": 310,
+  "rating": 4.3,
+  "reviews": 8012,
+  "stock": 14,
+  "tags": [
+   "budget"
+  ],
+  "category": "beauty",
+  "seed": 81356
+ },
+ {
+  "id": "p150",
+  "title": "Saundarya Deluxe Makeup Brushes",
+  "price": 1869,
+  "mrp": 2200,
+  "rating": 3.4,
+  "reviews": 5142,
+  "stock": 198,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "beauty",
+  "seed": 855478
+ },
+ {
+  "id": "p151",
+  "title": "Chandan Smart Trimmer",
+  "price": 329,
+  "mrp": 370,
+  "rating": 4.6,
+  "reviews": 905,
+  "stock": 87,
+  "tags": [],
+  "category": "beauty",
+  "seed": 255043
+ },
+ {
+  "id": "p152",
+  "title": "Saundarya Smart Gift Hamper",
+  "price": 1929,
+  "mrp": 2140,
+  "rating": 3.4,
+  "reviews": 3355,
+  "stock": 92,
+  "tags": [
+   "premium",
+   "gift"
+  ],
+  "category": "beauty",
+  "seed": 149071
+ }
+]
