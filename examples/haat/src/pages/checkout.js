@@ -1,4 +1,4 @@
-import { h, byId, cart, orders, art, inr, esc, deliveryBy } from '../lib.js';
+import { h, byId, cart, orders, art, inr, esc, deliveryBy, prbTrack } from '../lib.js';
 import { emptyCart } from './states.js';
 import { feeFor } from './cart.js';
 
@@ -80,6 +80,7 @@ export function checkout() {
     const total = totals();
     const speed = f.get('speed'), pay = f.get('pay');
     const o = orders.place({ name: f.get('name'), phone: f.get('phone'), addr: `${f.get('addr')}, ${f.get('city')} ${f.get('pin')}`, speed, payment: pay, total });
+    prbTrack.purchase(o); // the confirmed order: real order id, total in rupees
     const lines = Object.entries(o.items).map(([id, q]) => { const p = byId.get(id); return `<li><span class="thumb">${art(p)}</span><span class="t">${esc(p.title)}<small>Qty ${q}</small></span><b>${inr(p.price * q)}</b></li>`; }).join('');
     el.replaceChildren(h(`<div class="confirm" data-testid="order-done">
       <div class="confirm-head"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="#1f8a4c"/><path d="M14 25l7 7 13-15" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>

@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Big Market - everyday things, delivered</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%230a6a61'/%3E%3C/svg%3E" />
+    <!-- Pratibimba. Plain blocking tags as early in <head> as possible (no async/defer): the manifest first,
+         then the SDK. /_prb is proxied to Core on this origin (vite.config.js). If Core is down both tags
+         fail and the page shows its own baseline. Context features are booleans declared in site.json. -->
+    <script>
+      (function () {
+        var cats = ['electronics', 'kitchen', 'books', 'fashion', 'home', 'toys', 'grocery', 'beauty'];
+        var viewed = [];
+        try { viewed = JSON.parse(sessionStorage.getItem('haat.viewed') || '[]'); } catch (e) {}
+        var ref = document.referrer || '';
+        var ad = /[?&](utm_source|utm_medium|utm_campaign|gclid|fbclid|msclkid)=/.test(location.search);
+        var f = {
+          from_search: /^https?:\/\/([^/]*\.)?(google|bing|duckduckgo|yahoo)\./i.test(ref),
+          from_direct: !ref && !ad
+        };
+        cats.forEach(function (c) { f['viewed_' + c] = viewed.indexOf(c) >= 0; });
+        window.__prb_features = f;
+      })();
+    </script>
+    <script src="/_prb/manifest/haat.js"></script>
+    <script src="/_prb/sdk.js" data-site="haat"></script>
   </head>
   <body>
     <div id="app"></div>

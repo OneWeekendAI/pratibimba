@@ -1,0 +1,416 @@
+{
+  "site": "haat",
+  "origin": "http://localhost:5174",
+  "privacy_mode": "full",
+  "currency": "INR",
+  "fields_allowed": [
+    "returning",
+    "mobile",
+    "from_ad",
+    "tz_offset",
+    "slot",
+    "decision_id",
+    "picks",
+    "rescore"
+  ],
+  "features": [
+    {
+      "key": "from_search",
+      "pii": false
+    },
+    {
+      "key": "from_direct",
+      "pii": false
+    },
+    {
+      "key": "viewed_electronics",
+      "pii": false
+    },
+    {
+      "key": "viewed_kitchen",
+      "pii": false
+    },
+    {
+      "key": "viewed_books",
+      "pii": false
+    },
+    {
+      "key": "viewed_fashion",
+      "pii": false
+    },
+    {
+      "key": "viewed_home",
+      "pii": false
+    },
+    {
+      "key": "viewed_toys",
+      "pii": false
+    },
+    {
+      "key": "viewed_grocery",
+      "pii": false
+    },
+    {
+      "key": "viewed_beauty",
+      "pii": false
+    }
+  ],
+  "slots": [
+    {
+      "key": "hero",
+      "selector": "[data-prb-slot=hero]",
+      "metric": "click",
+      "variants": [
+        {
+          "key": "baseline",
+          "baseline": true
+        },
+        {
+          "key": "deals",
+          "html": "<span class=\"kicker\">Deals of the day</span><h1>Prices that reset at midnight</h1><p>Today's biggest markdowns across kitchen, books, fashion and more. Free delivery over ₹499.</p><a class=\"btn\" href=\"#/?deals\">See today's deals</a><a class=\"btn ghost\" href=\"#/c/kitchen\">Shop kitchen</a>"
+        },
+        {
+          "key": "new_arrivals",
+          "html": "<span class=\"kicker\">New arrivals</span><h1>Just landed on the shelf</h1><p>Fresh finds from sellers across India, added this month. Free delivery over ₹499.</p><a class=\"btn\" href=\"#/c/electronics\">See what is new</a><a class=\"btn ghost\" href=\"#/c/fashion\">Shop fashion</a>"
+        },
+        {
+          "key": "gift_picks",
+          "html": "<span class=\"kicker\">Gift picks</span><h1>Gifts they will actually use</h1><p>Hand-picked presents for every budget, ready to ship. Cash on delivery if you like.</p><a class=\"btn\" href=\"#/search?q=gift\">Browse gifts</a><a class=\"btn ghost\" href=\"#/c/toys\">Shop toys</a>"
+        }
+      ]
+    },
+    {
+      "key": "category-rows",
+      "selector": "[data-prb-slot=category-rows]",
+      "kind": "sorted",
+      "metric": "click",
+      "variants": [
+        {
+          "key": "electronics"
+        },
+        {
+          "key": "kitchen"
+        },
+        {
+          "key": "books"
+        },
+        {
+          "key": "fashion"
+        },
+        {
+          "key": "home"
+        },
+        {
+          "key": "toys"
+        },
+        {
+          "key": "grocery"
+        },
+        {
+          "key": "beauty"
+        }
+      ]
+    },
+    {
+      "key": "picks",
+      "selector": "[data-prb-slot=picks]",
+      "kind": "sorted",
+      "metric": "add_to_cart",
+      "variants": [
+        {
+          "key": "p050"
+        },
+        {
+          "key": "p104"
+        },
+        {
+          "key": "p071"
+        },
+        {
+          "key": "p099"
+        },
+        {
+          "key": "p136"
+        },
+        {
+          "key": "p149"
+        },
+        {
+          "key": "p105"
+        },
+        {
+          "key": "p029"
+        },
+        {
+          "key": "p018"
+        },
+        {
+          "key": "p148"
+        },
+        {
+          "key": "p126"
+        },
+        {
+          "key": "p141"
+        }
+      ]
+    },
+    {
+      "key": "deals",
+      "selector": "[data-prb-slot=deals]",
+      "kind": "sorted",
+      "metric": "add_to_cart",
+      "variants": [
+        {
+          "key": "p128"
+        },
+        {
+          "key": "p031"
+        },
+        {
+          "key": "p086"
+        },
+        {
+          "key": "p053"
+        },
+        {
+          "key": "p119"
+        },
+        {
+          "key": "p111"
+        },
+        {
+          "key": "p130"
+        },
+        {
+          "key": "p069"
+        },
+        {
+          "key": "p048"
+        },
+        {
+          "key": "p009"
+        },
+        {
+          "key": "p032"
+        },
+        {
+          "key": "p112"
+        }
+      ]
+    },
+    {
+      "key": "listing-sort",
+      "selector": "[data-prb-slot=listing-sort]",
+      "metric": "add_to_cart",
+      "variants": [
+        {
+          "key": "popular",
+          "baseline": true
+        },
+        {
+          "key": "price_low",
+          "html": "<i data-sort=\"price-low\"></i>"
+        },
+        {
+          "key": "top_rated",
+          "html": "<i data-sort=\"rating\"></i>"
+        }
+      ]
+    },
+    {
+      "key": "product-badge",
+      "selector": "[data-prb-slot=product-badge]",
+      "kind": "copy",
+      "metric": "add_to_cart",
+      "copy": {
+        "fields": [
+          {
+            "name": "text",
+            "max": 24,
+            "required": true
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "own",
+          "baseline": true
+        },
+        {
+          "key": "bestseller",
+          "copy": {
+            "text": "Bestseller"
+          }
+        },
+        {
+          "key": "only_few",
+          "copy": {
+            "text": "Only 3 left"
+          }
+        },
+        {
+          "key": "gifting",
+          "copy": {
+            "text": "Great for gifting"
+          }
+        }
+      ]
+    },
+    {
+      "key": "buy-button",
+      "selector": "[data-prb-slot=buy-button]",
+      "kind": "copy",
+      "metric": "add_to_cart",
+      "copy": {
+        "fields": [
+          {
+            "name": "label",
+            "max": 28,
+            "required": true
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "own",
+          "baseline": true
+        },
+        {
+          "key": "ships_today",
+          "copy": {
+            "label": "Buy now, ships today"
+          }
+        }
+      ]
+    },
+    {
+      "key": "delivery-message",
+      "selector": "[data-prb-slot=delivery-message]",
+      "kind": "copy",
+      "metric": "purchase",
+      "copy": {
+        "fields": [
+          {
+            "name": "line",
+            "max": 100,
+            "required": true
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "own",
+          "baseline": true
+        },
+        {
+          "key": "by_day",
+          "copy": {
+            "line": "Free delivery by {{day}} to {{pin}}"
+          }
+        },
+        {
+          "key": "price_led",
+          "copy": {
+            "line": "{{fee}}, arriving {{day}} to {{pin}}"
+          }
+        }
+      ]
+    },
+    {
+      "key": "cart-cross-sell",
+      "selector": "[data-prb-slot=cart-cross-sell]",
+      "kind": "sorted",
+      "metric": "add_to_cart",
+      "variants": [
+        {
+          "key": "p111"
+        },
+        {
+          "key": "p119"
+        },
+        {
+          "key": "p120"
+        },
+        {
+          "key": "p081"
+        },
+        {
+          "key": "p137"
+        },
+        {
+          "key": "p023"
+        },
+        {
+          "key": "p050"
+        },
+        {
+          "key": "p062"
+        },
+        {
+          "key": "p098"
+        },
+        {
+          "key": "p105"
+        },
+        {
+          "key": "p025"
+        },
+        {
+          "key": "p034"
+        },
+        {
+          "key": "p041"
+        },
+        {
+          "key": "p064"
+        },
+        {
+          "key": "p067"
+        },
+        {
+          "key": "p068"
+        }
+      ]
+    },
+    {
+      "key": "promo-bar",
+      "selector": "[data-prb-slot=promo-bar]",
+      "kind": "copy",
+      "metric": "purchase",
+      "copy": {
+        "fields": [
+          {
+            "name": "text",
+            "max": 90,
+            "required": true
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "own",
+          "baseline": true
+        },
+        {
+          "key": "free_shipping",
+          "copy": {
+            "text": "Free shipping on every order this weekend. No minimum."
+          }
+        },
+        {
+          "key": "first_order",
+          "copy": {
+            "text": "First order? Take ₹100 off with code WELCOME100."
+          }
+        },
+        {
+          "key": "none",
+          "copy": {
+            "text": "Everyday things, delivered across India."
+          }
+        }
+      ]
+    }
+  ]
+}

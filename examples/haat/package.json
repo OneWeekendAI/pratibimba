@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview --port 5174 --strictPort",
     "gen": "node scripts/gen-catalogue.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "check:slots": "node scripts/check-slots.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

@@ -4,7 +4,7 @@ import './home.css';
 import './listing.css';
 import './product.css';
 import './cart.css';
-import { h, CATEGORIES, cap, cart, byId } from './lib.js';
+import { h, CATEGORIES, cap, cart, byId, prbTrack } from './lib.js';
 import { home } from './pages/home.js';
 import { category } from './pages/category.js';
 import { product } from './pages/product.js';
@@ -21,7 +21,7 @@ export const MARK = `<svg class="mark" viewBox="0 0 36 30" aria-hidden="true"><p
 const WORDMARK = `${MARK}<span>Big<i> Market</i></span>`;
 const CART_ICON = `<svg viewBox="0 0 26 26" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h3.5l2.6 12.2h11.6L22 7H6.4"/><circle cx="9.5" cy="20.5" r="1.6"/><circle cx="18.5" cy="20.5" r="1.6"/></svg>`;
 app.innerHTML = `
-  <div class="promo" data-slot="promo-bar">Free delivery on orders above ₹499. Cash on delivery and UPI accepted.</div>
+  <div class="promo" data-slot="promo-bar" data-prb-slot="promo-bar"><span data-prb-field="text">Free delivery on orders above ₹499. Cash on delivery and UPI accepted.</span></div>
   <header class="top">
     <a class="logo" href="#/" aria-label="Big Market home">${WORDMARK}</a>
     <div class="loc"><span>Deliver to</span><b>Bengaluru 560001</b></div>
@@ -73,7 +73,7 @@ document.addEventListener('click', (e) => {
   const many = e.target.closest('[data-add-many]');
   if (many) {
     const ids = many.dataset.addMany.split(',').filter(Boolean);
-    ids.forEach((id) => cart.add(id));
+    ids.forEach((id) => { cart.add(id); prbTrack.add(id, 1); });
     say(ids.length + ' items added to cart');
     return;
   }
@@ -82,6 +82,7 @@ document.addEventListener('click', (e) => {
   const q = +(b.closest('[data-qtyscope]')?.querySelector('[data-qty]')?.value || 1);
   const id = b.dataset.add;
   cart.set(id, (cart.items()[id] || 0) + q);
+  prbTrack.add(id, q);
   say((q > 1 ? q + ' x ' : 'Added: ') + byId.get(id).title);
 });
 
@@ -95,10 +96,21 @@ const routes = [
   [/^\/checkout$/, () => checkout()],
   [/^\/art-sheet$/, (m, qs) => artSheet(qs)], // dev route: every product's art in one grid
 ];
+// "Category viewed" context for the NEXT page load (the SDK decides once per load): see index.html.
+function noteViewed(path) {
+  const m = path.match(/^\/c\/(\w+)$/) || path.match(/^\/product\/(\w+)$/);
+  const cat = m && (path.startsWith('/c/') ? m[1] : byId.get(m[1])?.category);
+  if (!cat) return;
+  try {
+    const v = JSON.parse(sessionStorage.getItem('haat.viewed') || '[]');
+    if (!v.includes(cat)) sessionStorage.setItem('haat.viewed', JSON.stringify([...v, cat]));
+  } catch (e) { /* private mode */ }
+}
 let cleanup = null;
 function render() {
   const [path, query = ''] = (location.hash.slice(1) || '/').split('?');
   const qs = new URLSearchParams(query);
+  noteViewed(path);
   if (cleanup) { cleanup(); cleanup = null; }
   for (const [re, fn] of routes) {
     const m = path.match(re);

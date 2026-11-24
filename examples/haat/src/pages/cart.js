@@ -1,4 +1,4 @@
-import { h, byId, cart, art, inr, esc, products, strip, deliveryBy } from '../lib.js';
+import { h, byId, cart, art, inr, esc, products, strip, deliveryBy, crossPool } from '../lib.js';
 import { emptyCart } from './states.js';
 
 export const FREE_OVER = 499;
@@ -9,10 +9,11 @@ export function cartPage() {
   const inCart = new Set(Object.keys(cart.items()));
   // Cross-sell renders once from the cart on arrival; later edits only touch the lines.
   const cats = new Set([...inCart].map((id) => byId.get(id).category));
-  const cross = products.filter((p) => !inCart.has(p.id) && (cats.size ? cats.has(p.category) : true) && p.price < 1500).sort((a, b) => b.rating - a.rating).slice(0, 8);
+  const avail = crossPool.filter((p) => !inCart.has(p.id)); // the declared cross-sell pool (site.json), minus what is in the cart
+  const cross = [...avail.filter((p) => cats.has(p.category)), ...avail.filter((p) => !cats.has(p.category))].slice(0, 8);
   const el = h(`<div class="cartpg">
     <div id="top"></div>
-    <div data-slot="cart-cross-sell" data-testid="cross-sell">${strip(inCart.size ? 'Add-ons you might like' : 'Popular right now', cross)}</div>
+    <div data-slot="cart-cross-sell" data-testid="cross-sell">${strip(inCart.size ? 'Add-ons you might like' : 'Popular right now', cross, '', 'data-prb-slot="cart-cross-sell"')}</div>
   </div>`);
   const top = el.querySelector('#top');
   function paint() {

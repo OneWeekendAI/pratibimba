@@ -60,7 +60,7 @@ export function deliveryBy(days = 2) {
 }
 export function card(p) {
   const t = tagOf(p);
-  return `<article class="card" data-id="${p.id}">
+  return `<article class="card" data-id="${p.id}" data-prb-item="${p.id}">
     <a class="card-img" href="#/product/${p.id}">${art(p)}</a>
     <div class="card-tag">${t ? `<span class="tag tag-${t[0]}">${t[1]}</span>` : ''}</div>
     <a class="card-title" href="#/product/${p.id}">${esc(p.title)}</a>
@@ -70,4 +70,22 @@ export function card(p) {
     <button class="btn small" data-add="${p.id}">Add to cart</button>
   </article>`;
 }
-export const strip = (title, list, extra = '') => `<section class="strip" ${extra}><h2>${title}</h2><div class="row">${list.map(card).join('')}</div></section>`;
+export const strip = (title, list, extra = '', rowAttrs = '') => `<section class="strip" ${extra}><h2>${title}</h2><div class="row" ${rowAttrs}>${list.map(card).join('')}</div></section>`;
+
+// Cart cross-sell pool: the fixed set of add-ons the cross-sell slot may order (declared in site.json).
+export const crossPool = [...products].filter((p) => p.price < 1500).sort((a, b) => b.rating - a.rating).slice(0, 16);
+
+// ---- Pratibimba outcome events. Guarded: the page works the same when the SDK did not load. ----
+export const prbTrack = {
+  add(id, quantity = 1) {
+    try { const p = byId.get(id); window.prb && window.prb.addToCart({ id, price: p.price, quantity }); } catch (e) { /* analytics never breaks the store */ }
+  },
+  purchase(order) {
+    try {
+      window.prb && window.prb.purchase({
+        order_id: order.id, value: order.total, currency: 'INR',
+        items: Object.entries(order.items).map(([id, quantity]) => ({ id, price: byId.get(id).price, quantity })),
+      });
+    } catch (e) { /* ditto */ }
+  },
+};

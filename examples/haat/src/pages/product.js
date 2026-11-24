@@ -1,4 +1,4 @@
-import { h, byId, art, inr, off, esc, cap, strip, products, stars, cart } from '../lib.js';
+import { h, byId, art, inr, off, esc, cap, strip, products, stars, cart, prbTrack } from '../lib.js';
 import { brandOf } from './listing.js';
 
 const rng = (seed) => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
@@ -10,10 +10,14 @@ function badgeText(p) {
   return p.rating >= 4.4 ? 'Bestseller' : 'Popular choice';
 }
 const PIN_DEFAULT = '560001';
-function deliveryText(p, pin) {
+// The delivery line is a template: {fee} {day} {pin}. Pratibimba's copy variants carry the same tokens,
+// and the page fills them (see paintDelivery), so the day and PIN stay the page's own facts.
+const DELIVERY_TPL = '{fee} by {day} to {pin}';
+function deliveryText(p, pin, tpl = DELIVERY_TPL) {
   const days = 2 + (+pin[0] % 4) + (p.stock <= 4 ? 1 : 0);
   const d = new Date(Date.now() + days * 864e5).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
-  return `${p.price >= 499 ? 'Free delivery' : 'Standard delivery for ₹40'} by ${d} to ${pin}`;
+  const fee = p.price >= 499 ? 'Free delivery' : 'Standard delivery for ₹40';
+  return tpl.replace(/\{(fee|day|pin)\}/g, (_, k) => ({ fee, day: d, pin })[k]);
 }
 const HIGH = {
   electronics: ['Designed for everyday use with a one-year brand warranty', 'Fast, reliable performance you can feel from the first day', 'Tested for Indian power conditions and humid weather', 'Comes with the cable or accessories you need in the box', 'Easy setup, no app or account needed'],
@@ -80,7 +84,7 @@ export function product(id) {
         <div class="main-img" data-testid="main-image" data-v="0">${art(p, 0)}</div>
       </div>
       <div class="pinfo">
-        <span class="badge" data-slot="product-badge" data-testid="badge">${badgeText(p)}</span>
+        <span class="badge" data-slot="product-badge" data-prb-slot="product-badge" data-testid="badge"><span data-prb-field="text">${badgeText(p)}</span></span>
         <h1 data-testid="title">${esc(p.title)}</h1>
         <div class="p-meta"><a class="brandlink" href="#/search?q=${encodeURIComponent(brand)}">Visit the ${esc(brand)} store</a>
           <button type="button" class="rate-link" data-goto="reviews">${stars(p.rating)} <b>${p.rating.toFixed(1)}</b> <span>${p.reviews.toLocaleString('en-IN')} ratings</span></button></div>
@@ -94,12 +98,12 @@ export function product(id) {
       </div>
       <aside class="buybox" data-testid="buybox" data-qtyscope>
         <div class="bb-price">${inr(p.price)}</div>
-        <div class="delivery" data-slot="delivery-message" data-testid="delivery">${deliveryText(p, PIN_DEFAULT)}</div>
+        <div class="delivery" data-slot="delivery-message" data-prb-slot="delivery-message" data-testid="delivery"><span data-prb-field="line">${deliveryText(p, PIN_DEFAULT)}</span></div>
         <form class="pin" novalidate><label>Delivery PIN code <input type="text" inputmode="numeric" maxlength="6" value="${PIN_DEFAULT}" data-testid="pin" aria-label="PIN code" /></label><button class="btn ghost small" data-testid="pin-check">Check</button></form>
         <div class="pin-err" data-testid="pin-err" role="status"></div>
         <div class="stock ${p.stock <= 4 ? 'low' : ''}" data-testid="stock">${p.stock <= 4 ? `Only ${p.stock} left in stock, order soon` : 'In stock'}</div>
         <label class="qtyrow">Quantity <select data-qty data-testid="qty">${Array.from({ length: Math.min(10, p.stock) }, (_, i) => `<option>${i + 1}</option>`).join('')}</select></label>
-        <button class="btn block" data-add="${p.id}" data-slot="buy-button" data-testid="buy">Add to cart</button>
+        <button class="btn block" data-add="${p.id}" data-slot="buy-button" data-prb-slot="buy-button" data-testid="buy"><span data-prb-field="label">Add to cart</span></button>
         <button class="btn deal block" data-buy-now="${p.id}" data-testid="buy-now">Buy now</button>
         <ul class="assure"><li>7-day easy returns</li><li>Pay on delivery or by UPI</li><li>Sold and shipped by Big Market</li></ul>
       </aside>
@@ -139,16 +143,25 @@ export function product(id) {
     }
     if (e.target.closest('[data-goto=reviews]')) { $('#reviews').scrollIntoView({ behavior: 'smooth' }); return; }
     const bn = e.target.closest('[data-buy-now]');
-    if (bn) { cart.set(p.id, (cart.items()[p.id] || 0) + +$('[data-qty]').value); location.hash = '#/checkout'; }
+    if (bn) { const q = +$('[data-qty]').value; cart.set(p.id, (cart.items()[p.id] || 0) + q); prbTrack.add(p.id, q); location.hash = '#/checkout'; }
   });
   // Delivery by PIN: only the delivery line and the error line change.
+  let curPin = PIN_DEFAULT;
+  const dline = $('[data-prb-field=line]');
+  dline.dataset.tpl = DELIVERY_TPL;
+  const paintDelivery = () => { dline.textContent = deliveryText(p, curPin, dline.dataset.tpl); };
+  // When the SDK writes a decided variant, its text still holds the tokens: fill them before the next paint.
+  new MutationObserver(() => {
+    const t = dline.textContent;
+    if (/\{(fee|day|pin)\}/.test(t)) { dline.dataset.tpl = t; paintDelivery(); }
+  }).observe(dline, { childList: true, characterData: true, subtree: true });
   const pinForm = $('form.pin');
   pinForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const pin = $('[data-testid=pin]').value.trim();
     if (!/^[1-9]\d{5}$/.test(pin)) { $('[data-testid=pin-err]').textContent = 'Enter a valid 6-digit PIN code.'; return; }
     $('[data-testid=pin-err]').textContent = '';
-    $('[data-testid=delivery]').textContent = deliveryText(p, pin);
+    curPin = pin; paintDelivery();
   });
   // Frequently bought together: checkboxes drive total + button label; add-all is handled in main.js via data-add-many.
   const fbtAdd = $('#fbt-add');

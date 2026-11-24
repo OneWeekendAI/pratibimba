@@ -14,7 +14,7 @@ const ICONS = {
 function sec(title, link, body, attrs = '') {
   return `<section class="sec" ${attrs}><div class="sec-head"><h2>${title}</h2>${link || ''}</div>${body}</section>`;
 }
-const row = (list, cardFn = card) => `<div class="row">${list.map(cardFn).join('')}</div>`;
+const row = (list, cardFn = card, attrs = '') => `<div class="row" ${attrs}>${list.map(cardFn).join('')}</div>`;
 const dealCard = (p) => card(p).replace(/(<a class="card-img"[^>]*>)/, `$1<span class="pill-off">${off(p)}% off</span>`);
 
 function msToClock(ms) {
@@ -32,14 +32,14 @@ export function home(qs) {
   const collage = ['electronics', 'kitchen', 'fashion'].map((c) => topOf(c)[0]);
   const side = ['books', 'home', 'toys'].map((c) => [c, topOf(c)[1]]);
 
-  const rows = CATEGORIES.map((c) => sec(cap(c), `<a href="#/c/${c}">See all</a>`, row(products.filter((p) => p.category === c).slice(0, 10)), `data-slot="category-row" data-category="${c}"`)).join('');
+  const rows = CATEGORIES.map((c) => sec(cap(c), `<a href="#/c/${c}">See all</a>`, row(products.filter((p) => p.category === c).slice(0, 10)), `data-slot="category-row" data-category="${c}" data-prb-item="${c}"`)).join('');
   const tiles = CATEGORIES.map((c) => `<a class="cat-tile" href="#/c/${c}"><span class="tile-art">${art(topOf(c)[2])}</span><div><h3>${cap(c)}</h3><span>${products.filter((p) => p.category === c).length} items</span></div></a>`).join('');
   const bestList = best.map((p, i) => `<a class="best" href="#/product/${p.id}"><span class="rank">${i + 1}</span>${art(p)}<div><div class="t">${esc(p.title)}</div><div class="m">${stars(p.rating)}<span>(${p.reviews.toLocaleString('en-IN')})</span></div><div class="m"><b>${inr(p.price)}</b><s>${inr(p.mrp)}</s></div></div></a>`).join('');
 
   const el = h(`<div>
     <div class="hero" data-slot="hero" data-testid="hero">
       <div class="hero-main">
-        <div class="hero-copy">
+        <div class="hero-copy" data-prb-slot="hero">
           <span class="kicker">Festive season picks</span>
           <h1>Everything for your home, at market prices</h1>
           <p>Kitchen, books, fashion and more from sellers across India. Free delivery over ₹499, pay on delivery if you like.</p>
@@ -55,10 +55,10 @@ export function home(qs) {
       <div>${ICONS.cash}<p style="margin:0"><b>Cash on delivery</b><span>Pay when it arrives</span></p></div>
       <div>${ICONS.upi}<p style="margin:0"><b>UPI and cards</b><span>Safe, instant payment</span></p></div>
     </div>
-    <div data-slot="deals-strip" data-testid="deals" id="deals">${sec("Today's deals", `<span class="countdown">Ends in <b data-testid="countdown">--:--:--</b></span>`, row(deals, dealCard)).replace('class="sec"', 'class="sec deals-wrap"')}</div>
+    <div data-slot="deals-strip" data-testid="deals" id="deals">${sec("Today's deals", `<span class="countdown">Ends in <b data-testid="countdown">--:--:--</b></span>`, row(deals, dealCard, 'data-prb-slot="deals"')).replace('class="sec"', 'class="sec deals-wrap"')}</div>
     ${sec('Shop by category', '', `<div class="cat-tiles">${tiles}</div>`)}
-    <div data-slot="picks-strip" data-testid="picks">${sec('Picked for you', '', row(picks)).replace('class="sec"', 'class="sec sec-panel"')}</div>
-    <div data-slot="category-rows" data-testid="category-rows">${rows}</div>
+    <div data-slot="picks-strip" data-testid="picks">${sec('Picked for you', '', row(picks, card, 'data-prb-slot="picks"')).replace('class="sec"', 'class="sec sec-panel"')}</div>
+    <div data-slot="category-rows" data-prb-slot="category-rows" data-testid="category-rows">${rows}</div>
     ${sec('Bestsellers', '', `<div class="best-list">${bestList}</div>`, 'data-slot="bestsellers"').replace('class="sec"', 'class="sec sec-panel"')}
   </div>`);
 

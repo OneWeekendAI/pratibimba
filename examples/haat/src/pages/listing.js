@@ -51,6 +51,7 @@ export function listing(opts) {
       <div class="lst-main">
         <div class="bar">
           <button type="button" class="btn ghost small filter-toggle" data-testid="filter-toggle" aria-controls="filters" aria-expanded="false">Filters<b id="f-n"></b></button>
+          <span class="sortpref" data-prb-slot="listing-sort" aria-hidden="true"><i data-sort="popular"></i></span>
           <label class="sortbox">Sort by <select id="sort" data-slot="listing-sort" data-testid="sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
         </div>
         <div class="chips" id="chips"></div>
@@ -61,6 +62,15 @@ export function listing(opts) {
   const $ = (s) => el.querySelector(s);
   const sort = $('#sort');
   sort.value = SORTS[opts.sort] ? opts.sort : 'popular';
+  // Pratibimba slot "listing-sort": a decided default sort. It only ever sets the control; a sort the
+  // visitor picked, or one in the URL, always wins. The marker is static markup, never re-rendered.
+  let userSorted = !!SORTS[opts.sort];
+  sort.addEventListener('change', () => { userSorted = true; });
+  const pref = el.querySelector('.sortpref');
+  new MutationObserver(() => {
+    const v = pref.querySelector('[data-sort]')?.dataset.sort;
+    if (!userSorted && SORTS[v] && sort.value !== v) { sort.value = v; paint(); }
+  }).observe(pref, { childList: true, subtree: true });
 
   const state = () => {
     const pr = PRICES.find((x) => x[0] === el.querySelector('[name=price]:checked').value);
