@@ -909,6 +909,19 @@ test('an_agents_plugin_request_is_listed_and_installed_or_declined', async ({ pa
   await apiPost('/api/plugins/attribution.linear/uninstall', { site: 'shop', actor: 'e2e' });
 });
 
+test('a_plugin_request_shows_the_config_it_asks_to_install_with', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const token = await agentToken('e2e-plugin-config');
+  await mcpCall(token, 'install_plugin', { agent: 'Claude Code', justification: 'resolve ids', plugin: 'sink.identity_resolver', config: { url: 'https://resolver.example.com/hook' } });
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('plugin-request-sink.identity_resolver');
+  await expect(row.getByTestId('plugin-config')).toContainText('https://resolver.example.com/hook');
+  await row.getByLabel('Why not').fill('not now');
+  await row.getByRole('button', { name: 'Decline' }).click();
+  await expect(row).toHaveCount(0);
+});
+
 // S9: a share the site file set says so, and the editor states the re-apply rule. Re-applies
 // shop's file (which approves every listed variant again), so it runs after the shop tests.
 test('a_share_from_the_site_file_says_so_on_its_card', async ({ page }) => {
