@@ -1,0 +1,273 @@
+{
+ "personas": {
+  "desk-direct-morning": {
+   "promo-bar": "first_order",
+   "hero": "baseline",
+   "deals": "p031",
+   "picks": "p071",
+   "category-rows": "books",
+   "__home": {
+    "promo-bar": "first_order",
+    "hero": "baseline",
+    "deals": "p031",
+    "picks": "p071",
+    "category-rows": "books"
+   },
+   "listing-sort": "top_rated",
+   "__sort_first_prices": "₹3,229 ₹3,169 ₹4,049",
+   "product-badge": "own",
+   "delivery-message": "own",
+   "buy-button": "own",
+   "__badge": "Only 4 left",
+   "__buy": "Add to cart",
+   "__delivery": "Free delivery by Saturday, 28 Nov to 560001",
+   "__badge_gift": "Great for gifting",
+   "__buy_gift": "Add to cart",
+   "cart-cross-sell": "p081",
+   "__cross": 8,
+   "__order": "HAT-1e0eb227-7a01-4bef-94bd-0008742a6909",
+   "__cls": 0.0014,
+   "__flicker": [],
+   "__errors": []
+  },
+  "mob-ad-evening": {
+   "promo-bar": "free_shipping",
+   "hero": "baseline",
+   "deals": "p053",
+   "picks": "p149",
+   "category-rows": "books",
+   "__home": {
+    "promo-bar": "free_shipping",
+    "hero": "baseline",
+    "deals": "p053",
+    "picks": "p149",
+    "category-rows": "books"
+   },
+   "listing-sort": "top_rated",
+   "__sort_first_prices": "₹3,229 ₹3,169 ₹4,049",
+   "product-badge": "own",
+   "delivery-message": "by_day",
+   "buy-button": "ships_today",
+   "__badge": "Only 4 left",
+   "__buy": "Buy now, ships tomorrow",
+   "__delivery": "Arrives Saturday, 28 Nov to 560001",
+   "__badge_gift": "Great for gifting",
+   "__buy_gift": "Buy now, ships today",
+   "cart-cross-sell": "p064",
+   "__cross": 8,
+   "__order": "HAT-14a24b46-6236-4f44-b106-c9e7427f9661",
+   "__cls": 0,
+   "__flicker": [],
+   "__errors": []
+  },
+  "desk-search-evening-returning": {
+   "promo-bar": "first_order",
+   "hero": "deals",
+   "deals": "p086",
+   "picks": "p141",
+   "category-rows": "toys",
+   "__home": {
+    "promo-bar": "first_order",
+    "hero": "deals",
+    "deals": "p086",
+    "picks": "p141",
+    "category-rows": "toys"
+   },
+   "listing-sort": "price_low",
+   "__sort_first_prices": "₹189 ₹209 ₹269",
+   "product-badge": "only_few",
+   "delivery-message": "own",
+   "buy-button": "own",
+   "__badge": "Only 4 left",
+   "__buy": "Add to cart",
+   "__delivery": "Free delivery by Saturday, 28 Nov to 560001",
+   "__badge_gift": "Great for gifting",
+   "__buy_gift": "Add to cart",
+   "cart-cross-sell": "p034",
+   "__cross": 8,
+   "__order": "HAT-31583bcf-0a8a-4ba2-9425-e00d59b55df7",
+   "__cls": 0.0014,
+   "__flicker": [],
+   "__errors": []
+  },
+  "mob-direct-morning-returning": {
+   "promo-bar": "none",
+   "hero": "new_arrivals",
+   "deals": "p130",
+   "picks": "p141",
+   "category-rows": "electronics",
+   "__home": {
+    "promo-bar": "none",
+    "hero": "new_arrivals",
+    "deals": "p130",
+    "picks": "p141",
+    "category-rows": "electronics"
+   },
+   "listing-sort": "popular",
+   "__sort_first_prices": "₹4,689 ₹209 ₹399",
+   "product-badge": "bestseller",
+   "delivery-message": "price_led",
+   "buy-button": "ships_today",
+   "__badge": "Only 4 left",
+   "__buy": "Buy now, ships tomorrow",
+   "__delivery": "Free delivery, arriving Saturday, 28 Nov to 560001",
+   "__badge_gift": "Bestseller",
+   "__buy_gift": "Buy now, ships today",
+   "cart-cross-sell": "p105",
+   "__cross": 8,
+   "__order": "HAT-7791cb97-c802-45d9-a9d3-3b876c2949ac",
+   "__cls": 0,
+   "__flicker": [],
+   "__errors": []
+  },
+  "desk-ad-noon": {
+   "promo-bar": "own",
+   "hero": "gift_picks",
+   "deals": "p119",
+   "picks": "p104",
+   "category-rows": "books",
+   "__home": {
+    "promo-bar": "own",
+    "hero": "gift_picks",
+    "deals": "p119",
+    "picks": "p104",
+    "category-rows": "books"
+   },
+   "listing-sort": "top_rated",
+   "__sort_first_prices": "₹3,229 ₹3,169 ₹4,049",
+   "product-badge": "gifting",
+   "delivery-message": "own",
+   "buy-button": "ships_today",
+   "__badge": "Only 4 left",
+   "__buy": "Buy now, ships tomorrow",
+   "__delivery": "Free delivery by Saturday, 28 Nov to 560001",
+   "__badge_gift": "Great for gifting",
+   "__buy_gift": "Buy now, ships today",
+   "cart-cross-sell": "p105",
+   "__cross": 8,
+   "__order": "HAT-0a72f614-eefb-4f1a-8785-6dd454db96d4",
+   "__cls": 0.0014,
+   "__flicker": [],
+   "__errors": []
+  },
+  "mob-search-night": {
+   "promo-bar": "free_shipping",
+   "hero": "deals",
+   "deals": "p128",
+   "picks": "p148",
+   "category-rows": "beauty",
+   "__home": {
+    "promo-bar": "free_shipping",
+    "hero": "deals",
+    "deals": "p128",
+    "picks": "p148",
+    "category-rows": "beauty"
+   },
+   "listing-sort": "popular",
+   "__sort_first_prices": "₹4,689 ₹209 ₹399",
+   "product-badge": "own",
+   "delivery-message": "price_led",
+   "buy-button": "own",
+   "__badge": "Only 4 left",
+   "__buy": "Add to cart",
+   "__delivery": "Free delivery, arriving Saturday, 28 Nov to 560001",
+   "__badge_gift": "Great for gifting",
+   "__buy_gift": "Add to cart",
+   "cart-cross-sell": "p098",
+   "__cross": 8,
+   "__order": "HAT-1b69171d-8491-4bb6-90f0-e4985c8bce83",
+   "__cls": 0,
+   "__flicker": [],
+   "__errors": []
+  }
+ },
+ "problems": [],
+ "events": {
+  "before": {
+   "add_to_cart": 48,
+   "purchase": 24,
+   "exposure": 236
+  },
+  "after": {
+   "add_to_cart": 60,
+   "purchase": 30,
+   "exposure": 296
+  },
+  "delta": {
+   "add_to_cart": 12,
+   "purchase": 6,
+   "exposure": 60
+  }
+ },
+ "purchase_rows": [
+  "HAT-1b69171d-8491-4bb6-90f0-e4985c8bce83 1778.0000 INR",
+  "HAT-0a72f614-eefb-4f1a-8785-6dd454db96d4 1778.0000 INR",
+  "HAT-7791cb97-c802-45d9-a9d3-3b876c2949ac 1778.0000 INR",
+  "HAT-31583bcf-0a8a-4ba2-9425-e00d59b55df7 1778.0000 INR",
+  "HAT-14a24b46-6236-4f44-b106-c9e7427f9661 1778.0000 INR",
+  "HAT-1e0eb227-7a01-4bef-94bd-0008742a6909 1778.0000 INR"
+ ],
+ "decided_slots": {
+  "promo-bar": [
+   "first_order",
+   "free_shipping",
+   "none",
+   "own"
+  ],
+  "hero": [
+   "baseline",
+   "deals",
+   "new_arrivals",
+   "gift_picks"
+  ],
+  "category-rows": [
+   "books",
+   "toys",
+   "electronics",
+   "beauty"
+  ],
+  "picks": [
+   "p071",
+   "p149",
+   "p141",
+   "p104",
+   "p148"
+  ],
+  "deals": [
+   "p031",
+   "p053",
+   "p086",
+   "p130",
+   "p119",
+   "p128"
+  ],
+  "listing-sort": [
+   "top_rated",
+   "price_low",
+   "popular"
+  ],
+  "product-badge": [
+   "own",
+   "only_few",
+   "bestseller",
+   "gifting"
+  ],
+  "buy-button": [
+   "own",
+   "ships_today"
+  ],
+  "delivery-message": [
+   "own",
+   "by_day",
+   "price_led"
+  ],
+  "cart-cross-sell": [
+   "p081",
+   "p064",
+   "p034",
+   "p105",
+   "p098"
+  ]
+ },
+ "slots_with_variation": 10
+}

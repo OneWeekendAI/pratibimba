@@ -53,6 +53,10 @@
     {
       "key": "viewed_beauty",
       "pii": false
+    },
+    {
+      "key": "evening",
+      "pii": false
     }
   ],
   "slots": [
@@ -246,7 +250,7 @@
         {
           "key": "only_few",
           "copy": {
-            "text": "Only 3 left"
+            "text": "Only {{n}} left"
           }
         },
         {
@@ -279,7 +283,7 @@
         {
           "key": "ships_today",
           "copy": {
-            "label": "Buy now, ships today"
+            "label": "Buy now, ships {{ship}}"
           }
         }
       ]
@@ -306,7 +310,7 @@
         {
           "key": "by_day",
           "copy": {
-            "line": "Free delivery by {{day}} to {{pin}}"
+            "line": "Arrives {{day}} to {{pin}}"
           }
         },
         {
@@ -395,13 +399,13 @@
         {
           "key": "free_shipping",
           "copy": {
-            "text": "Free shipping on every order this weekend. No minimum."
+            "text": "Free standard delivery on every order this weekend. No minimum."
           }
         },
         {
           "key": "first_order",
           "copy": {
-            "text": "First order? Take ₹100 off with code WELCOME100."
+            "text": "New here? Free delivery over ₹499, 7-day returns, cash on delivery."
           }
         },
         {

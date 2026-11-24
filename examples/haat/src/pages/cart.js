@@ -3,7 +3,9 @@ import { emptyCart } from './states.js';
 
 export const FREE_OVER = 499;
 export const FEE = 40;
-export const feeFor = (sub) => (sub >= FREE_OVER || sub === 0 ? 0 : FEE);
+// The "Free standard delivery on every order" promo is honoured: main.js records it while that text is on screen.
+const promoFree = () => { try { return localStorage.getItem('haat.freeship') === '1'; } catch (e) { return false; } };
+export const feeFor = (sub) => (sub >= FREE_OVER || sub === 0 || promoFree() ? 0 : FEE);
 
 export function cartPage() {
   const inCart = new Set(Object.keys(cart.items()));

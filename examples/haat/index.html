@@ -17,7 +17,8 @@
         var ad = /[?&](utm_source|utm_medium|utm_campaign|gclid|fbclid|msclkid)=/.test(location.search);
         var f = {
           from_search: /^https?:\/\/([^/]*\.)?(google|bing|duckduckgo|yahoo)\./i.test(ref),
-          from_direct: !ref && !ad
+          from_direct: !ref && !ad,
+          evening: new Date().getHours() >= 17
         };
         cats.forEach(function (c) { f['viewed_' + c] = viewed.indexOf(c) >= 0; });
         window.__prb_features = f;

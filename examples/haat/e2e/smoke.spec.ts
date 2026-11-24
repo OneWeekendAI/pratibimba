@@ -12,6 +12,12 @@ function watch(page: Page) {
   return bad;
 }
 
+// These tests assume Core is unreachable (or want a stubbed window.prb). A live Core on :8080 would answer, so cut /_prb off
+// for them explicitly: they then mean the same thing whether or not Core is running.
+test.beforeEach(async ({ page }, info) => {
+  if (/^(Core absent|outcome events|every page type|cart:|checkout:)/.test(info.title)) await page.route('**/_prb/**', (r) => r.fulfill({ status: 502, body: 'down' }));
+});
+
 test('every page type renders and nothing errors', async ({ page }) => {
   const bad = watch(page);
 

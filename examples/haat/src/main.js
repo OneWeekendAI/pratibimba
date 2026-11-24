@@ -127,3 +127,10 @@ function render() {
 }
 window.addEventListener('hashchange', render);
 render();
+
+// Honour the promo on screen: "Free standard delivery on every order" is only said if cart and checkout give it.
+{
+  const f = document.querySelector('[data-slot=promo-bar] [data-prb-field=text]');
+  const sync = () => { try { localStorage.setItem('haat.freeship', /^Free standard delivery on every order/.test(f.textContent) ? '1' : '0'); } catch (e) { /* storage blocked */ } };
+  if (f) { sync(); new MutationObserver(sync).observe(f, { childList: true, characterData: true, subtree: true }); }
+}

@@ -155,6 +155,24 @@ export function product(id) {
     const t = dline.textContent;
     if (/\{(fee|day|pin)\}/.test(t)) { dline.dataset.tpl = t; paintDelivery(); }
   }).observe(dline, { childList: true, characterData: true, subtree: true });
+  // Truth guard. Core's copy variants carry claims ("Only {n} left", "Bestseller", "ships {ship}") that are only
+  // true for some products, and a copy slot has no `requires`. After the SDK writes a variant, the page fills its
+  // tokens from this product's real data, or falls back to its own truthful text when the claim would be false.
+  const guard = (field, fallback, fix) => {
+    if (!field) return;
+    const run = () => {
+      const t = field.textContent, out = fix(t);
+      if (out !== null && out !== t) field.textContent = out;
+    };
+    new MutationObserver(run).observe(field, { childList: true, characterData: true, subtree: true });
+  };
+  guard($('[data-slot=product-badge] [data-prb-field=text]'), null, (t) => {
+    if (/^Only \{n\} left$/.test(t)) return p.stock <= 4 ? `Only ${p.stock} left` : badgeText(p);
+    if (t === 'Bestseller' && !(p.rating >= 4.4)) return badgeText(p);
+    if (t === 'Great for gifting' && !p.tags.includes('gift')) return badgeText(p);
+    return null;
+  });
+  guard($('[data-slot=buy-button] [data-prb-field=label]'), null, (t) => (/\{ship\}/.test(t) ? t.replace('{ship}', p.stock > 4 ? 'today' : 'tomorrow') : null));
   const pinForm = $('form.pin');
   pinForm.addEventListener('submit', (e) => {
     e.preventDefault();
