@@ -82,3 +82,35 @@ test('home does not re-render on add-to-cart', async ({ page }) => {
     expect(await page.locator(`[data-slot=${s}]`).evaluate((el) => (el as any).__mark)).toBe(1);
   }
 });
+
+test('home: countdown ticks, trust strip, deal pills, category tiles', async ({ page }) => {
+  await page.goto('/');
+  const cd = page.getByTestId('countdown');
+  await expect(cd).toHaveText(/^\d\d:\d\d:\d\d$/);
+  const a = await cd.textContent();
+  await expect.poll(async () => cd.textContent(), { timeout: 4000 }).not.toBe(a);
+  await expect(page.locator('[data-slot=trust-strip] > div')).toHaveCount(4);
+  expect(await page.locator('[data-testid=deals] .pill-off').count()).toBeGreaterThan(5);
+  await expect(page.locator('.cat-tile')).toHaveCount(8);
+  await expect(page.locator('[data-slot=category-row] a', { hasText: 'See all' })).toHaveCount(8);
+  await expect(page.locator('[data-slot=bestsellers] .best')).toHaveCount(10);
+  // header: location chip, category select in the search, orders link
+  await expect(page.locator('header .loc')).toContainText('560001');
+  await page.locator('form.search select').selectOption('books');
+  await page.getByRole('button', { name: 'Search' }).click();
+  await expect(page.getByTestId('cat-title')).toHaveText(/books/i);
+  await page.getByRole('link', { name: /Orders/ }).first().click();
+  await expect(page.getByTestId('orders')).toBeVisible();
+});
+
+test('phone 390px: home has no horizontal overflow and header stays compact', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await expect(page.getByTestId('hero')).toBeVisible();
+  const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+  expect(sw).toBeLessThanOrEqual(iw);
+  await expect(page.getByTestId('cart-link')).toBeVisible();
+  await expect(page.getByRole('searchbox')).toBeVisible();
+  await ctx.close();
+});

@@ -94,31 +94,9 @@ main { max-width: var(--wrap); margin: 0 auto; padding: 20px 20px 60px; }
 .deliv { font-size: 12px; color: var(--mute); margin-bottom: 4px; }
 .card .btn { margin-top: auto; }
 
-/* ---- shell (header is redesigned in A2; keep it presentable) ---- */
-.promo { background: var(--brand-d); color: #d8ece8; text-align: center; padding: 7px 12px; font-size: 13px; min-height: 32px; }
-header.top { display: flex; gap: 20px; align-items: center; padding: 12px 24px; background: linear-gradient(180deg, var(--brand), var(--brand-d)); color: #fff; flex-wrap: wrap; }
-.logo { font: 800 26px/1 var(--f-display); letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 8px; color: #fff; }
-.logo .mark { width: 28px; height: 24px; flex: none; }
-.logo span { display: none; }
-form.search { flex: 1; display: flex; min-width: 220px; max-width: 680px; }
-form.search input { flex: 1; padding: 10px 14px; border: 0; border-radius: var(--r) 0 0 var(--r); background: #fff; font: inherit; min-width: 0; }
-form.search button { padding: 0 18px; border: 0; background: var(--deal); color: #fff; border-radius: 0 var(--r) var(--r) 0; cursor: pointer; font: 600 15px var(--f-body); }
-.cartlink { font-weight: 600; }
-.cartlink b { background: var(--deal); color: #fff; border-radius: 999px; padding: 1px 8px; margin-left: 4px; font-size: 13px; }
-nav.cats { display: flex; gap: 20px; padding: 10px 24px; overflow-x: auto; background: var(--brand-t); font-size: 14px; font-weight: 500; white-space: nowrap; }
-nav.cats a:hover { color: var(--brand); }
-footer { text-align: center; color: var(--mute); padding: 30px; font-size: 13px; border-top: 1px solid var(--line); }
-
 /* ---- generic page pieces (used by existing pages) ---- */
-.hero { background: linear-gradient(120deg, var(--brand-d), var(--brand)); color: #eaf6f3; border-radius: var(--r); padding: 44px 40px; margin-bottom: 28px; min-height: 200px; }
-.hero h1 { margin: 0 0 8px; color: #fff; }
-.hero p { margin: 0 0 18px; max-width: 520px; }
-.hero .btn { background: var(--deal); border-color: var(--deal); }
 .strip { margin: 30px 0; }
 .strip h2 { margin: 0 0 12px; display: flex; justify-content: space-between; align-items: baseline; }
-.strip h2 a { font: 500 14px var(--f-body); color: var(--brand); }
-.row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: thin; }
-.row .card { flex: 0 0 190px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
 .crumbs { font-size: 13px; color: var(--mute); margin-bottom: 10px; }
 .crumbs a:hover { color: var(--brand); text-decoration: underline; }
@@ -153,13 +131,9 @@ input[type=checkbox], input[type=radio] { accent-color: var(--brand); }
 
 @media (max-width: 760px) {
   .listing, .pdp { grid-template-columns: 1fr; }
-  header.top { padding: 10px 12px; gap: 10px; }
-  nav.cats { padding: 10px 12px; }
   main { padding: 14px 12px 48px; }
-  .hero { padding: 28px 20px; }
   .line { grid-template-columns: 60px 1fr; }
   .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .row .card { flex-basis: 160px; }
 }
 .pdp em, .big + s + em { font-style: normal; color: var(--deal); font-weight: 600; font-size: 14px; }
 .pdp s { color: var(--mute); }
