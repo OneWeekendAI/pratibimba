@@ -144,6 +144,7 @@ async fn tools_list_is_exactly_the_catalogue(pool: PgPool) {
             "create_slot",
             "explain_decision",
             "fast_forward_visitor",
+            "get_brand",
             "get_results",
             "get_site",
             "install_plugin",
@@ -644,4 +645,15 @@ async fn propose_copy_description_documents_templates(pool: PgPool) {
     let d = tool["description"].as_str().unwrap();
     assert!(d.contains("{visitor.top_item.name | truncate: 20}") && d.contains("fallback") && d.contains("{{") && d.contains("requires"), "{d}");
     assert!(tool["inputSchema"]["properties"]["requires"].is_object(), "{tool}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn get_brand_reads_the_site_brand_text_for_the_tokens_own_site(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let none = data(&call(&app, &t, "get_brand", why(json!({}))).await);
+    assert_eq!(none["brand"], Value::Null);
+    sqlx::query("UPDATE sites SET brand = $1 WHERE id = 'demo'").bind("# Voice\nWarm.").execute(&pool).await.unwrap();
+    let got = data(&call(&app, &t, "get_brand", why(json!({}))).await);
+    assert_eq!(got["brand"], "# Voice\nWarm.");
+    assert_eq!(got["site"], "demo");
 }

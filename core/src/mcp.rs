@@ -171,9 +171,10 @@ recorded and shown to the reviewer. Reviewer comments come back on list_variants
 
 // ---- the catalogue ----
 
-const TOOLS: [&str; 21] = [
+const TOOLS: [&str; 22] = [
     "list_sites",
     "get_site",
+    "get_brand",
     "list_slots",
     "list_variants",
     "get_results",
@@ -220,6 +221,7 @@ fn catalogue() -> Vec<Value> {
         tool("list_sites", "The site this token is scoped to, with its slot count and pending drafts.", json!({}), &[]),
         tool("get_site", "The site's origin, holdout fraction, forbidden claims, facts (its facts.md: the only figures your copy may use) and slots.",
              json!({ "site": { "type": "string", "description": "Optional; must be this token's site." } }), &[]),
+        tool("get_brand", "The site's brand file (brand.md from its site file) as markdown: voice, tone and style rules your copy should follow. `brand` is null when the site declares none. Read-only.", json!({}), &[]),
         tool("list_slots", "Every slot: selector, success metric, current champion and variant counts by status.", json!({}), &[]),
         tool("list_variants", "A slot's variants (any status) with their HTML, approval details and the reviewer comment thread.",
              json!({ "slot": slot }), &["slot"]),
@@ -1098,6 +1100,11 @@ async fn run(state: &AppState, caller: &Caller, tool: &str, args: Value, call_ro
                 return Err(ApiError::NotFound(format!("this token is scoped to site {site:?}, not {s:?}")));
             }
             get_site(pool, site).await
+        }
+        "get_brand" => {
+            parse::<NoArgs>(args)?;
+            let brand: Option<String> = sqlx::query_scalar("SELECT brand FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
+            Ok(json!({ "site": site, "brand": brand }))
         }
         "list_slots" => {
             parse::<NoArgs>(args)?;

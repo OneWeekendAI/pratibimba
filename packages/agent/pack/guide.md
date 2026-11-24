@@ -75,6 +75,7 @@ Before you propose anything for a slot, make these calls in this session:
    forbidden claim is a hard limit. Never write one, not even reworded. It also gives
    `facts`, the site's facts.md. Use only figures (prices, percentages, delivery days) that
    appear there. The grounding check flags any other figure on your draft.
+   Also call `get_brand`: the site's voice and style rules (null when it declares none).
 2. `list_slots`. This gives the slot's success metric (for example `click`), its selector,
    its current **champion** (the approved variant serving the most traffic), and its variant
    counts by status.
