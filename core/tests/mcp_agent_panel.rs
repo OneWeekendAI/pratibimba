@@ -63,6 +63,10 @@ async fn pack_status_follows_what_each_agent_reports(pool: PgPool) {
     call(&app, &t, "list_slots", who("Cursor", Some(pratibimba::mcp::PACK_VERSION), json!({}))).await;
     let j = api_get(&app, "/api/sites/demo/mcp-calls").await.json();
     assert_eq!(status(&j, "Cursor"), "installed");
+    // A later call that omits `pack` does not undo the report.
+    call(&app, &t, "list_slots", who("Cursor", None, json!({}))).await;
+    let j = api_get(&app, "/api/sites/demo/mcp-calls").await.json();
+    assert_eq!(status(&j, "Cursor"), "installed");
 }
 
 #[test]

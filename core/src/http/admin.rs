@@ -1249,7 +1249,7 @@ fn agent_kind(name: &str) -> &'static str {
     }
 }
 
-/// Per supported agent: "installed" when its newest call reported the current pack version,
+/// Per supported agent: "installed" when its newest reporting call reported the current pack version,
 /// "out_of_date" when it reported another, "not_installed" when it never reported one. Core
 /// cannot read a repo, so this is what the agent says, not a scan.
 fn pack_status(rows: &[(String, Option<String>, DateTime<Utc>)]) -> Vec<Value> {
@@ -1257,7 +1257,9 @@ fn pack_status(rows: &[(String, Option<String>, DateTime<Utc>)]) -> Vec<Value> {
         .iter()
         .map(|kind| {
             let newest = rows.iter().find(|r| agent_kind(&r.0) == *kind);
-            let (status, version) = match newest.and_then(|r| r.1.as_deref()) {
+            // A call that leaves `pack` out says nothing: the last call that reported one decides.
+            let reported = rows.iter().find(|r| agent_kind(&r.0) == *kind && r.1.is_some());
+            let (status, version) = match reported.and_then(|r| r.1.as_deref()) {
                 Some(v) if v == crate::mcp::PACK_VERSION => ("installed", Some(v)),
                 Some(v) => ("out_of_date", Some(v)),
                 None => ("not_installed", None),
