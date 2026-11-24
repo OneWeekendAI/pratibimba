@@ -1150,6 +1150,47 @@ test('preview persona shows filled hero', async ({ page }) => {
   await expect(title).toHaveText('Home-style food, cooked today');
 });
 
+let bazaar = false;
+/** Site `bazaar`: a slot that declares /cart, which holds its element; a design of words and one of only a marker. */
+function applyBazaar() {
+  if (bazaar) return;
+  const file = { site: 'bazaar', origin: 'http://localhost:3400', slots: [
+    { key: 'cart_note', selector: '[data-prb-slot=cart_note]', page: '/cart', metric: 'click', variants: [
+      { key: 'own', baseline: true },
+      { key: 'free_returns', html: '<p>Free returns on every cart</p>' },
+      { key: 'sort_cheap', html: '<i data-sort="price-low"></i>' },
+    ] },
+  ] };
+  const tmp = path.join(mkdtempSync(path.join(tmpdir(), 'prb-bz-')), 'site.json');
+  writeFileSync(tmp, JSON.stringify(file));
+  execFileSync(path.resolve(import.meta.dirname, '../../target/debug/pratibimba'), ['apply', tmp], { env: { ...process.env, PRB_DB: E2E_DB, RUST_LOG: 'warn' }, stdio: 'pipe' });
+  bazaar = true;
+}
+
+// A slot that declares its page (/cart) is drawn from that page, not from the home page it is absent from.
+test('preview_draws_a_slot_on_its_declared_page', async ({ page }) => {
+  applyBazaar();
+  await signIn(page);
+  await page.goto('/app/preview/?site=bazaar');
+  await page.getByTestId('slot-tab-cart_note').click();
+  await expect(page.getByTestId('slot-page')).toHaveText('/cart');
+  const card = page.getByTestId('variant-free_returns');
+  await expect(card.locator('[data-ready]')).toBeVisible({ timeout: 15_000 });
+  await expect(card.frameLocator('iframe').locator('[data-prb-slot=cart_note] p')).toHaveText('Free returns on every cart');
+  await expect(page.getByText('Not on this page')).toHaveCount(0);
+});
+
+// A design with nothing visible (only a marker) reads as plain words, never a blank box.
+test('preview_describes_a_design_with_nothing_to_draw', async ({ page }) => {
+  applyBazaar();
+  await signIn(page);
+  await page.goto('/app/preview/?site=bazaar');
+  await page.getByTestId('slot-tab-cart_note').click();
+  const card = page.getByTestId('variant-sort_cheap');
+  await expect(card.getByTestId('variant-text')).toHaveText('Ranks items');
+  await expect(card.locator('iframe')).toHaveCount(0);
+});
+
 // Mutation: open the source by default -> the source shows first, red.
 test('approval card renders a template for each persona', async ({ page }) => {
   applyDhaba();

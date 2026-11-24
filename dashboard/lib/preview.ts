@@ -159,3 +159,53 @@ export function cardsOf(room: RoomSlot | null, detail: DetailLike | null, visito
   }
   return cards.sort((a, b) => RANK[a.status] - RANK[b.status] || (a.id ?? 0) - (b.id ?? 0));
 }
+
+/** The page URL a slot's cards load: the preview URL (token and all) on `path`, or as it is. */
+export function pageUrl(minted: string, path: string | null | undefined): string {
+  if (!path || !path.startsWith('/')) return minted;
+  const base = new URL(minted);
+  const u = new URL(path, base.origin);
+  base.searchParams.forEach((v, k) => u.searchParams.set(k, v));
+  return u.toString();
+}
+
+/** A plain-words reading of a design's payload, for when nothing can be drawn. */
+export interface Described {
+  text: string;
+  /** Nothing visible in it at all (marker-only or empty): do not load a page to draw it. */
+  bare: boolean;
+}
+
+const DRAWS = /<(img|svg|video|picture|canvas|iframe|input|button|audio|object|embed|hr)\b/i;
+
+function fieldText(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return typeof o.alt === 'string' && o.alt ? o.alt : typeof o.url === 'string' ? 'Image' : '';
+  }
+  return String(v);
+}
+
+/** What a design says in words: its copy, "Ranks items" for a sorter, or that it is empty. Null for the page's own. */
+export function describePayload(kind: string, payload: string | null | undefined): Described | null {
+  if (payload == null) return null;
+  const t = payload.trim();
+  if (t.startsWith('{')) {
+    try {
+      const v = JSON.parse(t);
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        const rows = Object.entries(v).map(([n, x]) => [n, fieldText(x)] as const).filter(([, x]) => x);
+        const text = rows.length === 1 ? rows[0][1] : rows.map(([n, x]) => `${n}: ${x}`).join('\n');
+        return { text: text || 'Nothing to show', bare: !text };
+      }
+    } catch {
+      /* markup that happens to start with a brace */
+    }
+  }
+  const words = t.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  const sorts = kind === 'sorted' || /\bdata-sort\b/i.test(t);
+  const bare = !words && !DRAWS.test(t);
+  return { text: words || (sorts ? 'Ranks items' : 'Nothing to show'), bare };
+}

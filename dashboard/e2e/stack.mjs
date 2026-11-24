@@ -101,6 +101,18 @@ createServer(async (req, res) => {
 <div data-prb-slot="hero_copy" id="hero" style="padding:48px 24px;background:#f6e7d2"><h1 data-prb-field="title">Home-style food, cooked today</h1><p>Lunch from 12 to 3.</p></div>
 </body>`);
     }
+    if (tsite === 'bazaar') {
+      // Its one slot lives on /cart; the home page has none.
+      return res.end(url.pathname === '/cart' ? `<!doctype html><title>Your cart</title>
+<script src="/_prb/manifest/bazaar.js"></script>
+<script src="/_prb/sdk.js" data-site="bazaar"></script>
+<body style="margin:0;font:16px/1.4 Georgia,serif">
+<div data-prb-slot="cart_note" style="padding:24px;background:#efe4f0"><p>Your cart is waiting.</p></div>
+</body>` : `<!doctype html><title>Bazaar</title>
+<script src="/_prb/manifest/bazaar.js"></script>
+<script src="/_prb/sdk.js" data-site="bazaar"></script>
+<body style="margin:0;font:16px/1.4 Georgia,serif"><h1>Bazaar</h1></body>`);
+    }
     return res.end(`<!doctype html><title>Kaapi Co.</title>
 <script src="/_prb/manifest/shop.js"></script>
 <script src="/_prb/sdk.js" data-site="shop"></script>

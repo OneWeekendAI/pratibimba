@@ -94,6 +94,8 @@ flowchart LR
   headline, a different banner); `sorted` learns a per-item order with cascade credit (misses
   above the acted item, reward to it, nothing below); `copy` renders typed fields: plain text
   with length limits, and images (an uploaded asset or URL, with required alt text).
+- **Slots declare their page.** An optional `page` path (e.g. `/product/x`) on a slot, in the site
+  file or over MCP, tells the dashboard's Preview room which page to open it on.
 - **Images are first-class.** Core stores uploads per site, content-addressed, served with a
   one-year immutable cache and a policy that cannot run script; SVGs with script are refused.
   Local directory or any S3-compatible bucket. Images no live variant uses are cleaned up.

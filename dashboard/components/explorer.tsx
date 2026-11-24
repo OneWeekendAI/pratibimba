@@ -27,6 +27,8 @@ export function Thumb({
   vh,
   root,
   blocked,
+  text,
+  skip,
 }: {
   src: string;
   origin: string;
@@ -42,6 +44,10 @@ export function Thumb({
   root: RefObject<HTMLElement | null>;
   /** Why there is no picture, when there is none to draw. */
   blocked?: 'paused' | 'visitor' | null;
+  /** The design in plain words: shown when the page draws nothing for it. */
+  text?: string | null;
+  /** Nothing visible to draw: show `text` without loading the page. */
+  skip?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -50,6 +56,7 @@ export function Thumb({
   const [rect, setRect] = useState<RoomRect | null>(null);
   const [fh, setFh] = useState(vh);
   const [gone, setGone] = useState(false);
+  const [bare, setBare] = useState(false);
   const fhRef = useRef(fh);
   fhRef.current = fh;
   const ctxKey = JSON.stringify([ctx, persona ?? null]);
@@ -84,6 +91,13 @@ export function Thumb({
     if (!near || !ctx) return;
     setRect(null);
     setGone(false);
+    setBare(false);
+    let giveUp: ReturnType<typeof setTimeout> | undefined;
+    // A page that shows nothing for this design (slot or element missing, an empty box) says so late.
+    const soon = (ms: number) => {
+      if (!giveUp) giveUp = setTimeout(() => setBare(true), ms);
+    };
+    soon(9000);
     const post = (m: object) => frame.current?.contentWindow?.postMessage(m, origin);
     const timers: ReturnType<typeof setTimeout>[] = [];
     let picked = false;
@@ -95,7 +109,7 @@ export function Thumb({
         post({ type: 'prb:visitor', ctx, persona, quiet: true });
       } else if (m.type === 'prb:state') {
         const s = Array.isArray(m.slots) ? m.slots.find((x: { slot: string }) => x.slot === slot) : null;
-        if (!s) return;
+        if (!s) return soon(3500);
         const i = s.versions.findIndex((v: { key: string }) => v.key === vkey);
         if (i < 0) return setGone(true);
         if (m.picked !== slot || s.index !== i) {
@@ -106,7 +120,10 @@ export function Thumb({
           return;
         }
         const r: RoomRect | null = m.rect;
-        if (!r || r.width <= 0 || r.height <= 0) return;
+        if (!r || r.width <= 0 || r.height <= 0) return soon(3500);
+        if (giveUp) clearTimeout(giveUp);
+        giveUp = undefined;
+        setBare(false);
         const top = Math.max(0, r.top - PAD);
         const left = Math.max(0, r.left - PAD);
         setRect({ top, left, width: r.width + (r.left - left) + PAD, height: r.height + (r.top - top) + PAD, bottom: r.bottom + PAD });
@@ -124,9 +141,10 @@ export function Thumb({
     return () => {
       window.removeEventListener('message', on);
       timers.forEach(clearTimeout);
+      if (giveUp) clearTimeout(giveUp);
     };
     // ctxKey stands for ctx.
-  }, [near, ctxKey, origin, slot, vkey]);
+  }, [near, ctxKey, origin, slot, vkey, src]);
 
   useEffect(() => setFh((h) => Math.max(h, vh)), [vh]);
 
@@ -134,10 +152,15 @@ export function Thumb({
   const h = rect && s ? Math.max(56, Math.min(MAX_H, Math.round(rect.height * s))) : 128;
   const dx = rect && s ? Math.max(0, (cw - rect.width * s) / 2) : 0;
   const why = blocked ?? (gone ? 'visitor' : null);
+  const said = !why && !!text && (!!skip || (bare && !rect));
 
   return (
-    <div ref={box} className="relative overflow-hidden rounded-md bg-surface-2" style={{ height: why ? 96 : h }} data-ready={rect && !why ? '' : undefined}>
-      {why ? (
+    <div ref={box} className="relative overflow-hidden rounded-md bg-surface-2" style={said ? undefined : { height: why ? 96 : h }} data-ready={rect && !why ? '' : undefined}>
+      {said ? (
+        <div className="max-h-40 min-h-14 overflow-hidden whitespace-pre-line px-3 py-2.5 text-[13px] leading-snug text-ink" data-testid="variant-text">
+          {text}
+        </div>
+      ) : why ? (
         <Placeholder icon={why === 'paused' ? CirclePause : EyeOff}>{why === 'paused' ? 'Paused, so the page cannot show it' : 'No preview visitor gets this one'}</Placeholder>
       ) : (
         <>

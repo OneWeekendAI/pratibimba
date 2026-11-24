@@ -25,6 +25,12 @@ if (process.env.PRB_DB) {
   const tmp = path.join(mkdtempSync(path.join(tmpdir(), 'prb-ui-')), 'site.json');
   writeFileSync(tmp, JSON.stringify(file));
   try { execFileSync(BIN, ['apply', tmp], { env: { ...process.env, RUST_LOG: 'warn' }, stdio: 'pipe' }); } catch {}
+  // A slot that declares its page (/cart), for the preview room.
+  const bz = { site: 'bazaar', origin: 'http://localhost:3400', slots: [{ key: 'cart_note', selector: '[data-prb-slot=cart_note]', page: '/cart', metric: 'click', variants: [
+    { key: 'own', baseline: true }, { key: 'free_returns', html: '<p>Free returns on every cart</p>' }, { key: 'sort_cheap', html: '<i data-sort="price-low"></i>' }] }] };
+  const tb = path.join(mkdtempSync(path.join(tmpdir(), 'prb-ui-')), 'site.json');
+  writeFileSync(tb, JSON.stringify(bz));
+  try { execFileSync(BIN, ['apply', tb], { env: { ...process.env, RUST_LOG: 'warn' }, stdio: 'pipe' }); } catch {}
 }
 const dr = await get('/api/sites/dhaba/slots/hero_copy').catch(() => null);
 if (dr && !(dr.variants ?? []).some((v) => v.key === 'monday_special')) {
@@ -73,6 +79,7 @@ for (const theme of ['light', 'dark']) for (const [sz, viewport] of Object.entri
   await shot('11-drafts', '/app/drafts/?site=shop');
   await shot('12-drafts-copy', '/app/drafts/?site=dhaba');
   await shot('13-preview', '/app/preview/?site=shop');
+  await shot('13b-preview-bazaar', '/app/preview/?site=bazaar', async () => { await page.getByTestId('slot-tab-cart_note').click(); await page.locator('[data-ready]').first().waitFor({ timeout: 15000 }).catch(() => {}); await page.waitForTimeout(1500); });
   await shot('14-install', '/app/install/?site=shop');
   await shot('15-agent', '/app/agent/?site=shop');
   await shot('16-webhooks', '/app/webhooks/?site=shop');
