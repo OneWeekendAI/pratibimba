@@ -94,7 +94,7 @@ function Wizard() {
   if (q.isLoading || !q.data) return <Loading />;
   const s = Object.fromEntries(q.data.steps.map((x) => [x.id, x])) as Record<ProbeStep['id'], ProbeStep>;
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="max-w-3xl space-y-6">
       <div className="flex flex-wrap items-center gap-1.5 text-[13px] text-ink-2">
         <Globe className="size-4 text-muted" aria-hidden />
         <span className="font-mono text-[12.5px] text-ink">{q.data.origin}</span>

@@ -151,8 +151,8 @@ function Page() {
       ) : !q.data ? (
         <Loading />
       ) : (
-        <div className="max-w-4xl space-y-12">
-          <section className="space-y-3">
+        <div className="max-w-3xl space-y-10">
+          <section>
             <SectionTitle icon={Plus}>Add an endpoint</SectionTitle>
             {created && <Secret c={created} onDone={() => setCreated(null)} />}
             <AddEndpoint site={site} types={q.data.event_types} onCreated={setCreated} />

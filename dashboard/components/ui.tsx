@@ -237,11 +237,12 @@ export function Mono({ children, className }: { children: ReactNode; className?:
   return <code className={clsx('font-mono text-[12px]', className)}>{children}</code>;
 }
 
-export function Empty({ children, icon: Icon = Inbox }: { children: ReactNode; icon?: LucideIcon }) {
+export function Empty({ children, icon: Icon = Inbox, action }: { children: ReactNode; icon?: LucideIcon; action?: ReactNode }) {
   return (
-    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-line-strong px-6 py-12 text-center text-[13px] text-muted">
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-line-strong px-6 py-10 text-center text-[13px] text-muted">
       <span className="grid size-9 place-items-center rounded-full bg-surface-2 text-ink-2"><Icon className="size-4" aria-hidden /></span>
       <div className="max-w-sm">{children}</div>
+      {action}
     </div>
   );
 }
