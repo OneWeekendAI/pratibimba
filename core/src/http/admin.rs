@@ -41,6 +41,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/personas", get(personas))
         .route("/sites/{site}/install", get(install))
         .route("/sites/{site}/mcp-tokens", post(issue_mcp_token))
+        .route("/sites/{site}/mcp-tokens/revoke", post(revoke_mcp_tokens))
         .route("/sites/{site}/mcp-calls", get(mcp_calls))
         .route("/sites/{site}/pause", post(pause_site))
         .route(
@@ -345,15 +346,15 @@ fn share_source(share: Option<f32>, file_share: Option<f32>, last: Option<String
 
 async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Path<(String, String)>) -> Result<Json<Value>, ApiError> {
     let now = Utc::now();
-    let row: Option<(i64, String, String, i32, i32, i64, String, Option<Value>)> = sqlx::query_as(
-        "SELECT s.id, s.selector, s.metric, s.attribution_window_secs, s.decision_ttl_secs, m.version, s.kind, s.copy
+    let row: Option<(i64, String, String, i32, i32, i64, String, Option<Value>, Option<String>)> = sqlx::query_as(
+        "SELECT s.id, s.selector, s.metric, s.attribution_window_secs, s.decision_ttl_secs, m.version, s.kind, s.copy, s.page
            FROM slots s JOIN models m ON m.slot_id = s.id WHERE s.site_id = $1 AND s.key = $2",
     )
     .bind(&site)
     .bind(&slot)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((slot_id, selector, metric, window, ttl, version, kind, copy_spec)) = row else {
+    let Some((slot_id, selector, metric, window, ttl, version, kind, copy_spec, page)) = row else {
         return Err(ApiError::NotFound(format!("unknown slot {slot:?} on site {site:?}")));
     };
     let r = results::site(&state.pool, &site, results::ALL_TIME, now).await?.expect("site exists");
@@ -425,7 +426,7 @@ async fn slot_detail(State(state): State<Arc<AppState>>, Path((site, slot)): Pat
     let live: Vec<&results::VariantResult> = sr.variants.iter().filter(|v| v.status == "approved").collect();
     let champion = live.iter().max_by_key(|v| v.counts.n).filter(|v| v.counts.n > 0).or_else(|| live.iter().find(|v| v.is_baseline)).map(|v| v.key.clone());
     Ok(Json(json!({
-        "site": site, "slot": slot, "id": slot_id, "kind": kind, "selector": selector, "metric": metric,
+        "site": site, "slot": slot, "id": slot_id, "kind": kind, "selector": selector, "metric": metric, "page": page,
         // A copy slot's declared fields (F4), so a card can label each one; null for other kinds.
         "fields": copy_spec.as_ref().map(|s| s["fields"].clone()),
         "attribution_window_secs": window, "decision_ttl_secs": ttl, "model_version": version,
@@ -1194,6 +1195,20 @@ async fn issue_mcp_token(State(state): State<Arc<AppState>>, Path(site): Path<St
     site_origin(&state, &site).await?;
     let token = crate::mcp::issue_token(&state.pool, &site, &b.name).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(json!({ "site": site, "name": b.name.trim(), "token": token, "url": "/mcp" }))))
+}
+
+/// Rotate a token: revoke every live token of this name on the site. Past calls keep their
+/// audit record; the old token stops authenticating at once.
+async fn revoke_mcp_tokens(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<NewMcpToken>) -> Result<Json<Value>, ApiError> {
+    site_origin(&state, &site).await?;
+    let n = sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE site_id = $1 AND name = $2 AND revoked_at IS NULL")
+        .bind(&site)
+        .bind(b.name.trim())
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    tracing::info!(site, name = b.name.trim(), revoked = n, "mcp token revoked");
+    Ok(Json(json!({ "site": site, "name": b.name.trim(), "revoked": n })))
 }
 
 #[derive(Deserialize)]

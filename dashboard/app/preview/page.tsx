@@ -14,7 +14,7 @@ import { Chip, Help, Tip, type ChipTone } from '@/components/ui';
 import { api, ApiError, type Persona, type SlotDetail } from '@/lib/api';
 import { useParam } from '@/lib/page';
 import { human } from '@/lib/plain';
-import { cardsOf, ctxOf, FIRST_VISIT, TOGGLES, type CardStatus, type RoomSlot, type VariantCard, type Visitor } from '@/lib/preview';
+import { cardsOf, ctxOf, describePayload, FIRST_VISIT, pageUrl, TOGGLES, type CardStatus, type RoomSlot, type VariantCard, type Visitor } from '@/lib/preview';
 
 interface Minted {
   url: string;
@@ -61,6 +61,9 @@ function Room({ site }: { site: string }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // A path tried for a slot that declares none, and the box's text.
+  const [tries, setTries] = useState<Record<string, string>>({});
+  const [tryDraft, setTryDraft] = useState('');
   const [frameW, setFrameW] = useState(0);
   const [thumbW, setThumbW] = useState(0);
   const [frameH, setFrameH] = useState(800);
@@ -181,6 +184,14 @@ function Room({ site }: { site: string }) {
     enabled: !!selected,
   });
   const cards = useMemo(() => cardsOf(room, detail.data && detail.data.slot === selected ? detail.data : null, visitor), [room, detail.data, selected, visitor]);
+  const declared = detail.data && detail.data.slot === selected ? (detail.data.page ?? null) : null;
+  const cardPage = declared ?? (selected ? (tries[selected] ?? null) : null);
+  const cardSrc = minted ? pageUrl(minted.url, cardPage) : '';
+  const words = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof describePayload>>();
+    if (detail.data && detail.data.slot === selected) for (const v of detail.data.variants) m.set(v.key, v.is_baseline ? null : describePayload(detail.data.kind, v.payload));
+    return m;
+  }, [detail.data, selected]);
   const shownKey = room ? (room.versions[room.index]?.key ?? null) : null;
   const shown = cards.find((c) => c.key === shownKey) ?? null;
   useEffect(() => setConfirming(false), [shownKey, selected]);
@@ -193,6 +204,13 @@ function Room({ site }: { site: string }) {
   const toggle = (k: keyof Visitor) => choose({ ...visitor, [k]: !visitor[k] });
   const first = visitor.persona === FIRST_VISIT.persona && !TOGGLES.some((t) => visitor[t.key]);
   const changed = slots.filter((s) => s.changed && s.on_page).length;
+
+  const goTry = () => {
+    const p = tryDraft.trim();
+    if (!selected || !p.startsWith('/')) return;
+    setTries((t) => ({ ...t, [selected]: p }));
+  };
+  useEffect(() => setTryDraft(selected ? (tries[selected] ?? '') : ''), [selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openSlot = (slot: string) => {
     setSelected(slot);
@@ -360,7 +378,13 @@ function Room({ site }: { site: string }) {
             </div>
           )}
           {!room && slots.length === 0 && !failed && <p className="px-4 py-6 text-[13px] text-muted">Opening your site…</p>}
-          {room && !room.on_page && <p className="px-4 pb-1 text-[12.5px] text-muted">Not on this page; the designs still show below.</p>}
+          {room && declared && <p className="px-4 pb-1 font-mono text-[12px] text-muted" data-testid="slot-page">{declared}</p>}
+          {room && !declared && !room.on_page && !detail.isLoading && (
+            <form className="flex items-center gap-2 px-4 pb-1" onSubmit={(e) => { e.preventDefault(); goTry(); }}>
+              <input aria-label="Try another page" placeholder="Try another page, e.g. /cart" value={tryDraft} onChange={(e) => setTryDraft(e.target.value)} className="h-8 min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-2.5 font-mono text-[12.5px] text-ink placeholder:font-sans focus:border-ink focus:outline-none" />
+              <button type="submit" disabled={!tryDraft.trim().startsWith('/')} className="inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink shadow-[0_0_0_1px_var(--line-strong)] transition-colors enabled:hover:bg-surface-2 disabled:opacity-40">Go</button>
+            </form>
+          )}
           <div
             ref={list}
             role="listbox"
@@ -377,7 +401,9 @@ function Room({ site }: { site: string }) {
             {room &&
               minted &&
               origin &&
+              !detail.isLoading &&
               cards.map((c) => {
+                const said = words.get(c.key) ?? null;
                 const on = c.key === shownKey;
                 const A = c.audienceKey ? ICON[c.audienceKey] : Users;
                 return (
@@ -403,7 +429,9 @@ function Room({ site }: { site: string }) {
                     )}
                   >
                     <Thumb
-                      src={minted.url}
+                      src={cardSrc}
+                      text={said?.text ?? null}
+                      skip={!!said?.bare}
                       origin={origin}
                       slot={room.slot}
                       vkey={c.key}

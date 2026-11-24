@@ -5,10 +5,11 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Suspense, type ReactNode } from 'react';
 import { McpTailCard } from '@/components/agent';
+import { FieldView } from '@/components/assets';
 import { Crumb, Shell } from '@/components/shell';
-import { Braces, ChevronRight, FilePen, Globe } from 'lucide-react';
+import { Braces, ChevronDown, ChevronRight, FilePen, Globe } from 'lucide-react';
 import { Card, Chip, Empty, Loading, SectionTitle, type ChipTone } from '@/components/ui';
-import { api, type McpCallDetail, type SiteRow } from '@/lib/api';
+import { api, type FieldValue, type McpCallDetail, type SiteRow } from '@/lib/api';
 import { when } from '@/lib/format';
 import { useParam } from '@/lib/page';
 
@@ -23,9 +24,26 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** The copy a call proposed, as fields: propose_copy's `copy`, or a copy slot's `html` (a JSON object). */
+function copyOf(c: McpCallDetail): Record<string, FieldValue> | null {
+  const a = c.arguments;
+  let v: unknown = c.tool === 'propose_copy' ? a.copy : a.html;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const ok = Object.values(v).every((x) => typeof x === 'string' || (!!x && typeof x === 'object' && typeof (x as { alt?: unknown }).alt === 'string'));
+  return ok && Object.keys(v).length ? (v as Record<string, FieldValue>) : null;
+}
+
 function Record({ c }: { c: McpCallDetail }) {
+  const fields = copyOf(c);
   return (
-    <div className="max-w-4xl space-y-10">
+    <div className="max-w-4xl space-y-8">
       <Card>
         <dl className="divide-y divide-line" data-testid="audit-record">
           <Row label="Agent"><b className="font-medium">{c.agent || 'unnamed agent'}</b>{c.on_behalf_of && <span className="text-muted"> on behalf of {c.on_behalf_of}</span>}</Row>
@@ -52,10 +70,23 @@ function Record({ c }: { c: McpCallDetail }) {
           </Card>
         </section>
       )}
-      <section>
-        <SectionTitle icon={Braces} hint="as sent">Arguments</SectionTitle>
-        <pre className="overflow-x-auto rounded-lg border border-line bg-surface p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap sm:p-5" data-testid="audit-arguments">{JSON.stringify(c.arguments, null, 2)}</pre>
-      </section>
+      {fields && (
+        <section>
+          <SectionTitle icon={FilePen} hint="as proposed">Copy</SectionTitle>
+          <Card className="divide-y divide-line text-[13px]" data-testid="audit-copy-fields">
+            {Object.entries(fields).map(([name, v]) => (
+              <div key={name} className="grid grid-cols-[110px_1fr] gap-4 px-4 py-3 sm:grid-cols-[160px_1fr] sm:px-5">
+                <span className="font-mono text-[12px] text-muted">{name}</span>
+                <span className="min-w-0 break-words"><FieldView value={v} site={c.site} compact /></span>
+              </div>
+            ))}
+          </Card>
+        </section>
+      )}
+      <details className="group" open={!fields}>
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm text-[13px] font-medium text-ink-2 hover:text-ink [&::-webkit-details-marker]:hidden"><Braces className="size-4 text-muted" aria-hidden />Arguments as sent<ChevronDown className="size-3.5 text-muted transition-transform group-open:rotate-180" aria-hidden /></summary>
+        <pre className="mt-3 overflow-x-auto rounded-lg border border-line bg-surface p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap sm:p-5" data-testid="audit-arguments">{JSON.stringify(c.arguments, null, 2)}</pre>
+      </details>
     </div>
   );
 }
@@ -68,7 +99,7 @@ function AuditLog() {
   return (
     <Shell site={site} title="Audit log" help="Every tool call an agent makes leaves a record here, refused or not: who called what, for whom, why, and what it wrote.">
       {site ? (
-        <div className="max-w-4xl"><McpTailCard site={site} /></div>
+        <div className="max-w-4xl"><McpTailCard site={site} connect /></div>
       ) : sites.isLoading ? (
         <Loading />
       ) : !sites.data?.length ? (

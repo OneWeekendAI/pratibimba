@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Bot, Check, Copy, KeyRound, Plug, Radio, Terminal } from 'lucide-react';
+import { Bot, Check, ChevronDown, ChevronRight, Copy, KeyRound, Plug, Radio, Terminal } from 'lucide-react';
 import { Button, Card, Chip, Help, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
 import { api, ApiError, type McpCall, type McpTail } from '@/lib/api';
 import { ago } from '@/lib/format';
@@ -20,6 +20,13 @@ export function useMcp(site: string, slot?: string) {
     queryFn: () => api.get<McpTail>(`/sites/${site}/mcp-calls?limit=${slot ? 6 : 25}${slot ? `&slot=${encodeURIComponent(slot)}` : ''}`),
     refetchInterval: 3000,
   });
+}
+
+/** Mint a token under a name. A live token of the same name is revoked first, so minting again
+ *  rotates it instead of piling up unlimited live tokens. */
+async function rotateToken(site: string, name: string) {
+  await api.post(`/sites/${site}/mcp-tokens/revoke`, { name });
+  return api.post<{ token: string }>(`/sites/${site}/mcp-tokens`, { name });
 }
 
 function CopyBlock({ text, label }: { text: string; label: string }) {
@@ -80,7 +87,7 @@ export function ConnectAgentCard({ site, bare }: { site: string; bare?: boolean 
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setOrigin(location.origin), []);
   const mint = useMutation({
-    mutationFn: () => api.post<{ token: string }>(`/sites/${site}/mcp-tokens`, { name: name.trim() }),
+    mutationFn: () => rotateToken(site, name.trim()),
     onSuccess: (r) => {
       setToken(r.token);
       setError(null);
@@ -90,6 +97,7 @@ export function ConnectAgentCard({ site, bare }: { site: string; bare?: boolean 
   });
   const url = `${origin}${mcp.data?.endpoint ?? '/mcp'}`;
   const live = (mcp.data?.tokens ?? []).filter((t) => !t.revoked_at);
+  const exists = !!name.trim() && live.some((t) => t.name === name.trim());
   const used = live.map((t) => t.last_used).filter((t): t is string => !!t).sort().at(-1);
   const firstCall = (mcp.data?.calls ?? []).some((c) => c.outcome !== 'refused');
   return (
@@ -115,8 +123,9 @@ export function ConnectAgentCard({ site, bare }: { site: string; bare?: boolean 
               }}
             >
               <input className={`${inputClass} w-44`} value={name} onChange={(e) => setName(e.target.value)} placeholder="ritwik-laptop" aria-label="Token name" />
-              <Button type="submit" variant="ghost" icon={KeyRound} disabled={!name.trim() || mint.isPending}>Or mint one here</Button>
+              <Button type="submit" variant="ghost" icon={KeyRound} disabled={!name.trim() || mint.isPending}>{exists ? 'Rotate it' : 'Or mint one here'}</Button>
             </form>
+            {exists && !token && <p className="mt-1.5 text-xs text-muted" data-testid="token-exists">A live token named {name.trim()} exists. Rotating stops it working and makes a new one.</p>}
             {error && <p role="alert" className="mt-1 text-xs text-pause-ink">{error}</p>}
             {token && <p className="mt-2 text-xs text-warn-ink" data-testid="minted">Copy it now; it will not be shown again.</p>}
           </Step>
@@ -148,14 +157,20 @@ export function ConnectAgentCard({ site, bare }: { site: string; bare?: boolean 
 }
 
 /** The newest MCP tool calls on this site, refreshed every few seconds. */
-export function McpTailCard({ site }: { site: string }) {
+export function McpTailCard({ site, connect }: { site: string; connect?: boolean }) {
   const mcp = useMcp(site);
   const calls = mcp.data?.calls ?? [];
   return (
     <section>
       <SectionTitle icon={Terminal} help="The newest tool calls agents made on this site. It refreshes every 3 seconds; open one for its full record." hint={<span className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-good" aria-hidden />refreshing</span>}>Agent tool calls</SectionTitle>
       <Card className="divide-y divide-line text-[13px]" data-testid="mcp-tail">
-        {calls.length === 0 && <div className="px-4 py-10 text-center text-muted">No tool calls yet.</div>}
+        {calls.length === 0 && (
+          <div className="px-4 py-12 text-center" data-testid="mcp-empty">
+            <p className="text-[14px] font-medium text-ink">No tool calls yet</p>
+            <p className="mx-auto mt-1 max-w-sm text-[13px] text-muted">Each time a coding agent calls Pratibimba over MCP, it is listed here with who asked and why.</p>
+            {connect && <Link href={`/agent/?site=${site}`} className="mt-3 inline-flex items-center gap-1 rounded-sm text-[13px] font-medium text-ink-2 transition-colors hover:text-ink">Connect an agent <ChevronRight className="size-3.5" aria-hidden /></Link>}
+          </div>
+        )}
         {calls.map((c) => (
           <Link key={c.id} href={`/audit/?id=${c.id}`} className="grid grid-cols-[1fr_auto] items-center gap-x-4 px-4 py-3 transition-colors first:rounded-t-lg last:rounded-b-lg hover:bg-surface-2/60 sm:grid-cols-[84px_1fr_auto]" data-testid="mcp-call">
             <span className="text-[12px] text-muted tabular max-sm:hidden">{ago(c.at)}</span>
@@ -203,7 +218,7 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setOrigin(location.origin), []);
   const mint = useMutation({
-    mutationFn: () => api.post<{ token: string }>(`/sites/${site}/mcp-tokens`, { name: `${slot}-agent` }),
+    mutationFn: () => rotateToken(site, `${slot}-agent`),
     onSuccess: (r) => {
       setToken(r.token);
       setError(null);
@@ -212,9 +227,15 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
     onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
   });
   const calls = mcp.data?.calls ?? [];
+  const rotates = (mcp.data?.tokens ?? []).some((t) => !t.revoked_at && t.name === `${slot}-agent`);
   return (
-    <section className="space-y-3 p-4" data-testid="slot-agent">
-      <SectionTitle help="We do not run your agent or send this brief to a model. You paste the prompt into your own agent; it writes drafts over MCP, and a person approves them in Review.">Have your coding agent write a variant</SectionTitle>
+    <details className="group p-4" data-testid="slot-agent">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-sm text-[13px] font-medium text-ink-2 hover:text-ink [&::-webkit-details-marker]:hidden">
+        Have your coding agent write a variant
+        <ChevronDown className="size-4 text-muted transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="mt-3 space-y-3">
+      <p className="text-xs text-muted">We do not run your agent or send this brief to a model. Paste the prompt into your own agent; it writes drafts over MCP, and a person approves them in Review.</p>
       <CopyBlock label="slot-endpoint" text={`${origin}${mcp.data?.endpoint ?? '/mcp'}`} />
       {token ? (
         <>
@@ -222,7 +243,7 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
           <p className="text-xs text-warn-ink">Copy it now; it will not be shown again.</p>
         </>
       ) : (
-        <Button variant="ghost" icon={KeyRound} disabled={mint.isPending} onClick={() => mint.mutate()}>Mint a token for this site</Button>
+        <Button variant="ghost" icon={KeyRound} disabled={mint.isPending} onClick={() => mint.mutate()}>{rotates ? 'Rotate this slot’s token' : 'Mint a token for this site'}</Button>
       )}
       {error && <p role="alert" className="text-xs text-pause-ink">{error}</p>}
       <ul className="space-y-1" data-testid="pack-status">
@@ -246,6 +267,7 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
           </Link>
         ))}
       </div>
-    </section>
+      </div>
+    </details>
   );
 }

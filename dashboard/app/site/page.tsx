@@ -56,7 +56,7 @@ function InstallStrip({ site }: { site: string }) {
     ['slot', 'exposure', Eye],
   ];
   return (
-    <Link href={`/install/?site=${site}`} className="group mb-8 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line bg-surface px-4 py-2.5 text-[13px] transition-colors hover:border-line-strong" data-testid="install-strip">
+    <Link href={`/install/?site=${site}`} className="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line bg-surface px-4 py-2.5 text-[13px] transition-colors hover:border-line-strong" data-testid="install-strip">
       <span className="inline-flex items-center gap-1.5 text-muted">
         <Cookie className="size-3.5" aria-label="Install mode" />session cookie
       </span>
@@ -81,15 +81,15 @@ function Home() {
   if (o.isLoading || !o.data) return <Loading />;
   const d = o.data;
   return (
-    <>
-      <InstallStrip site={site} />
+    <div className="space-y-10">
       {d.stale && (
-        <div role="alert" className="mb-6 flex items-center gap-2 rounded-lg bg-warn-soft px-4 py-2.5 text-[13px] text-warn-ink">
+        <div role="alert" className="flex items-center gap-2 rounded-lg bg-warn-soft px-4 py-2.5 text-[13px] text-warn-ink">
           <TriangleAlert className="size-4 shrink-0" aria-hidden /> {d.stale}
         </div>
       )}
+      <section>
       <SectionTitle hint={o.live ? <span className="inline-flex items-center gap-1.5"><Wifi className="size-3.5" aria-hidden />live</span> : <span className="inline-flex items-center gap-1.5"><WifiOff className="size-3.5" aria-hidden />reconnecting</span>}>Right now</SectionTitle>
-      <Card className="mb-12 grid grid-cols-3 divide-x divide-line">
+      <Card className="grid grid-cols-3 divide-x divide-line">
         <Stat label="Decisions in the last minute" short="Decisions / min" icon={Zap} value={int(d.decisions_last_minute)} tone={d.stale ? 'amber' : undefined} help="How many visitors Pratibimba chose a version for in the last minute. The line is the last 30 minutes.">
           <Sparkline values={d.sparkline} label="decisions per minute, last 30 minutes" />
         </Stat>
@@ -103,7 +103,9 @@ function Home() {
           help={<><p>Today&apos;s conversion rate with personalisation, minus the rate for the holdout (visitors who always see the baseline).</p><p>The range is a 95% confidence sequence over {int(d.treated_today.n + d.holdout_today.n)} closed decisions.</p></>}
         />
       </Card>
+      </section>
 
+      <section>
       <SectionTitle help="Each slot is a region of the site that can change. Lift compares the slot's choices with its holdout over the last 7 days.">Slots</SectionTitle>
       {d.slots.length === 0 ? (
         <Empty icon={LayoutGrid}>No slots yet. Wrap a region in <code className="font-mono">&lt;Slot id="hero"&gt;</code>.</Empty>
@@ -157,14 +159,16 @@ function Home() {
         </Card>
         </>
       )}
+      </section>
       {d.pending_approvals > 0 && (
-        <Link className="mt-4 inline-flex items-center gap-2 rounded-md bg-warn-soft px-3 py-2 text-[13px] font-medium text-warn-ink transition-opacity hover:opacity-85" href={`/approvals/?site=${site}`}>
+        <Link className="flex w-fit items-center gap-2 rounded-md bg-warn-soft px-3 py-2 text-[13px] font-medium text-warn-ink transition-opacity hover:opacity-85" href={`/approvals/?site=${site}`}>
           <ShieldCheck className="size-4" aria-hidden />
           {d.pending_approvals} draft{d.pending_approvals === 1 ? '' : 's'} waiting for review
           <ChevronRight className="size-4" aria-hidden />
         </Link>
       )}
-    </>
+      <InstallStrip site={site} />
+    </div>
   );
 }
 

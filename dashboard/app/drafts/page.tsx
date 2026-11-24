@@ -215,7 +215,7 @@ function View() {
   if (!ov.data) return <Loading />;
   const slots = ov.data.slots.map((s) => s.key);
   return (
-    <div className="max-w-5xl space-y-8">
+    <div className="max-w-5xl space-y-10">
       <Waiting site={site} />
       <NewDraft site={site} slots={slots} initial={initialSlot} />
       <AssetShelf site={site} />

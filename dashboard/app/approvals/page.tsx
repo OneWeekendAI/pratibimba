@@ -289,7 +289,7 @@ function Proposal({ testid, title, detail, reason, yes, no, path, approver, site
   const [why, setWhy] = useState('');
   const [error, setError] = useState<string | null>(null);
   const answer = useMutation({
-    mutationFn: (verb: 'confirm' | 'decline') => api.post(`${path}/${verb}`, { actor: approver, comment: why.trim() || undefined }),
+    mutationFn: (verb: 'confirm' | 'decline') => api.post(`${path}/${verb}`, { actor: approver, comment: verb === 'decline' ? why.trim() || undefined : undefined }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['approvals', site] });
       qc.invalidateQueries({ queryKey: ['sites'] });
@@ -320,7 +320,7 @@ function View() {
   const q = useQuery({ queryKey: ['approvals', site], queryFn: () => api.get<Approvals>(`/sites/${site}/approvals`) });
   if (q.isLoading || !q.data) return <Loading />;
   return (
-    <div className="max-w-5xl space-y-12">
+    <div className="max-w-5xl space-y-10">
       <AdvisorQueue cards={q.data.cards ?? []} site={site} approver={approver} />
       <section>
       <SectionTitle hint={`${q.data.drafts.length} waiting`}>Drafts</SectionTitle>

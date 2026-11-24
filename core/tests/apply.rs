@@ -141,3 +141,33 @@ async fn apply_refuses_requires_on_baseline(pool: PgPool) {
     let e = apply_json(&pool, f).await.unwrap_err();
     assert!(e.contains("\"own\"") && e.contains("baseline") && e.contains("has no requires"), "{e}");
 }
+
+fn page_file(page: serde_json::Value) -> site_file::SiteFile {
+    file_from(json!({ "site": "demo", "origin": "http://x", "slots": [{ "key": "hero", "selector": "#hero", "page": page,
+        "variants": [ { "key": "baseline", "baseline": true }, { "key": "gift", "html": "<b>x</b>" } ] }] }))
+}
+
+#[sqlx::test(migrations = false)]
+async fn apply_round_trips_a_slots_page(pool: PgPool) {
+    db::migrate(&pool).await.unwrap();
+    site_file::apply(&pool, &page_file(json!("/product/x"))).await.unwrap();
+    let p: Option<String> = sqlx::query_scalar("SELECT page FROM slots WHERE key = 'hero'").fetch_one(&pool).await.unwrap();
+    assert_eq!(p.as_deref(), Some("/product/x"));
+    let app = admin_app(&pool);
+    let d = api_get(&app, "/api/sites/demo/slots/hero").await.json();
+    assert_eq!(d["page"], "/product/x", "{d}");
+    // Re-applying without the key clears it; the file is the truth.
+    site_file::apply(&pool, &demo_file()).await.unwrap();
+    let p: Option<String> = sqlx::query_scalar("SELECT page FROM slots WHERE key = 'hero'").fetch_one(&pool).await.unwrap();
+    assert_eq!(p, None);
+    let d = api_get(&app, "/api/sites/demo/slots/hero").await.json();
+    assert!(d["page"].is_null(), "{d}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn apply_refuses_a_page_without_a_leading_slash(pool: PgPool) {
+    db::migrate(&pool).await.unwrap();
+    let err = site_file::apply(&pool, &page_file(json!("product/x"))).await.expect_err("refused").to_string();
+    assert!(err.contains("page") && err.contains("\"/\""), "{err}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM sites").await, 0);
+}

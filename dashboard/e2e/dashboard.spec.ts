@@ -6,10 +6,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const CORE = 'http://127.0.0.1:18083';
+const CORE = process.env.PRB_E2E_CORE ?? 'http://127.0.0.1:18083';
 const TOKEN = 'dash-admin-token';
 // The stack's database (stack.mjs): on PRB_E2E_ADMIN_DB's server when set.
-const E2E_DB = (process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres').replace(/\/[^/]*$/, '/prb_dash_e2e');
+const E2E_DB = (process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres').replace(/\/[^/]*$/, `/${process.env.PRB_E2E_DB_NAME ?? 'prb_dash_e2e'}`);
 
 async function api<T = any>(path: string): Promise<T> {
   const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
@@ -483,7 +483,7 @@ test('connect_card_mints_a_token_that_works', async ({ page }) => {
   await page.goto('/app/agent/?site=shop');
   const card = page.getByTestId('connect-agent');
   await card.getByLabel('Token name').fill('e2e-cursor');
-  await card.getByRole('button', { name: 'Or mint one here' }).click();
+  await card.getByRole('button', { name: /Or mint one here|Rotate it/ }).click();
   await expect(card.getByTestId('minted')).toBeVisible();
   const token = /Bearer (prb_mcp_\S+?)"/.exec(await card.getByTestId('copy-config').innerText())?.[1];
   expect(token).toBeTruthy();
@@ -1150,6 +1150,47 @@ test('preview persona shows filled hero', async ({ page }) => {
   await expect(title).toHaveText('Home-style food, cooked today');
 });
 
+let bazaar = false;
+/** Site `bazaar`: a slot that declares /cart, which holds its element; a design of words and one of only a marker. */
+function applyBazaar() {
+  if (bazaar) return;
+  const file = { site: 'bazaar', origin: 'http://localhost:3400', slots: [
+    { key: 'cart_note', selector: '[data-prb-slot=cart_note]', page: '/cart', metric: 'click', variants: [
+      { key: 'own', baseline: true },
+      { key: 'free_returns', html: '<p>Free returns on every cart</p>' },
+      { key: 'sort_cheap', html: '<i data-sort="price-low"></i>' },
+    ] },
+  ] };
+  const tmp = path.join(mkdtempSync(path.join(tmpdir(), 'prb-bz-')), 'site.json');
+  writeFileSync(tmp, JSON.stringify(file));
+  execFileSync(path.resolve(import.meta.dirname, '../../target/debug/pratibimba'), ['apply', tmp], { env: { ...process.env, PRB_DB: E2E_DB, RUST_LOG: 'warn' }, stdio: 'pipe' });
+  bazaar = true;
+}
+
+// A slot that declares its page (/cart) is drawn from that page, not from the home page it is absent from.
+test('preview_draws_a_slot_on_its_declared_page', async ({ page }) => {
+  applyBazaar();
+  await signIn(page);
+  await page.goto('/app/preview/?site=bazaar');
+  await page.getByTestId('slot-tab-cart_note').click();
+  await expect(page.getByTestId('slot-page')).toHaveText('/cart');
+  const card = page.getByTestId('variant-free_returns');
+  await expect(card.locator('[data-ready]')).toBeVisible({ timeout: 15_000 });
+  await expect(card.frameLocator('iframe').locator('[data-prb-slot=cart_note] p')).toHaveText('Free returns on every cart');
+  await expect(page.getByText('Not on this page')).toHaveCount(0);
+});
+
+// A design with nothing visible (only a marker) reads as plain words, never a blank box.
+test('preview_describes_a_design_with_nothing_to_draw', async ({ page }) => {
+  applyBazaar();
+  await signIn(page);
+  await page.goto('/app/preview/?site=bazaar');
+  await page.getByTestId('slot-tab-cart_note').click();
+  const card = page.getByTestId('variant-sort_cheap');
+  await expect(card.getByTestId('variant-text')).toHaveText('Ranks items');
+  await expect(card.locator('iframe')).toHaveCount(0);
+});
+
 // Mutation: open the source by default -> the source shows first, red.
 test('approval card renders a template for each persona', async ({ page }) => {
   applyDhaba();
@@ -1233,6 +1274,9 @@ test('advisor settings save changes the value', async ({ page }) => {
   await page.goto('/app/approvals/?site=cafe');
   const panel = page.getByTestId('advisor-settings');
   const margin = panel.getByLabel('Margin (per 100)', { exact: true });
+  // Collapsed by default: six numeric inputs are not what Review is for.
+  await expect(margin).toBeHidden();
+  await panel.getByText('Advisor settings').click();
   await expect(margin).toHaveValue('0.3');
   await expect(panel).toContainText('needs ~77k visits per version');
   // Out of bounds: Save stays off.
@@ -1245,6 +1289,7 @@ test('advisor settings save changes the value', async ({ page }) => {
   const got = await api('/sites/cafe/advisor-settings');
   expect([got.margin, got.quiet_days, got.min_rows]).toEqual([3, 10, 300]);
   await page.reload();
+  await page.getByTestId('advisor-settings').getByText('Advisor settings').click();
   await expect(page.getByTestId('advisor-settings').getByLabel('Margin (per 100)', { exact: true })).toHaveValue('3');
   await page.getByTestId('advisor-settings').getByRole('button', { name: 'Restore defaults' }).click();
   await page.getByTestId('advisor-settings').getByRole('button', { name: 'Save' }).click();
@@ -1370,6 +1415,9 @@ test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', asyn
   await mcpCall(token, 'list_variants', { agent: 'Cursor', justification: 'slot panel e2e, old pack', pack: '0.0.1', slot: 'banner' });
   await page.goto('/app/slot/?site=shop&slot=hero');
   const panel = page.getByTestId('slot-agent');
+  // Collapsed by default (UI pass): one focal point on the page.
+  await expect(panel.getByLabel('Brief')).toBeHidden();
+  await panel.locator('summary').click();
   await expect(panel.getByTestId('copy-slot-endpoint')).toHaveText(`${CORE}/mcp`);
   await expect(panel.getByTestId('pack-Claude-Code')).toContainText('pack installed');
   await expect(panel.getByTestId('pack-Cursor')).toContainText('pack out of date');
@@ -1392,6 +1440,143 @@ test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', asyn
   await expect(prompt).toContainText('Call get_brand');
   await expect(prompt).toContainText('Brief: make it warmer for returning buyers');
   // A token is minted on request and shown once, copy-ready.
-  await panel.getByRole('button', { name: 'Mint a token for this site' }).click();
+  await panel.getByRole('button', { name: /Mint a token for this site|Rotate this slot/ }).click();
   await expect(panel.getByTestId('copy-slot-token')).toContainText('prb_mcp_');
+});
+
+// UI pass, group A. Mutation: render the payload as markup again -> raw JSON shows, red.
+test('decision_page_shows_a_copy_variant_as_labelled_fields', async ({ page }) => {
+  let id = '';
+  for (let i = 0; i < 40 && !id; i++) {
+    const c = await pwRequest.newContext();
+    const d = await (await c.post(`${CORE}/decide`, { data: { site: 'kiosk', slot: 'tagline', subject: `ga-copy-${Date.now()}-${i}` } })).json();
+    await c.dispose();
+    if (d.copy) id = d.decision_id;
+  }
+  expect(id).not.toBe('');
+  await signIn(page);
+  await page.goto(`/app/decision/?id=${id}&site=kiosk`);
+  await page.getByRole('button', { name: /What would/ }).click();
+  const cf = page.getByTestId('counterfactual');
+  await expect(cf.getByTestId('copy-fields')).toHaveCount(1);
+  await expect(cf.getByTestId('copy-fields')).toContainText('headline');
+  await expect(cf).not.toContainText('{"');
+});
+
+// Mutation: list items in Audiences again -> the gating selects appear for rack, red.
+test('sorted_slot_has_no_audience_gating', async ({ page }) => {
+  expect((await fetch('http://127.0.0.1:3400/__seed-sorted')).status).toBe(204);
+  await signIn(page);
+  await page.goto('/app/slot/?site=rack&slot=grid');
+  await expect(page.getByTestId('items-table')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Audiences' })).toHaveCount(0);
+  await expect(page.locator('select[aria-label^="Audience for"]')).toHaveCount(0);
+});
+
+// Mutation: put the select back beside the name -> it is narrower than the panel, red.
+for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]] as const) {
+  test(`audience_select_spans_its_panel_${name}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await signIn(page);
+    await page.goto('/app/slot/?site=shop&slot=hero');
+    const sel = page.getByLabel('Audience for gift', { exact: true });
+    await expect(sel).toBeVisible();
+    const li = await sel.locator('xpath=ancestor::li').boundingBox();
+    const box = await sel.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(li!.width - 2);
+  });
+}
+
+// Mutation: a category axis flush to the plot edges -> the dots sit on the frame, red.
+test('one_point_lift_chart_keeps_its_dots_clear_of_the_frame', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=kiosk&slot=note');
+  const dots = page.getByTestId('lift-dots');
+  await expect(dots.locator('.recharts-scatter-symbol').first()).toBeVisible();
+  const grid = (await dots.locator('.recharts-cartesian-grid').boundingBox())!;
+  for (const d of await dots.locator('.recharts-scatter-symbol').all()) {
+    const b = (await d.boundingBox())!;
+    const x = b.x + b.width / 2;
+    expect(x - grid.x).toBeGreaterThan(40);
+    expect(grid.x + grid.width - x).toBeGreaterThan(40);
+  }
+});
+
+// UI pass, group B. Mutation: send `why` on Confirm again -> the "why not" text lands as a comment, red.
+test('confirming_a_proposal_does_not_send_the_why_not_text', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const token = await agentToken('e2e-why-not');
+  await mcpCall(token, 'install_plugin', { agent: 'Claude Code', justification: 'why-not e2e', plugin: 'attribution.linear' });
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('plugin-request-attribution.linear');
+  await row.getByLabel('Why not').fill('typed for a decline');
+  let sent: string | null = null;
+  await page.route('**/api/plugin-requests/*/confirm', async (route) => {
+    sent = route.request().postData();
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+  await row.getByRole('button', { name: 'Install' }).click();
+  await expect.poll(() => sent).not.toBeNull();
+  expect(JSON.parse(sent!)).not.toHaveProperty('comment');
+  // The request stayed pending (the confirm was intercepted): decline it for real.
+  const req = (await api('/sites/shop/approvals')).plugin_requests.find((r: any) => r.plugin === 'attribution.linear');
+  await apiPost(`/api/plugin-requests/${req.id}/decline`, { actor: 'e2e', comment: 'cleanup' });
+});
+
+// Mutation: mint without revoking the same-named token -> two live tokens, red.
+test('minting_a_token_twice_rotates_it_and_leaves_one_live', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/agent/?site=shop');
+  const card = page.getByTestId('connect-agent');
+  const live = async () => (await api('/sites/shop/mcp-calls')).tokens.filter((t: any) => t.name === 'e2e-rotate' && !t.revoked_at).length;
+  await card.getByLabel('Token name').fill('e2e-rotate');
+  await card.getByRole('button', { name: /Or mint one here|Rotate it/ }).click();
+  await expect(card.getByTestId('minted')).toBeVisible();
+  await expect.poll(live).toBe(1);
+  await expect(card.getByRole('button', { name: 'Rotate it' })).toBeVisible();
+  await card.getByRole('button', { name: 'Rotate it' }).click();
+  await expect.poll(async () => (await api('/sites/shop/mcp-calls')).tokens.filter((t: any) => t.name === 'e2e-rotate').length).toBeGreaterThanOrEqual(2);
+  await expect.poll(live).toBe(1);
+});
+
+// Mutation: drop the keep-prefix on Core's redirect -> /app/audit lands on /audit/ and a blank 404, red.
+test('audit_without_a_trailing_slash_lands_on_the_audit_log', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/audit');
+  await expect(page).toHaveURL(/\/app\/audit\/$/);
+  await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible();
+});
+
+// Mutation: the empty tail says only "No tool calls yet." -> no way forward, red.
+test('an_empty_audit_log_says_how_calls_appear_and_links_to_the_agent_page', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/audit/?site=rack');
+  const empty = page.getByTestId('mcp-empty');
+  await expect(empty).toContainText('No tool calls yet');
+  await expect(empty).toContainText('over MCP');
+  await empty.getByRole('link', { name: 'Connect an agent' }).click();
+  await expect(page).toHaveURL(/\/app\/agent\/\?site=rack/);
+});
+
+// Mutation: print the arguments as JSON only -> the copy shows as {"copy":{...}}, red.
+test('an_audited_copy_proposal_shows_labelled_fields', async ({ page }) => {
+  await signIn(page);
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const { token } = await (await c.post('/api/sites/kiosk/mcp-tokens', { data: { name: 'e2e-audit-copy' } })).json();
+  const key = `e2e_${Date.now()}`;
+  await mcpCall(token, 'propose_copy', { agent: 'Claude Code', justification: 'audit copy e2e', slot: 'tagline', key, copy: { headline: 'Fresh bread at six', cta_label: 'Order now' } });
+  const call = (await api('/sites/kiosk/mcp-calls?limit=5')).calls.find((x: any) => x.tool === 'propose_copy');
+  await page.goto(`/app/audit/?id=${call.id}`);
+  const fields = page.getByTestId('audit-copy-fields');
+  await expect(fields).toContainText('headline');
+  await expect(fields).toContainText('Fresh bread at six');
+  await expect(fields).not.toContainText('{');
+  // The approvals card for the same draft is labelled fields too.
+  const draft = (await api('/sites/kiosk/approvals')).drafts.find((d: any) => d.key === key);
+  await page.goto('/app/approvals/?site=kiosk');
+  await expect(page.getByTestId(`card-${key}`).getByTestId('copy-fields')).toContainText('Fresh bread at six');
+  await expect(page.getByTestId(`card-${key}`)).not.toContainText('{"headline"');
+  await c.post(`/api/variants/${draft.id}/reject`, { data: { actor: 'e2e', comment: 'cleanup' } });
+  await c.dispose();
 });

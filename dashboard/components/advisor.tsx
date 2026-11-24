@@ -238,10 +238,15 @@ export function AdvisorSettingsPanel({ site }: { site: string }) {
     setSaved(false);
   };
   return (
-    <Card className="p-5 sm:p-6" data-testid="advisor-settings">
-      <SectionTitle help={<><p>When the advisor suggests pausing a slot. Stricter settings mean fewer, surer cards.</p><p>A card only appears once every version is inside the margin, and the newest days agree.</p></>}>Advisor settings</SectionTitle>
+    <Card className="px-5 py-4 sm:px-6" data-testid="advisor-settings">
+      <details className="group" data-testid="advisor-settings-details">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-sm text-[14px] font-semibold text-ink [&::-webkit-details-marker]:hidden">
+        <span>Advisor settings <span className="ml-1 text-[13px] font-normal text-muted">when it suggests a pause</span></span>
+        <ChevronDown className="size-4 text-muted transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <p className="mt-3 text-[13px] text-muted">Stricter settings mean fewer, surer cards. A card only appears once every version is inside the margin and the newest days agree.</p>
       <form
-        className="flex flex-wrap items-start gap-x-6 gap-y-4"
+        className="mt-4 flex flex-wrap items-start gap-x-6 gap-y-4"
         onSubmit={(e) => {
           e.preventDefault();
           if (allOk) save.mutate();
@@ -255,6 +260,7 @@ export function AdvisorSettingsPanel({ site }: { site: string }) {
           {saved && !error && !dirty && <span role="status" className="inline-flex items-center gap-1.5 text-[13px] text-good-ink"><CircleCheck className="size-4" aria-hidden />Saved</span>}
         </div>
       </form>
+      </details>
     </Card>
   );
 }

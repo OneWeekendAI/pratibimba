@@ -56,8 +56,8 @@ function Counterfactual({ d }: { d: DecisionDetail }) {
             )}
           </p>
           <div className="grid gap-3 md:grid-cols-2">
-            <div><div className="mb-1 text-xs text-muted">Shown: {d.variant}</div><Preview html={d.is_baseline ? null : d.payload} label={`shown ${d.variant}`} /></div>
-            <div><div className="mb-1 text-xs text-muted">Counterfactual: {c.variant}</div><Preview html={c.is_baseline ? null : c.payload} label={`counterfactual ${c.variant}`} /></div>
+            <div><div className="mb-1 text-xs text-muted">Shown: {d.variant}</div><Preview html={d.is_baseline ? null : d.payload} label={`shown ${d.variant}`} site={d.site} /></div>
+            <div><div className="mb-1 text-xs text-muted">Counterfactual: {c.variant}</div><Preview html={c.is_baseline ? null : c.payload} label={`counterfactual ${c.variant}`} site={d.site} /></div>
           </div>
         </div>
       )}

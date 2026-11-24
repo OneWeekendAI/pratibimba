@@ -37,7 +37,7 @@ function Sandbox({ site, status }: { site: string; status: SimStatus }) {
   });
   const n = Number(days);
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="max-w-3xl space-y-10">
       <Card className="space-y-4 p-5" data-testid="tt-form">
         <div className="flex items-center justify-between gap-3 text-[13px]">
           <span className="text-muted">Sandbox clock</span>
@@ -97,9 +97,8 @@ function Page() {
       ) : q.data ? (
         <Sandbox site={site} status={q.data} />
       ) : (
-        <div className="max-w-2xl space-y-4" data-testid="tt-empty">
-          <Empty icon={FlaskConical}>No sandbox yet.</Empty>
-          <Button icon={FlaskConical} disabled={start.isPending} onClick={() => start.mutate()}>Start a sandbox</Button>
+        <div className="max-w-3xl" data-testid="tt-empty">
+          <Empty icon={FlaskConical} action={<Button icon={FlaskConical} disabled={start.isPending} onClick={() => start.mutate()}>Start a sandbox</Button>}>No sandbox yet.</Empty>
         </div>
       )}
     </Shell>

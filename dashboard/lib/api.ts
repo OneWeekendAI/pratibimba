@@ -163,6 +163,8 @@ export interface SlotDetail {
   /** A copy slot's declared fields (F4); null for other kinds. */
   fields: CopyField[] | null;
   selector: string;
+  /** The URL path the slot lives on (e.g. /cart); null when undeclared. */
+  page?: string | null;
   metric: string;
   attribution_window_secs: number;
   decision_ttl_secs: number;

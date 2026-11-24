@@ -69,16 +69,17 @@ export function Audiences({ site, slot, variants, audiences }: { site: string; s
   return (
     <div>
       <SectionTitle icon={UsersRound} help="Pick who each live variant is shown to. A visitor outside the audience never gets it.">Audiences</SectionTitle>
-      <ul className="space-y-2 text-[13px] text-ink-2" aria-label="Variant audiences">
+      <ul className="space-y-3 text-[13px] text-ink-2" aria-label="Variant audiences">
         {live.map((v) => (
-          <li key={v.id} className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-            <span className="min-w-0 truncate text-ink">{v.key}</span>
-            {v.is_baseline ? (
-              <span className="text-muted">everyone</span>
-            ) : (
+          <li key={v.id} className="flex flex-col gap-1">
+            <span className="flex items-baseline justify-between gap-2">
+              <span className="min-w-0 truncate text-ink">{v.key}</span>
+              {v.is_baseline && <span className="text-muted">everyone</span>}
+            </span>
+            {!v.is_baseline && (
               <select
                 aria-label={`Audience for ${v.key}`}
-                className={`${inputClass} max-w-full`}
+                className={`${inputClass} w-full`}
                 value={v.audience ?? ''}
                 disabled={gate.isPending}
                 onChange={(e) => gate.mutate({ id: v.id, audience: e.target.value ? Number(e.target.value) : null })}
