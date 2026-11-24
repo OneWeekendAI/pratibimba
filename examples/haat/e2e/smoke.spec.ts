@@ -186,3 +186,86 @@ test('phone 390px: listing + product no overflow, filter drawer opens', async ({
   }
   await ctx.close();
 });
+
+const seed = (page: Page, items: Record<string, number>) => page.addInitScript((c) => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('haat.cart', JSON.stringify(c)); sessionStorage.setItem('seeded', '1'); } }, items);
+const num = (t: string | null) => +(t || '').replace(/[^\d]/g, '');
+
+test('cart: qty stepper updates totals, free-delivery bar, remove, empty state', async ({ page }) => {
+  await seed(page, { p034: 1 }); // 269: below the 499 free-delivery line
+  await page.goto('/#/cart');
+  await expect(page.getByTestId('free-msg')).toContainText('more for free delivery');
+  await expect(page.getByTestId('cart-total')).toHaveText('₹309'); // 269 + 40 delivery
+  await page.locator('[data-inc=p034]').click();
+  await expect(page.getByTestId('line-qty')).toHaveText('2');
+  await expect(page.getByTestId('line-sub')).toHaveText('₹538');
+  await expect(page.getByTestId('free-msg')).toContainText('free delivery on this order');
+  await expect(page.getByTestId('cart-total')).toHaveText('₹538');
+  await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+  await expect(page.getByTestId('cart-count')).toHaveText('2');
+  await page.locator('[data-dec=p034]').click();
+  await expect(page.getByTestId('cart-total')).toHaveText('₹309');
+  await page.locator('[data-rm=p034]').click();
+  await expect(page.locator('[data-line]')).toHaveCount(0);
+  await expect(page.getByTestId('cart-empty')).toBeVisible();
+  await expect(page.getByTestId('cart-empty')).toContainText('Your cart is empty');
+  await expect(page.getByTestId('cart-count')).toHaveText('0');
+  await expect(page.getByTestId('cross-sell').locator('.card').first()).toBeVisible();
+});
+
+test('checkout: prefilled address, delivery + payment choices, confirmation id, orders list', async ({ page }) => {
+  await seed(page, { p001: 1 });
+  await page.goto('/#/checkout');
+  await expect(page.locator('[name=name]')).not.toHaveValue('');
+  await expect(page.locator('[name=pin]')).toHaveValue('560001');
+  const total = page.getByTestId('co-total');
+  await expect(total).toHaveText('₹1,019');
+  await page.locator('[name=speed][value=express]').check();
+  await expect(total).toHaveText('₹1,118');
+  await expect(page.locator('[data-for=upi]')).toBeVisible();
+  await page.locator('[name=pay][value=card]').check();
+  await expect(page.locator('[data-for=card]')).toBeVisible();
+  await expect(page.locator('[data-for=upi]')).toBeHidden();
+  await page.locator('[name=pay][value=cod]').check();
+  await expect(page.locator('[data-for=cod]')).toBeVisible();
+  await page.getByTestId('place-order').click();
+  await expect(page.getByTestId('order-id')).toHaveText(/^HAT-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('haat.orders')!).at(-1));
+  expect(stored.payment).toBe('cod');
+  expect(stored.speed).toBe('express');
+  expect(stored.total).toBe(1118);
+  await page.getByRole('link', { name: 'Your orders' }).last().click();
+  await expect(page.getByTestId('orders')).toContainText(stored.id);
+  await page.goto('/#/checkout');
+  await expect(page.getByTestId('cart-empty')).toBeVisible();
+});
+
+test('404 state and brand store link', async ({ page }) => {
+  await page.goto('/#/nope');
+  await expect(page.getByTestId('not-found')).toContainText('could not find');
+  await page.goto('/#/product/p001');
+  await page.getByRole('link', { name: /Visit the Kiran store/ }).click();
+  await expect(page).toHaveURL(/#\/search\?q=Kiran/);
+  await expect(page.getByTestId('search-title')).toContainText('Kiran');
+  await expect(page.locator('[data-testid=grid] .card').first()).toBeVisible();
+});
+
+test('phone 390px: cart, checkout, confirmation, orders, empty, 404 do not overflow', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  const fits = async (label: string) => {
+    await page.waitForTimeout(200);
+    const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+    expect(sw, label).toBeLessThanOrEqual(iw);
+  };
+  await page.goto('/');
+  await page.evaluate(() => localStorage.setItem('haat.cart', JSON.stringify({ p001: 1, p002: 2 })));
+  await page.goto('/#/cart'); await page.reload(); await fits('cart');
+  await page.goto('/#/checkout'); await fits('checkout');
+  await page.locator('[name=pay][value=card]').check(); await fits('checkout card');
+  await page.getByTestId('place-order').click();
+  await expect(page.getByTestId('order-id')).toBeVisible(); await fits('confirmation');
+  await page.goto('/#/orders'); await fits('orders');
+  await page.goto('/#/cart'); await expect(page.getByTestId('cart-empty')).toBeVisible(); await fits('empty cart');
+  await page.goto('/#/nope'); await fits('404');
+  await ctx.close();
+});

@@ -3,6 +3,7 @@ import './shell.css';
 import './home.css';
 import './listing.css';
 import './product.css';
+import './cart.css';
 import { h, CATEGORIES, cap, cart, byId } from './lib.js';
 import { home } from './pages/home.js';
 import { category } from './pages/category.js';
@@ -11,6 +12,7 @@ import { search } from './pages/search.js';
 import { cartPage } from './pages/cart.js';
 import { checkout } from './pages/checkout.js';
 import { orders as ordersPage } from './pages/orders.js';
+import { notFound } from './pages/states.js';
 import { artSheet } from './pages/art-sheet.js';
 
 // Shell regions (promo bar, header, nav) render ONCE. Only the cart badge text is patched.
@@ -108,7 +110,8 @@ function render() {
       return;
     }
   }
-  view.replaceChildren(h('<p class="empty" data-testid="not-found">Page not found. <a href="#/">Back home</a></p>'));
+  view.replaceChildren(notFound());
+  window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', render);
 render();

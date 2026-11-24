@@ -105,9 +105,5 @@
   .row .card { flex-basis: 156px; }
   .f-cols { padding: 28px 16px 18px; }
 }
-.order { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; display: grid; gap: 6px; margin-top: 12px; }
-.order > div:first-child { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.order ul { margin: 0; padding-left: 18px; }
-.order .big { font-size: 20px; }
 
 .card-tag { display: flex; align-items: center; height: 20px; min-height: 20px; }
