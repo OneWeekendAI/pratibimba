@@ -9,7 +9,7 @@ import path from 'node:path';
 const CORE = 'http://127.0.0.1:18083';
 const TOKEN = 'dash-admin-token';
 // The stack's database (stack.mjs): on PRB_E2E_ADMIN_DB's server when set.
-const E2E_DB = (process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres').replace(/\/[^/]*$/, '/prb_dash_e2e');
+const E2E_DB = (process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres').replace(/\/[^/]*$/, `/${process.env.PRB_E2E_DB_NAME ?? 'prb_dash_e2e'}`);
 
 async function api<T = any>(path: string): Promise<T> {
   const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
@@ -1370,6 +1370,9 @@ test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', asyn
   await mcpCall(token, 'list_variants', { agent: 'Cursor', justification: 'slot panel e2e, old pack', pack: '0.0.1', slot: 'banner' });
   await page.goto('/app/slot/?site=shop&slot=hero');
   const panel = page.getByTestId('slot-agent');
+  // Collapsed by default (UI pass): one focal point on the page.
+  await expect(panel.getByLabel('Brief')).toBeHidden();
+  await panel.locator('summary').click();
   await expect(panel.getByTestId('copy-slot-endpoint')).toHaveText(`${CORE}/mcp`);
   await expect(panel.getByTestId('pack-Claude-Code')).toContainText('pack installed');
   await expect(panel.getByTestId('pack-Cursor')).toContainText('pack out of date');
@@ -1394,4 +1397,62 @@ test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', asyn
   // A token is minted on request and shown once, copy-ready.
   await panel.getByRole('button', { name: 'Mint a token for this site' }).click();
   await expect(panel.getByTestId('copy-slot-token')).toContainText('prb_mcp_');
+});
+
+// UI pass, group A. Mutation: render the payload as markup again -> raw JSON shows, red.
+test('decision_page_shows_a_copy_variant_as_labelled_fields', async ({ page }) => {
+  let id = '';
+  for (let i = 0; i < 40 && !id; i++) {
+    const c = await pwRequest.newContext();
+    const d = await (await c.post(`${CORE}/decide`, { data: { site: 'kiosk', slot: 'tagline', subject: `ga-copy-${Date.now()}-${i}` } })).json();
+    await c.dispose();
+    if (d.copy) id = d.decision_id;
+  }
+  expect(id).not.toBe('');
+  await signIn(page);
+  await page.goto(`/app/decision/?id=${id}&site=kiosk`);
+  await page.getByRole('button', { name: /What would/ }).click();
+  const cf = page.getByTestId('counterfactual');
+  await expect(cf.getByTestId('copy-fields')).toHaveCount(1);
+  await expect(cf.getByTestId('copy-fields')).toContainText('headline');
+  await expect(cf).not.toContainText('{"');
+});
+
+// Mutation: list items in Audiences again -> the gating selects appear for rack, red.
+test('sorted_slot_has_no_audience_gating', async ({ page }) => {
+  expect((await fetch('http://127.0.0.1:3400/__seed-sorted')).status).toBe(204);
+  await signIn(page);
+  await page.goto('/app/slot/?site=rack&slot=grid');
+  await expect(page.getByTestId('items-table')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Audiences' })).toHaveCount(0);
+  await expect(page.locator('select[aria-label^="Audience for"]')).toHaveCount(0);
+});
+
+// Mutation: put the select back beside the name -> it is narrower than the panel, red.
+for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]] as const) {
+  test(`audience_select_spans_its_panel_${name}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await signIn(page);
+    await page.goto('/app/slot/?site=shop&slot=hero');
+    const sel = page.getByLabel('Audience for gift', { exact: true });
+    await expect(sel).toBeVisible();
+    const li = await sel.locator('xpath=ancestor::li').boundingBox();
+    const box = await sel.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(li!.width - 2);
+  });
+}
+
+// Mutation: a category axis flush to the plot edges -> the dots sit on the frame, red.
+test('one_point_lift_chart_keeps_its_dots_clear_of_the_frame', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/slot/?site=kiosk&slot=note');
+  const dots = page.getByTestId('lift-dots');
+  await expect(dots.locator('.recharts-scatter-symbol').first()).toBeVisible();
+  const grid = (await dots.locator('.recharts-cartesian-grid').boundingBox())!;
+  for (const d of await dots.locator('.recharts-scatter-symbol').all()) {
+    const b = (await d.boundingBox())!;
+    const x = b.x + b.width / 2;
+    expect(x - grid.x).toBeGreaterThan(40);
+    expect(grid.x + grid.width - x).toBeGreaterThan(40);
+  }
 });

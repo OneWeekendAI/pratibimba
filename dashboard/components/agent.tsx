@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Bot, Check, Copy, KeyRound, Plug, Radio, Terminal } from 'lucide-react';
+import { Bot, Check, ChevronDown, Copy, KeyRound, Plug, Radio, Terminal } from 'lucide-react';
 import { Button, Card, Chip, Help, SectionTitle, inputClass, type ChipTone } from '@/components/ui';
 import { api, ApiError, type McpCall, type McpTail } from '@/lib/api';
 import { ago } from '@/lib/format';
@@ -213,8 +213,13 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
   });
   const calls = mcp.data?.calls ?? [];
   return (
-    <section className="space-y-3 p-4" data-testid="slot-agent">
-      <SectionTitle help="We do not run your agent or send this brief to a model. You paste the prompt into your own agent; it writes drafts over MCP, and a person approves them in Review.">Have your coding agent write a variant</SectionTitle>
+    <details className="group p-4" data-testid="slot-agent">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-sm text-[13px] font-medium text-ink-2 hover:text-ink [&::-webkit-details-marker]:hidden">
+        Have your coding agent write a variant
+        <ChevronDown className="size-4 text-muted transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="mt-3 space-y-3">
+      <p className="text-xs text-muted">We do not run your agent or send this brief to a model. Paste the prompt into your own agent; it writes drafts over MCP, and a person approves them in Review.</p>
       <CopyBlock label="slot-endpoint" text={`${origin}${mcp.data?.endpoint ?? '/mcp'}`} />
       {token ? (
         <>
@@ -246,6 +251,7 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
           </Link>
         ))}
       </div>
-    </section>
+      </div>
+    </details>
   );
 }

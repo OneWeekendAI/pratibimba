@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const here = import.meta.dirname;
 const ADMIN_DB = process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres';
-const NAME = 'prb_dash_e2e';
+const NAME = process.env.PRB_E2E_DB_NAME ?? 'prb_dash_e2e';
 const DB = ADMIN_DB.replace(/\/[^/]*$/, `/${NAME}`);
 const BIN = path.resolve(here, '../../target/debug/pratibimba');
 export const CORE = 'http://127.0.0.1:18083';

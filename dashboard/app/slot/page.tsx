@@ -274,9 +274,11 @@ function Workbench() {
               <div className="tabular text-muted" data-testid="slot-pending">{inWindow(s.pending!.decisions)}, counted when it closes</div>
             )}
           </div>
-          <div className="p-4">
-            <Audiences site={site} slot={slot} variants={s.variants} audiences={s.audiences} />
-          </div>
+          {!sorted && (
+            <div className="p-4">
+              <Audiences site={site} slot={slot} variants={s.variants} audiences={s.audiences} />
+            </div>
+          )}
           <SlotAgentPanel site={site} slot={slot} champion={s.champion} selector={s.selector} lift={s.lift ? `lift ${pp(s.lift.estimate)} (${int(s.treated.n)} treated, ${int(s.holdout.n)} holdout decisions)` : 'no clear lift yet'} />
         </Card>
       </aside>

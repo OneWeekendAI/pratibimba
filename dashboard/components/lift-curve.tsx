@@ -166,7 +166,7 @@ function LiftDots({ point, series, height, domain, yLabel }: { point: CurvePoint
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="var(--grid)" vertical={false} />
-            <XAxis dataKey="key" type="category" stroke="var(--axis)" tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} />
+            <XAxis dataKey="key" type="category" padding={{ left: 56, right: 56 }} stroke="var(--axis)" tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} />
             <YAxis
               domain={domain.range}
               ticks={domain.ticks}
