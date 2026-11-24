@@ -12,6 +12,7 @@
 
 import { createEdge } from './index.ts';
 import { serve } from './node.ts';
+import { proxyToOrigin } from './origin.ts';
 
 const env = process.env;
 const need = (k: string): string => {
@@ -33,10 +34,7 @@ const edge = createEdge({
   core,
   site,
   persist: env.PRB_EDGE_PERSIST === '1',
-  origin: (req) => {
-    const u = new URL(req.url);
-    return fetch(new URL(u.pathname + u.search, originBase), req);
-  },
+  origin: (req) => proxyToOrigin(req, originBase),
 });
 
 serve(async (req) => {
