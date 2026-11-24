@@ -31,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let guarded = Router::new()
         .route("/sites", get(sites))
         .route("/sites/{site}/overview", get(overview_handler))
+        .route("/sites/{site}/brand", get(brand))
         .route("/sites/{site}/stream", get(stream))
         .route("/sites/{site}/results", get(site_results))
         .route("/sites/{site}/slots/{slot}", get(slot_detail))
@@ -168,6 +169,16 @@ async fn site_origin(state: &AppState, site: &str) -> Result<String, ApiError> {
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("unknown site {site:?}")))
+}
+
+/// The site's declared brand file, as markdown text. 404 when the site declares none.
+async fn brand(State(state): State<Arc<AppState>>, Path(site): Path<String>) -> Result<Response, ApiError> {
+    let row: Option<Option<String>> = sqlx::query_scalar("SELECT brand FROM sites WHERE id = $1").bind(&site).fetch_optional(&state.pool).await?;
+    match row {
+        None => Err(ApiError::NotFound(format!("unknown site {site:?}"))),
+        Some(None) => Err(ApiError::NotFound(format!("site {site:?} declares no brand file"))),
+        Some(Some(text)) => Ok(([(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], text).into_response()),
+    }
 }
 
 async fn sites(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {

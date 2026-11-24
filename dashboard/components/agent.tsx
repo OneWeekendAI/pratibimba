@@ -180,11 +180,12 @@ const PACK_LABEL: Record<McpTail['packs'][number]['status'], [ChipTone, string]>
 };
 
 /** The prompt the developer pastes into their own agent. Built here; nothing sends it anywhere. */
-export function briefPrompt({ site, slot, champion, selector, lift, brief }: { site: string; slot: string; champion: string | null; selector: string; lift: string; brief: string }) {
+export function briefPrompt({ site, slot, champion, selector, lift, brief, origin = '' }: { origin?: string; site: string; slot: string; champion: string | null; selector: string; lift: string; brief: string }) {
   return [
     `Write a new variant for the Pratibimba slot "${slot}" on site "${site}", using the pratibimba MCP tools.`,
     `Slot: ${slot} (${selector}). Current champion: ${champion ?? 'none yet'}. Results so far: ${lift}.`,
     'Read get_site first for the brand rules and facts, and get_results for this slot. Submit a draft; do not expect to approve it.',
+    `Brand file: ${origin}/api/sites/${site}/brand (404 means none is declared).`,
     brief.trim() && `Brief: ${brief.trim()}`,
   ].filter(Boolean).join('\n');
 }
@@ -236,7 +237,7 @@ export function SlotAgentPanel({ site, slot, champion, selector, lift }: { site:
         })}
       </ul>
       <textarea className={`${inputClass} h-20 w-full py-2`} value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="What should the variant do?" aria-label="Brief" />
-      <CopyBlock label="prompt" text={briefPrompt({ site, slot, champion, selector, lift, brief })} />
+      <CopyBlock label="prompt" text={briefPrompt({ site, slot, champion, selector, lift, brief, origin })} />
       <div className="space-y-1.5 text-[12.5px]" data-testid="slot-mcp-tail">
         {calls.length === 0 && <p className="text-muted">No agent calls on this slot yet.</p>}
         {calls.map((c) => (

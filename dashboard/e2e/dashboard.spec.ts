@@ -1376,6 +1376,7 @@ test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', asyn
   await panel.getByLabel('Brief').fill('make it warmer for returning buyers');
   const prompt = panel.getByTestId('copy-prompt');
   await expect(prompt).toContainText('"hero"');
+  await expect(prompt).toContainText(`Brand file: ${CORE}/api/sites/shop/brand`);
   await expect(prompt).toContainText('Brief: make it warmer for returning buyers');
   // A token is minted on request and shown once, copy-ready.
   await panel.getByRole('button', { name: 'Mint a token for this site' }).click();

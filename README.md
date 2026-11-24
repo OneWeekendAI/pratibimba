@@ -677,6 +677,7 @@ symlinked package outside the app).
 | `POST /mcp` | the MCP server (JSON-RPC), per-site `prb_mcp_…` token |
 | `POST /webhook/stripe/:site` | Stripe Checkout conversions, verified with the site's signing secret |
 | `POST /webhook/conversion/:site` | generic signed conversions |
+| `GET /api/sites/:site/brand` | the site's brand file (`brand` in the site file) as markdown; 404 if undeclared; admin auth like the rest of `/api` |
 | `/api/*` | the dashboard API, behind `PRB_ADMIN_TOKEN` or the session cookie — see the dashboard screens |
 
 A late platform webhook can **correct a settled miss** inside the attribution window: the

@@ -29,6 +29,10 @@ pub struct SiteFile {
     /// The site's facts.md, as text: what an agent may claim. Omitted: keep the current value.
     #[serde(default)]
     pub facts: Option<String>,
+    /// The site's brand/style file (brand.md), as text; served read-only at
+    /// `GET /api/sites/:site/brand`. Omitted: keep the current value.
+    #[serde(default)]
+    pub brand: Option<String>,
     /// `cookieless`, `consent_aware` (the default for a new site) or `full`; see
     /// [`crate::privacy`]. Omitted: keep the current value.
     #[serde(default)]
@@ -339,13 +343,13 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     }
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed, attribution, currency)
-         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6, COALESCE($7, 'last_touch'), COALESCE($8, 'USD'))
+        "INSERT INTO sites (id, origin, holdout_fraction, facts, privacy_mode, fields_allowed, attribution, currency, brand)
+         VALUES ($1, $2, COALESCE($3, 0.10), $4, COALESCE($5, 'consent_aware'), $6, COALESCE($7, 'last_touch'), COALESCE($8, 'USD'), $9)
          ON CONFLICT (id) DO UPDATE SET origin = EXCLUDED.origin, holdout_fraction = COALESCE($3, sites.holdout_fraction),
                                         facts = COALESCE($4, sites.facts), privacy_mode = COALESCE($5, sites.privacy_mode),
                                         fields_allowed = COALESCE($6, sites.fields_allowed),
                                         attribution = COALESCE($7, sites.attribution),
-                                        currency = COALESCE($8, sites.currency)",
+                                        currency = COALESCE($8, sites.currency), brand = COALESCE($9, sites.brand)",
     )
         .bind(&file.site)
         .bind(&file.origin)
@@ -355,6 +359,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(&file.fields_allowed)
         .bind(&file.attribution)
         .bind(file.currency.as_deref().and_then(crate::commerce::currency))
+        .bind(&file.brand)
         .execute(&mut *tx)
         .await?;
     if let Some(u) = &file.preview_url {

@@ -98,3 +98,27 @@ async fn the_site_file_sets_the_facts(pool: PgPool) {
     let kept: Option<String> = sqlx::query_scalar("SELECT facts FROM sites WHERE id = 'demo'").fetch_one(&pool).await.unwrap();
     assert_eq!(kept.as_deref(), Some("Orders ship in 2 days."));
 }
+
+#[sqlx::test(migrations = false)]
+async fn the_brand_file_is_served_read_only_and_404s_when_undeclared(pool: PgPool) {
+    pratibimba::db::migrate(&pool).await.unwrap();
+    let mut f = json!({
+        "site": "demo", "origin": "http://localhost:5173", "brand": "# Voice\nWarm. Max 18 words.",
+        "slots": [{ "key": "hero", "selector": "#hero", "variants": [{ "key": "baseline", "baseline": true }] }]
+    });
+    let app = admin_app(&pool);
+    pratibimba::site_file::apply(&pool, &file_from(f.clone())).await.unwrap();
+    let r = api_get(&app, "/api/sites/demo/brand").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.text, "# Voice\nWarm. Max 18 words.");
+    assert_eq!(api_get(&app, "/api/sites/nope/brand").await.status, StatusCode::NOT_FOUND);
+    // Unauthenticated callers get nothing.
+    assert_eq!(get(&app, "/api/sites/demo/brand").await.status, StatusCode::UNAUTHORIZED);
+    // Omitting `brand` keeps it; a site that never declared one is 404.
+    f.as_object_mut().unwrap().remove("brand");
+    pratibimba::site_file::apply(&pool, &file_from(f.clone())).await.unwrap();
+    assert_eq!(api_get(&app, "/api/sites/demo/brand").await.status, StatusCode::OK);
+    f["site"] = json!("plain");
+    pratibimba::site_file::apply(&pool, &file_from(f)).await.unwrap();
+    assert_eq!(api_get(&app, "/api/sites/plain/brand").await.status, StatusCode::NOT_FOUND);
+}
