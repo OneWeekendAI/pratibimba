@@ -5,6 +5,6 @@ export default defineConfig({
   testDir: './e2e',
   workers: 1,
   timeout: 45_000,
-  use: { baseURL: 'http://127.0.0.1:18083' },
+  use: { baseURL: process.env.PRB_E2E_CORE ?? 'http://127.0.0.1:18083' },
   webServer: { command: 'node e2e/stack.mjs', url: 'http://127.0.0.1:3400/__ready', timeout: 240_000, reuseExistingServer: !!process.env.PRB_E2E_REUSE },
 });

@@ -41,6 +41,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/personas", get(personas))
         .route("/sites/{site}/install", get(install))
         .route("/sites/{site}/mcp-tokens", post(issue_mcp_token))
+        .route("/sites/{site}/mcp-tokens/revoke", post(revoke_mcp_tokens))
         .route("/sites/{site}/mcp-calls", get(mcp_calls))
         .route("/sites/{site}/pause", post(pause_site))
         .route(
@@ -1194,6 +1195,20 @@ async fn issue_mcp_token(State(state): State<Arc<AppState>>, Path(site): Path<St
     site_origin(&state, &site).await?;
     let token = crate::mcp::issue_token(&state.pool, &site, &b.name).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(json!({ "site": site, "name": b.name.trim(), "token": token, "url": "/mcp" }))))
+}
+
+/// Rotate a token: revoke every live token of this name on the site. Past calls keep their
+/// audit record; the old token stops authenticating at once.
+async fn revoke_mcp_tokens(State(state): State<Arc<AppState>>, Path(site): Path<String>, Json(b): Json<NewMcpToken>) -> Result<Json<Value>, ApiError> {
+    site_origin(&state, &site).await?;
+    let n = sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE site_id = $1 AND name = $2 AND revoked_at IS NULL")
+        .bind(&site)
+        .bind(b.name.trim())
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    tracing::info!(site, name = b.name.trim(), revoked = n, "mcp token revoked");
+    Ok(Json(json!({ "site": site, "name": b.name.trim(), "revoked": n })))
 }
 
 #[derive(Deserialize)]

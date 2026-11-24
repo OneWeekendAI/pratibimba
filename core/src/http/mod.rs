@@ -144,7 +144,12 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
         let not_found = dir.join("404.html");
         app = app
             .route("/app", get(|| async { axum::response::Redirect::permanent("/app/") }))
-            .nest_service("/app/", tower_http::services::ServeDir::new(dir).not_found_service(tower_http::services::ServeFile::new(not_found)));
+            .nest_service(
+                "/app/",
+                Router::new()
+                    .fallback_service(tower_http::services::ServeDir::new(dir).not_found_service(tower_http::services::ServeFile::new(not_found)))
+                    .layer(axum::middleware::map_response(keep_app_prefix)),
+            );
     }
     let app = app.with_state(state);
     let origins: Vec<HeaderValue> = cors_origins.iter().filter_map(|o| o.trim().parse().ok()).collect();
@@ -157,6 +162,18 @@ pub fn router(state: Arc<AppState>, cors_origins: &[String]) -> Router {
             .allow_methods([Method::GET, Method::POST])
             .allow_headers([header::CONTENT_TYPE]),
     )
+}
+
+/// ServeDir redirects /app/audit to /audit/ (it sees the path with /app stripped), which is a
+/// 404 page. Put the prefix back so /app/audit lands on /app/audit/.
+async fn keep_app_prefix(mut res: Response) -> Response {
+    if res.status().is_redirection() {
+        let fixed = res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).filter(|l| l.starts_with('/') && !l.starts_with("/app/")).map(|l| format!("/app{l}"));
+        if let Some(v) = fixed.and_then(|l| HeaderValue::from_str(&l).ok()) {
+            res.headers_mut().insert(header::LOCATION, v);
+        }
+    }
+    res
 }
 
 pub const SDK_JS: &str = include_str!("../../../packages/client/sdk.js");

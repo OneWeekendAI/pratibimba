@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const CORE = 'http://127.0.0.1:18083';
+const CORE = process.env.PRB_E2E_CORE ?? 'http://127.0.0.1:18083';
 const TOKEN = 'dash-admin-token';
 // The stack's database (stack.mjs): on PRB_E2E_ADMIN_DB's server when set.
 const E2E_DB = (process.env.PRB_E2E_ADMIN_DB ?? 'postgres://postgres@localhost:55440/postgres').replace(/\/[^/]*$/, `/${process.env.PRB_E2E_DB_NAME ?? 'prb_dash_e2e'}`);
@@ -483,7 +483,7 @@ test('connect_card_mints_a_token_that_works', async ({ page }) => {
   await page.goto('/app/agent/?site=shop');
   const card = page.getByTestId('connect-agent');
   await card.getByLabel('Token name').fill('e2e-cursor');
-  await card.getByRole('button', { name: 'Or mint one here' }).click();
+  await card.getByRole('button', { name: /Or mint one here|Rotate it/ }).click();
   await expect(card.getByTestId('minted')).toBeVisible();
   const token = /Bearer (prb_mcp_\S+?)"/.exec(await card.getByTestId('copy-config').innerText())?.[1];
   expect(token).toBeTruthy();
@@ -1233,6 +1233,9 @@ test('advisor settings save changes the value', async ({ page }) => {
   await page.goto('/app/approvals/?site=cafe');
   const panel = page.getByTestId('advisor-settings');
   const margin = panel.getByLabel('Margin (per 100)', { exact: true });
+  // Collapsed by default: six numeric inputs are not what Review is for.
+  await expect(margin).toBeHidden();
+  await panel.getByText('Advisor settings').click();
   await expect(margin).toHaveValue('0.3');
   await expect(panel).toContainText('needs ~77k visits per version');
   // Out of bounds: Save stays off.
@@ -1245,6 +1248,7 @@ test('advisor settings save changes the value', async ({ page }) => {
   const got = await api('/sites/cafe/advisor-settings');
   expect([got.margin, got.quiet_days, got.min_rows]).toEqual([3, 10, 300]);
   await page.reload();
+  await page.getByTestId('advisor-settings').getByText('Advisor settings').click();
   await expect(page.getByTestId('advisor-settings').getByLabel('Margin (per 100)', { exact: true })).toHaveValue('3');
   await page.getByTestId('advisor-settings').getByRole('button', { name: 'Restore defaults' }).click();
   await page.getByTestId('advisor-settings').getByRole('button', { name: 'Save' }).click();
@@ -1395,7 +1399,7 @@ test('slot_agent_panel_shows_pack_status_prompt_and_only_this_slots_calls', asyn
   await expect(prompt).toContainText('Call get_brand');
   await expect(prompt).toContainText('Brief: make it warmer for returning buyers');
   // A token is minted on request and shown once, copy-ready.
-  await panel.getByRole('button', { name: 'Mint a token for this site' }).click();
+  await panel.getByRole('button', { name: /Mint a token for this site|Rotate this slot/ }).click();
   await expect(panel.getByTestId('copy-slot-token')).toContainText('prb_mcp_');
 });
 
@@ -1455,4 +1459,83 @@ test('one_point_lift_chart_keeps_its_dots_clear_of_the_frame', async ({ page }) 
     expect(x - grid.x).toBeGreaterThan(40);
     expect(grid.x + grid.width - x).toBeGreaterThan(40);
   }
+});
+
+// UI pass, group B. Mutation: send `why` on Confirm again -> the "why not" text lands as a comment, red.
+test('confirming_a_proposal_does_not_send_the_why_not_text', async ({ page }) => {
+  await signIn(page);
+  await page.addInitScript(() => localStorage.setItem('prb-approver', 'Ritwik'));
+  const token = await agentToken('e2e-why-not');
+  await mcpCall(token, 'install_plugin', { agent: 'Claude Code', justification: 'why-not e2e', plugin: 'attribution.linear' });
+  await page.goto('/app/approvals/?site=shop');
+  const row = page.getByTestId('plugin-request-attribution.linear');
+  await row.getByLabel('Why not').fill('typed for a decline');
+  let sent: string | null = null;
+  await page.route('**/api/plugin-requests/*/confirm', async (route) => {
+    sent = route.request().postData();
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+  await row.getByRole('button', { name: 'Install' }).click();
+  await expect.poll(() => sent).not.toBeNull();
+  expect(JSON.parse(sent!)).not.toHaveProperty('comment');
+  // The request stayed pending (the confirm was intercepted): decline it for real.
+  const req = (await api('/sites/shop/approvals')).plugin_requests.find((r: any) => r.plugin === 'attribution.linear');
+  await apiPost(`/api/plugin-requests/${req.id}/decline`, { actor: 'e2e', comment: 'cleanup' });
+});
+
+// Mutation: mint without revoking the same-named token -> two live tokens, red.
+test('minting_a_token_twice_rotates_it_and_leaves_one_live', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/agent/?site=shop');
+  const card = page.getByTestId('connect-agent');
+  const live = async () => (await api('/sites/shop/mcp-calls')).tokens.filter((t: any) => t.name === 'e2e-rotate' && !t.revoked_at).length;
+  await card.getByLabel('Token name').fill('e2e-rotate');
+  await card.getByRole('button', { name: /Or mint one here|Rotate it/ }).click();
+  await expect(card.getByTestId('minted')).toBeVisible();
+  await expect.poll(live).toBe(1);
+  await expect(card.getByRole('button', { name: 'Rotate it' })).toBeVisible();
+  await card.getByRole('button', { name: 'Rotate it' }).click();
+  await expect.poll(async () => (await api('/sites/shop/mcp-calls')).tokens.filter((t: any) => t.name === 'e2e-rotate').length).toBeGreaterThanOrEqual(2);
+  await expect.poll(live).toBe(1);
+});
+
+// Mutation: drop the keep-prefix on Core's redirect -> /app/audit lands on /audit/ and a blank 404, red.
+test('audit_without_a_trailing_slash_lands_on_the_audit_log', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/audit');
+  await expect(page).toHaveURL(/\/app\/audit\/$/);
+  await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible();
+});
+
+// Mutation: the empty tail says only "No tool calls yet." -> no way forward, red.
+test('an_empty_audit_log_says_how_calls_appear_and_links_to_the_agent_page', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/audit/?site=rack');
+  const empty = page.getByTestId('mcp-empty');
+  await expect(empty).toContainText('No tool calls yet');
+  await expect(empty).toContainText('over MCP');
+  await empty.getByRole('link', { name: 'Connect an agent' }).click();
+  await expect(page).toHaveURL(/\/app\/agent\/\?site=rack/);
+});
+
+// Mutation: print the arguments as JSON only -> the copy shows as {"copy":{...}}, red.
+test('an_audited_copy_proposal_shows_labelled_fields', async ({ page }) => {
+  await signIn(page);
+  const c = await pwRequest.newContext({ baseURL: CORE, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } });
+  const { token } = await (await c.post('/api/sites/kiosk/mcp-tokens', { data: { name: 'e2e-audit-copy' } })).json();
+  const key = `e2e_${Date.now()}`;
+  await mcpCall(token, 'propose_copy', { agent: 'Claude Code', justification: 'audit copy e2e', slot: 'tagline', key, copy: { headline: 'Fresh bread at six', cta_label: 'Order now' } });
+  const call = (await api('/sites/kiosk/mcp-calls?limit=5')).calls.find((x: any) => x.tool === 'propose_copy');
+  await page.goto(`/app/audit/?id=${call.id}`);
+  const fields = page.getByTestId('audit-copy-fields');
+  await expect(fields).toContainText('headline');
+  await expect(fields).toContainText('Fresh bread at six');
+  await expect(fields).not.toContainText('{');
+  // The approvals card for the same draft is labelled fields too.
+  const draft = (await api('/sites/kiosk/approvals')).drafts.find((d: any) => d.key === key);
+  await page.goto('/app/approvals/?site=kiosk');
+  await expect(page.getByTestId(`card-${key}`).getByTestId('copy-fields')).toContainText('Fresh bread at six');
+  await expect(page.getByTestId(`card-${key}`)).not.toContainText('{"headline"');
+  await c.post(`/api/variants/${draft.id}/reject`, { data: { actor: 'e2e', comment: 'cleanup' } });
+  await c.dispose();
 });
