@@ -1,0 +1,32 @@
+{
+  "about": "Planted preferences for the Big Market shopper simulator. Each segment has a context signature (what a visitor of that kind looks like to the SDK) and a winner per slot (the variant that visitor kind really prefers). Pratibimba is never told any of this; scripts/simulate.mjs only uses it to generate behaviour and, afterwards, to grade what Core learned.",
+  "mix": { "bargain": 0.3, "gift": 0.2, "premium": 0.2, "newbie": 0.3 },
+  "rates": {
+    "click": { "win": 0.3, "other": 0.1 },
+    "add_to_cart": { "win": 0.2, "other": 0.06 },
+    "purchase": { "win": 0.12, "other": 0.03 },
+    "item": { "fav": 0.5, "other": 0.08, "position_decay": 0.85, "visible": 6 }
+  },
+  "segments": {
+    "bargain": { "sig": "from an ad, on a phone", "fav_categories": ["grocery", "kitchen"] },
+    "gift": { "sig": "returning, in the evening", "fav_categories": ["toys", "books"] },
+    "premium": { "sig": "desktop, direct", "fav_categories": ["electronics", "fashion"] },
+    "newbie": { "sig": "new, arrived from search", "fav_categories": ["home", "beauty"] }
+  },
+  "winners": {
+    "hero": { "bargain": "deals", "gift": "gift_picks", "premium": "new_arrivals", "newbie": "baseline" },
+    "listing-sort": { "bargain": "price_low", "gift": "popular", "premium": "top_rated", "newbie": "popular" },
+    "product-badge": { "bargain": "only_few", "gift": "gifting", "premium": "bestseller", "newbie": "own" },
+    "buy-button": { "bargain": "ships_today", "gift": "own", "premium": "own", "newbie": "ships_today" },
+    "delivery-message": { "bargain": "price_led", "gift": "by_day", "premium": "own", "newbie": "by_day" },
+    "promo-bar": { "bargain": "first_order", "gift": "none", "premium": "own", "newbie": "free_shipping" },
+    "category-rows": "favourite categories first",
+    "picks": "items in the favourite categories first",
+    "deals": "items in the favourite categories first",
+    "cart-cross-sell": "items in the favourite categories first"
+  },
+  "metric": {
+    "hero": "click", "listing-sort": "add_to_cart", "product-badge": "add_to_cart", "buy-button": "add_to_cart",
+    "delivery-message": "purchase", "promo-bar": "purchase"
+  }
+}

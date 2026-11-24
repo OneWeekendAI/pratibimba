@@ -1,0 +1,619 @@
+{
+ "site": "haat",
+ "flat_control": false,
+ "visitors": 6000,
+ "seconds": 819,
+ "segments_run": {
+  "first_half": {
+   "newbie": {
+    "n": 912,
+    "buys": 109
+   },
+   "premium": {
+    "n": 547,
+    "buys": 83
+   },
+   "bargain": {
+    "n": 927,
+    "buys": 134
+   },
+   "gift": {
+    "n": 614,
+    "buys": 73
+   }
+  },
+  "second_half": {
+   "bargain": {
+    "n": 935,
+    "buys": 150
+   },
+   "newbie": {
+    "n": 870,
+    "buys": 118
+   },
+   "premium": {
+    "n": 594,
+    "buys": 100
+   },
+   "gift": {
+    "n": 601,
+    "buys": 84
+   }
+  }
+ },
+ "winners_found": "38/40",
+ "found": 38,
+ "cells": 40,
+ "by_slot": {
+  "hero": "4/4",
+  "category-rows": "4/4",
+  "picks": "4/4",
+  "deals": "4/4",
+  "listing-sort": "3/4",
+  "product-badge": "3/4",
+  "buy-button": "4/4",
+  "delivery-message": "4/4",
+  "cart-cross-sell": "4/4",
+  "promo-bar": "4/4"
+ },
+ "uplift_second_half": {
+  "buy-button": {
+   "treated": {
+    "n": 2683,
+    "conversion": 0.915,
+    "revenue_per_decision": 479.23
+   },
+   "holdout": {
+    "n": 281,
+    "conversion": 0.7189,
+    "revenue_per_decision": 481.04
+   },
+   "lift_abs": 0.1961
+  },
+  "cart-cross-sell": {
+   "treated": {
+    "n": 2657,
+    "conversion": 0.8875,
+    "revenue_per_decision": 465.75
+   },
+   "holdout": {
+    "n": 277,
+    "conversion": 0.6606,
+    "revenue_per_decision": 407.31
+   },
+   "lift_abs": 0.2269
+  },
+  "category-rows": {
+   "treated": {
+    "n": 2581,
+    "conversion": 0.8334,
+    "revenue_per_decision": 456.83
+   },
+   "holdout": {
+    "n": 277,
+    "conversion": 0.6787,
+    "revenue_per_decision": 412.82
+   },
+   "lift_abs": 0.1547
+  },
+  "deals": {
+   "treated": {
+    "n": 2734,
+    "conversion": 0.9689,
+    "revenue_per_decision": 471.34
+   },
+   "holdout": {
+    "n": 290,
+    "conversion": 0.8931,
+    "revenue_per_decision": 467.93
+   },
+   "lift_abs": 0.0758
+  },
+  "delivery-message": {
+   "treated": {
+    "n": 2113,
+    "conversion": 0.1992,
+    "revenue_per_decision": 621.5
+   },
+   "holdout": {
+    "n": 235,
+    "conversion": 0.1319,
+    "revenue_per_decision": 581.66
+   },
+   "lift_abs": 0.0673
+  },
+  "hero": {
+   "treated": {
+    "n": 2198,
+    "conversion": 0.338,
+    "revenue_per_decision": 495.97
+   },
+   "holdout": {
+    "n": 237,
+    "conversion": 0.1983,
+    "revenue_per_decision": 560.95
+   },
+   "lift_abs": 0.1397
+  },
+  "listing-sort": {
+   "treated": {
+    "n": 2696,
+    "conversion": 0.9232,
+    "revenue_per_decision": 477.01
+   },
+   "holdout": {
+    "n": 283,
+    "conversion": 0.7668,
+    "revenue_per_decision": 478.87
+   },
+   "lift_abs": 0.1564
+  },
+  "picks": {
+   "treated": {
+    "n": 2749,
+    "conversion": 0.9811,
+    "revenue_per_decision": 477.64
+   },
+   "holdout": {
+    "n": 293,
+    "conversion": 0.9454,
+    "revenue_per_decision": 463.14
+   },
+   "lift_abs": 0.0357
+  },
+  "product-badge": {
+   "treated": {
+    "n": 2683,
+    "conversion": 0.915,
+    "revenue_per_decision": 479.23
+   },
+   "holdout": {
+    "n": 281,
+    "conversion": 0.7189,
+    "revenue_per_decision": 481.04
+   },
+   "lift_abs": 0.1961
+  },
+  "promo-bar": {
+   "treated": {
+    "n": 2124,
+    "conversion": 0.202,
+    "revenue_per_decision": 631.27
+   },
+   "holdout": {
+    "n": 236,
+    "conversion": 0.1314,
+    "revenue_per_decision": 579.19
+   },
+   "lift_abs": 0.0706
+  }
+ },
+ "core_site_lift": {
+  "estimate": 0.08122548839700217,
+  "hi": 0.11170202043517186,
+  "lo": 0.050748956358832475
+ },
+ "core_revenue_lift": {
+  "estimate": 92.61490130863393,
+  "hi": 235.44066780694686,
+  "lo": -50.210865189679
+ },
+ "core_holdout": {
+  "conversion_rate": {
+   "estimate": 0.5269401878398419,
+   "hi": 0.5480773657037606,
+   "lo": 0.5058030099759231
+  },
+  "conversions": 3198,
+  "credit": 3198,
+  "n": 6069,
+  "revenue": 2020007,
+  "revenue_per_visitor": {
+   "estimate": 332.8401713626627,
+   "hi": 427.93473312406803,
+   "lo": 237.7456096012574
+  }
+ },
+ "core_treated": {
+  "conversion_rate": {
+   "estimate": 0.608165676236844,
+   "hi": 0.6156028509226485,
+   "lo": 0.6007285015510395
+  },
+  "conversions": 33977,
+  "credit": 33977,
+  "n": 55868,
+  "revenue": 23769324,
+  "revenue_per_visitor": {
+   "estimate": 425.45507267129665,
+   "hi": 463.2891968029612,
+   "lo": 387.6209485396321
+  }
+ },
+ "graded": [
+  {
+   "segment": "bargain",
+   "slot": "hero",
+   "kind": "swap",
+   "planted": "deals",
+   "served_modal": "deals",
+   "served_share": 0.97,
+   "found": true,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "category-rows",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.25,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "picks",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.17,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "deals",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.42,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "listing-sort",
+   "kind": "swap",
+   "planted": "price_low",
+   "served_modal": "top_rated",
+   "served_share": 0.5,
+   "found": false,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "product-badge",
+   "kind": "copy",
+   "planted": "only_few",
+   "served_modal": "only_few",
+   "served_share": 0.62,
+   "found": true,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "buy-button",
+   "kind": "copy",
+   "planted": "ships_today",
+   "served_modal": "ships_today",
+   "served_share": 0.88,
+   "found": true,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "delivery-message",
+   "kind": "copy",
+   "planted": "price_led",
+   "served_modal": "price_led",
+   "served_share": 0.71,
+   "found": true,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "cart-cross-sell",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.31,
+   "probes": 112
+  },
+  {
+   "segment": "bargain",
+   "slot": "promo-bar",
+   "kind": "copy",
+   "planted": "first_order",
+   "served_modal": "first_order",
+   "served_share": 0.85,
+   "found": true,
+   "probes": 112
+  },
+  {
+   "segment": "gift",
+   "slot": "hero",
+   "kind": "swap",
+   "planted": "gift_picks",
+   "served_modal": "gift_picks",
+   "served_share": 0.88,
+   "found": true,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "category-rows",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 0.99,
+   "chance": 0.25,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "picks",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.33,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "deals",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.33,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "listing-sort",
+   "kind": "swap",
+   "planted": "popular",
+   "served_modal": "popular",
+   "served_share": 0.6,
+   "found": true,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "product-badge",
+   "kind": "copy",
+   "planted": "gifting",
+   "served_modal": "only_few",
+   "served_share": 0.53,
+   "found": false,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "buy-button",
+   "kind": "copy",
+   "planted": "own",
+   "served_modal": "own",
+   "served_share": 0.91,
+   "found": true,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "delivery-message",
+   "kind": "copy",
+   "planted": "by_day",
+   "served_modal": "by_day",
+   "served_share": 0.64,
+   "found": true,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "cart-cross-sell",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.31,
+   "probes": 109
+  },
+  {
+   "segment": "gift",
+   "slot": "promo-bar",
+   "kind": "copy",
+   "planted": "none",
+   "served_modal": "none",
+   "served_share": 0.63,
+   "found": true,
+   "probes": 109
+  },
+  {
+   "segment": "premium",
+   "slot": "hero",
+   "kind": "swap",
+   "planted": "new_arrivals",
+   "served_modal": "new_arrivals",
+   "served_share": 1,
+   "found": true,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "category-rows",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.25,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "picks",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 0.99,
+   "chance": 0.17,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "deals",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 0.98,
+   "chance": 0.17,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "listing-sort",
+   "kind": "swap",
+   "planted": "top_rated",
+   "served_modal": "top_rated",
+   "served_share": 0.55,
+   "found": true,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "product-badge",
+   "kind": "copy",
+   "planted": "bestseller",
+   "served_modal": "bestseller",
+   "served_share": 0.54,
+   "found": true,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "buy-button",
+   "kind": "copy",
+   "planted": "own",
+   "served_modal": "own",
+   "served_share": 0.65,
+   "found": true,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "delivery-message",
+   "kind": "copy",
+   "planted": "own",
+   "served_modal": "own",
+   "served_share": 0.86,
+   "found": true,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "cart-cross-sell",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.25,
+   "probes": 110
+  },
+  {
+   "segment": "premium",
+   "slot": "promo-bar",
+   "kind": "copy",
+   "planted": "own",
+   "served_modal": "own",
+   "served_share": 0.71,
+   "found": true,
+   "probes": 110
+  },
+  {
+   "segment": "newbie",
+   "slot": "hero",
+   "kind": "swap",
+   "planted": "baseline",
+   "served_modal": "baseline",
+   "served_share": 0.99,
+   "found": true,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "category-rows",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.25,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "picks",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.33,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "deals",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.08,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "listing-sort",
+   "kind": "swap",
+   "planted": "popular",
+   "served_modal": "popular",
+   "served_share": 0.55,
+   "found": true,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "product-badge",
+   "kind": "copy",
+   "planted": "own",
+   "served_modal": "own",
+   "served_share": 0.67,
+   "found": true,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "buy-button",
+   "kind": "copy",
+   "planted": "ships_today",
+   "served_modal": "ships_today",
+   "served_share": 0.61,
+   "found": true,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "delivery-message",
+   "kind": "copy",
+   "planted": "by_day",
+   "served_modal": "by_day",
+   "served_share": 0.73,
+   "found": true,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "cart-cross-sell",
+   "kind": "sorted",
+   "found": true,
+   "top1_favourite_share": 1,
+   "chance": 0.13,
+   "probes": 106
+  },
+  {
+   "segment": "newbie",
+   "slot": "promo-bar",
+   "kind": "copy",
+   "planted": "free_shipping",
+   "served_modal": "free_shipping",
+   "served_share": 0.54,
+   "found": true,
+   "probes": 106
+  }
+ ]
+}

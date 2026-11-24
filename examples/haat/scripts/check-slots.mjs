@@ -59,6 +59,7 @@ const browser = await chromium.launch();
 try {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
+  await page.route('**/_prb/**', (r) => r.fulfill({ status: 502, body: 'down' })); // judge the markup, never what a live Core swapped in
   for (const [name, path, cart] of pages) {
     await page.goto(BASE + '/');
     await page.evaluate((c) => localStorage.setItem('haat.cart', JSON.stringify(c || {})), cart);

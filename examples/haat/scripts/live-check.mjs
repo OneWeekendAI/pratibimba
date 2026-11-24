@@ -57,6 +57,7 @@ for (const P of PERSONAS) {
     timezoneId: 'Asia/Kolkata', extraHTTPHeaders: P.ref ? { referer: P.ref } : undefined,
   });
   await ctx.clock?.install?.({ time: new Date(P.at) }).catch?.(() => {});
+  if (P.returning) { const warm = await ctx.newPage(); await warm.goto(`${STORE}/${P.q}#/`, { referer: P.ref || undefined }); await warm.waitForTimeout(1500); await warm.close(); } // cookie predates the next tab's session
   const page = await ctx.newPage();
   const errs = [];
   page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
@@ -66,7 +67,6 @@ for (const P of PERSONAS) {
   if (P.ref) await page.route('**/*', (r) => r.continue()); // referer set via goto
   const got = {};
   const go = async (hash, sel) => { await page.goto(`${STORE}/${P.q}${hash}`, { referer: P.ref || undefined }); await settle(page, sel); await page.waitForTimeout(250); };
-  if (P.returning) { await go('#/', '[data-prb-slot=hero]'); }          // first visit makes them known
   await go('#/', '[data-prb-slot=hero]');
   Object.assign(got, await variants(page));
   got.__home = { ...got };

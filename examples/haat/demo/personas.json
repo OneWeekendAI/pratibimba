@@ -1,0 +1,218 @@
+[
+ {
+  "key": "bargain",
+  "name": "Asha, on her phone",
+  "about": "Tapped an Instagram ad, on mobile, mid-morning",
+  "mobile": true,
+  "q": "?utm_source=ig&utm_medium=cpc",
+  "ref": "",
+  "at": "2026-11-24T10:30:00+05:30",
+  "returning": false,
+  "home": {
+   "promo": "New here? Free delivery over ₹499, 7-day returns, cash on delivery.",
+   "hero": "Prices that reset at midnight",
+   "rows": [
+    "kitchen",
+    "grocery",
+    "beauty",
+    "home",
+    "fashion",
+    "books",
+    "electronics",
+    "toys"
+   ],
+   "picks": [
+    "p126",
+    "p029",
+    "p149",
+    "p105"
+   ]
+  },
+  "product": {
+   "badge": "Only 4 left",
+   "buy": "Buy now, ships tomorrow",
+   "delivery": "Free delivery, arriving Saturday, 28 Nov to 560001"
+  },
+  "sort": "rating",
+  "variants": {
+   "promo-bar": "first_order",
+   "hero": "deals",
+   "category-rows": "kitchen",
+   "picks": "p126",
+   "deals": "p119",
+   "listing-sort": "top_rated",
+   "product-badge": "bestseller",
+   "buy-button": "ships_today",
+   "delivery-message": "price_led",
+   "cart-cross-sell": "p119"
+  },
+  "why": {
+   "hero": "We showed `deals` to visitor `1b521e5f-4…` on 2026-11-24 04:59 UTC. They were a new visitor, on mobile, arriving from an ad. The lints_features v5317 policy scored it 0.27 against 0.16 for `new_arrivals`, 0.07 for `baseline`, 0.03 for `gift_picks`. They were not in the holdout. The page has not reported showing it yet.",
+   "category-rows": "We ordered `kitchen`, `grocery`, `beauty`, `home`, `fashion`, `books`, `electronics`, `toys` for visitor `1b521e5f-4…` on 2026-11-24 04:59 UTC. They were a new visitor, on mobile, arriving from an ad. The lints_features v5316 policy scored `kitchen` first at 0.54, then 0.48 for `grocery`, 0.18 for `beauty`, 0.16 for `home`; each item sits by its score. They were not in the holdout. The page has not reported showing it yet.",
+   "product-badge": "We showed `bestseller` to visitor `1b521e5f-4…` on 2026-11-24 04:59 UTC. They were a new visitor, on mobile, arriving from an ad. The lints_features v5306 policy scored it 0.85 against 0.79 for `only_few`, 0.71 for `gifting`, 0.69 for `own`. They were not in the holdout. The page has not reported showing it yet."
+  },
+  "tries": 1
+ },
+ {
+  "key": "gift",
+  "name": "Rohan, back for a gift",
+  "about": "Returning visitor, evening, came via Google",
+  "mobile": false,
+  "q": "",
+  "ref": "https://www.google.com/search?q=gift",
+  "tz": "Pacific/Kiritimati",
+  "returning": true,
+  "home": {
+   "promo": "Everyday things, delivered across India.",
+   "hero": "Gifts they will actually use",
+   "rows": [
+    "books",
+    "toys",
+    "beauty",
+    "home",
+    "electronics",
+    "kitchen",
+    "grocery",
+    "fashion"
+   ],
+   "picks": [
+    "p105",
+    "p099",
+    "p050",
+    "p104"
+   ]
+  },
+  "product": {
+   "badge": "Only 4 left",
+   "buy": "Buy now, ships tomorrow",
+   "delivery": "Arrives Saturday, 28 Nov to 560001"
+  },
+  "sort": "popular",
+  "variants": {
+   "promo-bar": "none",
+   "hero": "gift_picks",
+   "category-rows": "books",
+   "picks": "p105",
+   "deals": "p112",
+   "listing-sort": "popular",
+   "product-badge": "only_few",
+   "buy-button": "ships_today",
+   "delivery-message": "by_day",
+   "cart-cross-sell": "p105"
+  },
+  "why": {
+   "hero": "We showed `gift_picks` to visitor `797e7394-e…` on 2026-11-24 04:59 UTC. They were a new visitor, on desktop, not from an ad. The lints_features v5366 policy scored it 0.35 against 0.17 for `baseline`, 0.16 for `new_arrivals`, 0.08 for `deals`. They were not in the holdout. The page has not reported showing it yet.",
+   "category-rows": "We ordered `books`, `toys`, `beauty`, `home`, `electronics`, `kitchen`, `grocery`, `fashion` for visitor `797e7394-e…` on 2026-11-24 04:59 UTC. They were a new visitor, on desktop, not from an ad. The lints_features v5366 policy scored `books` first at 0.38, then 0.27 for `toys`, 0.15 for `beauty`, 0.13 for `home`; each item sits by its score. They were not in the holdout. The page has not reported showing it yet.",
+   "product-badge": "We showed `only_few` to visitor `797e7394-e…` on 2026-11-24 04:59 UTC. They were a new visitor, on desktop, not from an ad. The lints_features v5353 policy scored it 0.91 against 0.79 for `gifting`, 0.75 for `own`, 0.40 for `bestseller`. They were not in the holdout. The page has not reported showing it yet."
+  },
+  "tries": 3
+ },
+ {
+  "key": "premium",
+  "name": "Meera, at her desk",
+  "about": "Desktop, typed the address in, mid-day",
+  "mobile": false,
+  "q": "",
+  "ref": "",
+  "at": "2026-11-24T12:15:00+05:30",
+  "returning": false,
+  "home": {
+   "promo": "New here? Free delivery over ₹499, 7-day returns, cash on delivery.",
+   "hero": "Just landed on the shelf",
+   "rows": [
+    "fashion",
+    "electronics",
+    "grocery",
+    "beauty",
+    "home",
+    "books",
+    "toys",
+    "kitchen"
+   ],
+   "picks": [
+    "p018",
+    "p071",
+    "p136",
+    "p126"
+   ]
+  },
+  "product": {
+   "badge": "Only 4 left",
+   "buy": "Buy now, ships tomorrow",
+   "delivery": "Free delivery by Saturday, 28 Nov to 560001"
+  },
+  "sort": "rating",
+  "variants": {
+   "promo-bar": "first_order",
+   "hero": "new_arrivals",
+   "category-rows": "fashion",
+   "picks": "p018",
+   "deals": "p009",
+   "listing-sort": "top_rated",
+   "product-badge": "bestseller",
+   "buy-button": "ships_today",
+   "delivery-message": "own",
+   "cart-cross-sell": "p062"
+  },
+  "why": {
+   "hero": "We showed `new_arrivals` to visitor `b1353beb-e…` on 2026-11-24 04:59 UTC. They were a new visitor, on desktop, not from an ad. The lints_features v5366 policy scored it 0.31 against 0.19 for `deals`, 0.15 for `gift_picks`, 0.12 for `baseline`. They were not in the holdout. The page has not reported showing it yet.",
+   "category-rows": "We ordered `fashion`, `electronics`, `grocery`, `beauty`, `home`, `books`, `toys`, `kitchen` for visitor `b1353beb-e…` on 2026-11-24 04:59 UTC. They were a new visitor, on desktop, not from an ad. The lints_features v5366 policy scored `fashion` first at 0.55, then 0.47 for `electronics`, 0.19 for `grocery`, 0.18 for `beauty`; each item sits by its score. They were not in the holdout. The page has not reported showing it yet.",
+   "product-badge": "We showed `bestseller` to visitor `b1353beb-e…` on 2026-11-24 04:59 UTC. They were a new visitor, on desktop, not from an ad. The lints_features v5353 policy scored it 0.80 against 0.71 for `only_few`, 0.71 for `gifting`, 0.39 for `own`. They were not in the holdout. The page has not reported showing it yet."
+  },
+  "tries": 1
+ },
+ {
+  "key": "newbie",
+  "name": "Kabir, first visit",
+  "about": "New visitor from a Google search, afternoon",
+  "mobile": true,
+  "q": "",
+  "ref": "https://www.google.com/search?q=cookware",
+  "at": "2026-11-24T15:00:00+05:30",
+  "returning": false,
+  "home": {
+   "promo": "Free standard delivery on every order this weekend. No minimum.",
+   "hero": "Everything for your home, at market prices",
+   "rows": [
+    "beauty",
+    "home",
+    "electronics",
+    "kitchen",
+    "toys",
+    "books",
+    "grocery",
+    "fashion"
+   ],
+   "picks": [
+    "p148",
+    "p136",
+    "p149",
+    "p141"
+   ]
+  },
+  "product": {
+   "badge": "Only 4 left",
+   "buy": "Add to cart",
+   "delivery": "Free delivery, arriving Saturday, 28 Nov to 560001"
+  },
+  "sort": "rating",
+  "variants": {
+   "promo-bar": "free_shipping",
+   "hero": "baseline",
+   "category-rows": "beauty",
+   "picks": "p148",
+   "deals": "p086",
+   "listing-sort": "top_rated",
+   "product-badge": "gifting",
+   "buy-button": "own",
+   "delivery-message": "price_led",
+   "cart-cross-sell": "p081"
+  },
+  "why": {
+   "hero": "We showed `baseline` to visitor `12594db7-5…` on 2026-11-24 04:59 UTC. They were a new visitor, on mobile, not from an ad. The lints_features v5412 policy scored it 0.32 against 0.08 for `deals`, 0.05 for `new_arrivals`, 0.03 for `gift_picks`. They were not in the holdout. The page has not reported showing it yet.",
+   "category-rows": "We ordered `beauty`, `home`, `electronics`, `kitchen`, `toys`, `books`, `grocery`, `fashion` for visitor `12594db7-5…` on 2026-11-24 04:59 UTC. They were a new visitor, on mobile, not from an ad. The lints_features v5411 policy scored `beauty` first at 0.47, then 0.46 for `home`, 0.14 for `electronics`, 0.12 for `kitchen`; each item sits by its score. They were not in the holdout. The page has not reported showing it yet.",
+   "product-badge": "We showed `gifting` to visitor `12594db7-5…` on 2026-11-24 04:59 UTC. They were a new visitor, on mobile, not from an ad. The lints_features v5402 policy scored it 0.75 against 0.73 for `own`, 0.48 for `bestseller`, 0.39 for `only_few`. They were not in the holdout. The page has not reported showing it yet."
+  },
+  "tries": 1
+ }
+]

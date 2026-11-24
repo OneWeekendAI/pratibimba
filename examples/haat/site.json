@@ -214,13 +214,27 @@
         },
         {
           "key": "price_low",
-          "html": "<i data-sort=\"price-low\"></i>"
+          "copy": {
+            "sort": "price-low"
+          }
         },
         {
           "key": "top_rated",
-          "html": "<i data-sort=\"rating\"></i>"
+          "copy": {
+            "sort": "rating"
+          }
         }
-      ]
+      ],
+      "kind": "copy",
+      "copy": {
+        "fields": [
+          {
+            "name": "sort",
+            "max": 12,
+            "required": true
+          }
+        ]
+      }
     },
     {
       "key": "product-badge",

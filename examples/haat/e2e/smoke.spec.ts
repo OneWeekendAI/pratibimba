@@ -15,7 +15,7 @@ function watch(page: Page) {
 // These tests assume Core is unreachable (or want a stubbed window.prb). A live Core on :8080 would answer, so cut /_prb off
 // for them explicitly: they then mean the same thing whether or not Core is running.
 test.beforeEach(async ({ page }, info) => {
-  if (/^(Core absent|outcome events|every page type|cart:|checkout:)/.test(info.title)) await page.route('**/_prb/**', (r) => r.fulfill({ status: 502, body: 'down' }));
+  if (/^(Core absent|outcome events|every page type|cart:|checkout:|default-sort)/.test(info.title)) await page.route('**/_prb/**', (r) => r.fulfill({ status: 502, body: 'down' }));
 });
 
 test('every page type renders and nothing errors', async ({ page }) => {
@@ -430,10 +430,10 @@ test('delivery slot template: the page fills {fee} {day} {pin} when a decided va
 test('default-sort slot sets the control only until the visitor chooses', async ({ page }) => {
   await page.goto('/#/c/kitchen');
   const marker = page.locator('[data-prb-slot=listing-sort]');
-  await marker.evaluate((el) => { el.innerHTML = '<i data-sort="price-low"></i>'; });
+  await marker.evaluate((el) => { el.querySelector('[data-prb-field=sort]').textContent = 'price-low'; });
   await expect(page.getByTestId('sort')).toHaveValue('price-low');
   await page.getByTestId('sort').selectOption('rating');
-  await marker.evaluate((el) => { el.innerHTML = '<i data-sort="popular"></i>'; });
+  await marker.evaluate((el) => { el.querySelector('[data-prb-field=sort]').textContent = 'popular'; });
   await expect(page.getByTestId('sort')).toHaveValue('rating');
 });
 
