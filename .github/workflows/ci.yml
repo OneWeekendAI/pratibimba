@@ -1,0 +1,49 @@
+name: ci
+
+# Read-only, no secrets, no deploy. Forks and pull requests run the same checks with the
+# default (read-only) token; the jobs only run in the OneWeekendAI organisation.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  edge-image:
+    if: github.repository_owner == 'OneWeekendAI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build Core
+        run: cargo build
+      - name: Edge unit tests
+        working-directory: packages/edge
+        run: |
+          npm ci
+          npm test
+      - name: Edge image contract (docker build + run against Core)
+        run: node ci/edge-image.mjs

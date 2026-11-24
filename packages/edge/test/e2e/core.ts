@@ -35,13 +35,13 @@ export function heroSite(site: string) {
   };
 }
 
-export async function startCore(name: string, port: number, sites: object[]): Promise<Core> {
+export async function startCore(name: string, port: number, sites: object[], bindHost = '127.0.0.1'): Promise<Core> {
   const admin = process.env.PRB_E2E_ADMIN_DB ?? process.env.DATABASE_URL ?? 'postgres://postgres@localhost:55440/postgres';
   const db = admin.replace(/\/[^/]*$/, `/${name}`);
   const psql = (url: string, q: string) => execFileSync('psql', [url, '-qAt', '-c', q], { stdio: 'pipe' }).toString().trim();
   psql(admin, `DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
   psql(admin, `CREATE DATABASE ${name}`);
-  const env = { ...process.env, PRB_DB: db, RUST_LOG: 'warn', PRB_BIND: `127.0.0.1:${port}`, PRB_WORKER_TICK_MS: '100' };
+  const env = { ...process.env, PRB_DB: db, RUST_LOG: 'warn', PRB_BIND: `${bindHost}:${port}`, PRB_WORKER_TICK_MS: '100' };
   execFileSync(BIN, ['migrate'], { env, stdio: 'pipe' });
   const dir = mkdtempSync(path.join(tmpdir(), 'prb-e2e-'));
   for (const s of sites) {
