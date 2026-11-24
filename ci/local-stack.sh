@@ -6,13 +6,13 @@
 #   ci/local-stack.sh             build what is stale, then run
 #   ci/local-stack.sh --fresh     drop and recreate the prb_local database first
 #
-# Env: PRB_PGDATA (default ../pratibimba-demo/pgdata, outside git), PRB_ADMIN_TOKEN (default
+# Env: PRB_PGDATA (default .local/pgdata, gitignored), PRB_ADMIN_TOKEN (default
 # local-admin-token).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 PG_BIN=${PG_BIN:-/opt/homebrew/opt/postgresql@17/bin}
-PGDATA=${PRB_PGDATA:-$ROOT/../pratibimba-demo/pgdata}
+PGDATA=${PRB_PGDATA:-$ROOT/.local/pgdata}
 ADMIN_URL=postgres://postgres@localhost:55440/postgres
 export PRB_DB=postgres://postgres@localhost:55440/prb_local
 export PRB_ADMIN_TOKEN=${PRB_ADMIN_TOKEN:-local-admin-token}

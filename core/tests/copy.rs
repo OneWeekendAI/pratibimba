@@ -600,5 +600,5 @@ site_file_reads! {
     site_file_e2e_sorted_reads => "dashboard/e2e/sorted.json",
     site_file_fixture_plain_reads => "packages/agent/test/fixtures/plain/site.json",
     site_file_fixture_next_reads => "packages/agent/test/fixtures/next/site.json",
-    site_file_example_haat_reads => "examples/haat/site.json",
+    site_file_example_haat_reads => "examples/big-market/site.json",
 }

@@ -626,7 +626,7 @@ npx @pratibimba/agent install        # drops the instruction pack into .claude /
 `install` adds two skills: `pratibimba` (read results, draft variants) and
 `pratibimba-integrate` (add Pratibimba to an existing site someone else wrote: Core,
 `site.json`, the script tag and consent, slots, outcome events;
-[`examples/haat`](examples/haat), the Big Market demo store, shows the result). Then mint a per-site MCP token in
+[`examples/big-market`](examples/big-market), the Big Market demo store, shows the result). Then mint a per-site MCP token in
 the dashboard and point your agent at `POST /mcp` on your Core. The agent reads results and drafts variants in real components; a human still has to
 approve every draft before it is served.
 
@@ -655,7 +655,7 @@ symlinked package outside the app).
 | `packages/edge/` | `@pratibimba/edge` SDK |
 | `packages/client/` | the script-tag fallback (embedded in Core via `include_str!`) |
 | `packages/agent/` | `@pratibimba/agent` MCP instruction pack and `scan` CLI |
-| `examples/haat/` | Big Market: a full demo store with 10 slots, a shopper simulator and persona/proof pages |
+| `examples/big-market/` | Big Market: a full demo store with 10 slots, a shopper simulator and persona/proof pages |
 | `examples/compose.yml` | self-hosted Postgres + Core + worker + nightly backup |
 | `deploy/` | optional, not the install path: the edge Worker (`proxy-worker/`), a Cloud Run example (`cloud-run/`), latency and edge checks (`checks/`); see `deploy/README.md` |
 | `ci/` | `parity.sh` (edge vs Core on identical inputs), `direct.mjs`, local stack bringup |

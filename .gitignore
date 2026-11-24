@@ -12,3 +12,4 @@ next-env.d.ts
 examples/backups/
 # The default local asset store (PRB_ASSETS_DIR), e.g. from ci/local-stack.sh
 prb-assets/
+.local/
