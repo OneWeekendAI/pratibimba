@@ -265,12 +265,14 @@ requires: paths the visitor must have (e.g. [\"visitor.top_item\"]); a visitor l
                      "metric": { "type": "string", "description": "Optional: the event that counts as success (default \"click\")." },
                      "attribution_window_secs": { "type": "integer", "minimum": 1, "description": "Optional: how long after a decision a success still counts (default 1800)." },
                      "decision_ttl_secs": { "type": "integer", "minimum": 0, "description": "Optional: how long a visitor keeps the same decision (default 60)." },
+                     "page": { "type": "string", "description": "Optional: the page the slot lives on, a URL path starting with \"/\", e.g. \"/product/x\" (at most 512 characters)." },
                      "note": { "type": "string", "description": "Optional note to the reviewer; starts the comment thread." } }),
              &["key", "selector"]),
-        tool("update_slot", "Change a DRAFT slot's selector, metric, attribution window, decision TTL or kind options (only the fields you send): a copy slot's copy.fields, a sorted slot's sorted.visible or items. Kind options are checked as the site file checks them, together with the slot's existing variants: fields a variant would no longer fit (a newly required field it lacks, a max its text exceeds, a field it fills that you drop) are refused, and nothing changes. A live slot's settings belong to the site owner and are refused. On a live slot you may only PROPOSE a live variant's traffic_share (your justification is the reason the reviewer reads); it keeps its share until a person confirms, and the answer appears on list_variants.",
+        tool("update_slot", "Change a DRAFT slot's selector, metric, attribution window, decision TTL, page (the URL path it lives on; null clears) or kind options (only the fields you send): a copy slot's copy.fields, a sorted slot's sorted.visible or items. Kind options are checked as the site file checks them, together with the slot's existing variants: fields a variant would no longer fit (a newly required field it lacks, a max its text exceeds, a field it fills that you drop) are refused, and nothing changes. A live slot's settings belong to the site owner and are refused. On a live slot you may only PROPOSE a live variant's traffic_share (your justification is the reason the reviewer reads); it keeps its share until a person confirms, and the answer appears on list_variants.",
              json!({ "slot": slot,
                      "selector": { "type": "string" }, "metric": { "type": "string" },
                      "attribution_window_secs": { "type": "integer", "minimum": 1 }, "decision_ttl_secs": { "type": "integer", "minimum": 0 },
+                     "page": { "type": ["string", "null"], "description": "The page the slot lives on, a URL path starting with \"/\". null or \"\" clears it." },
                      "copy": { "type": "object", "description": "Draft copy slot only: the new {\"fields\": [{\"name\", \"max\", \"required\"}]} (replaces the old list).",
                                "properties": { "fields": { "type": "array", "items": { "type": "object",
                                    "properties": { "name": { "type": "string" }, "max": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Text: required, the value's max length. Image: optional, the alt text's max (default 250)." }, "required": { "type": "boolean" },
@@ -551,6 +553,8 @@ struct NewSlot {
     metric: Option<String>,
     attribution_window_secs: Option<i32>,
     decision_ttl_secs: Option<i32>,
+    /// The page the slot lives on, a URL path starting with `/`.
+    page: Option<String>,
     note: Option<String>,
 }
 
@@ -562,6 +566,9 @@ struct SlotUpdate {
     metric: Option<String>,
     attribution_window_secs: Option<i32>,
     decision_ttl_secs: Option<i32>,
+    /// The page the slot lives on. Absent: unchanged; null or empty: cleared.
+    #[serde(default, deserialize_with = "double_option")]
+    page: Option<Option<String>>,
     /// A draft copy slot's new fields, judged with its variants by the site file's rules.
     copy: Option<crate::copy::CopySpec>,
     /// A draft sorted slot's options (`visible`).
@@ -592,6 +599,11 @@ struct PluginArgs {
 struct RetireArgs {
     slot: String,
     variant: String,
+}
+
+/// Tells an absent field (`None`) from an explicit null (`Some(None)`).
+fn double_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Ok(Some(Option::<String>::deserialize(d)?))
 }
 
 fn check_slot_settings(selector: &str, metric: &str, window: i32, ttl: i32) -> Result<(), ApiError> {
@@ -626,6 +638,7 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     let ttl = a.decision_ttl_secs.unwrap_or_else(crate::site_file::default_ttl);
     let selector = a.selector.trim().to_string();
     check_slot_settings(&selector, &metric, window, ttl)?;
+    let page = crate::site_file::check_page(a.page.as_deref()).map_err(ApiError::BadRequest)?;
     let kind = a.kind.unwrap_or_else(|| "swap".into());
     if !["swap", crate::copy::KIND, crate::sorted::KIND].contains(&kind.as_str()) {
         return Err(ApiError::BadRequest(format!("kind must be swap, copy or sorted (got {kind:?})")));
@@ -656,13 +669,14 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
         revenue_cap: None,
         sorted: a.sorted,
         copy: a.copy,
+        page: page.clone(),
         variants,
     };
     crate::site_file::validate_slot(&spec).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let mut tx = pool.begin().await?;
     let slot_id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, sorted, copy, created_by, mcp_call_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (site_id, key) DO NOTHING RETURNING id",
+        "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, sorted, copy, created_by, mcp_call_id, page)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (site_id, key) DO NOTHING RETURNING id",
     )
     .bind(site)
     .bind(&a.key)
@@ -675,6 +689,7 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     .bind(crate::copy::stored(&spec))
     .bind(format!("mcp:{agent}"))
     .bind(call_row)
+    .bind(&page)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(slot_id) = slot_id else {
@@ -713,7 +728,7 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
     }
     tx.commit().await?;
     Ok(json!({
-        "slot": a.key, "kind": kind, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl,
+        "slot": a.key, "kind": kind, "selector": selector, "metric": metric, "attribution_window_secs": window, "decision_ttl_secs": ttl, "page": page,
         "status": "draft", "baseline_id": baseline,
         "next": match kind.as_str() {
             "copy" => "Draft copy slot saved. It reaches no visitor until a person approves its baseline in the dashboard. Propose text for it with propose_copy.",
@@ -728,11 +743,11 @@ async fn create_slot(pool: &PgPool, site: &str, a: NewSlot, call_row: i64, agent
 /// proposal a person confirms (`share_requests`).
 async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, who: &Who<'_>) -> Result<Value, ApiError> {
     let slot_id = slot_id(pool, site, &u.slot).await?;
-    let settings = u.selector.is_some() || u.metric.is_some() || u.attribution_window_secs.is_some() || u.decision_ttl_secs.is_some();
+    let settings = u.selector.is_some() || u.metric.is_some() || u.attribution_window_secs.is_some() || u.decision_ttl_secs.is_some() || u.page.is_some();
     let options = u.copy.is_some() || u.sorted.is_some() || u.items.is_some();
     if !settings && !options && u.traffic_share.is_none() {
         return Err(ApiError::BadRequest(
-            "send at least one of selector, metric, attribution_window_secs, decision_ttl_secs, copy, sorted, items, traffic_share".into(),
+            "send at least one of selector, metric, attribution_window_secs, decision_ttl_secs, page, copy, sorted, items, traffic_share".into(),
         ));
     }
     let draft = is_draft_slot(pool, slot_id).await?;
@@ -750,8 +765,8 @@ async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, wh
     let mut tx = pool.begin().await?;
     let mut out = json!({ "slot": u.slot, "status": if draft { "draft" } else { "live" } });
     if settings || options {
-        let (selector, metric, window, ttl, kind, copy, sorted): (String, String, i32, i32, String, Option<Value>, Option<Value>) = sqlx::query_as(
-            "SELECT selector, metric, attribution_window_secs, decision_ttl_secs, kind, copy, sorted FROM slots WHERE id = $1 FOR UPDATE",
+        let (selector, metric, window, ttl, kind, copy, sorted, page): (String, String, i32, i32, String, Option<Value>, Option<Value>, Option<String>) = sqlx::query_as(
+            "SELECT selector, metric, attribution_window_secs, decision_ttl_secs, kind, copy, sorted, page FROM slots WHERE id = $1 FOR UPDATE",
         )
         .bind(slot_id)
         .fetch_one(&mut *tx)
@@ -761,14 +776,19 @@ async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, wh
         let window = u.attribution_window_secs.unwrap_or(window);
         let ttl = u.decision_ttl_secs.unwrap_or(ttl);
         check_slot_settings(&selector, &metric, window, ttl)?;
-        let spec = kind_spec(&mut tx, slot_id, &u.slot, &kind, copy, sorted, u.copy, u.sorted, u.items.clone(), (&selector, &metric, window, ttl)).await?;
+        let page = match &u.page {
+            Some(p) => crate::site_file::check_page(p.as_deref()).map_err(ApiError::BadRequest)?,
+            None => page,
+        };
+        let mut spec = kind_spec(&mut tx, slot_id, &u.slot, &kind, copy, sorted, u.copy, u.sorted, u.items.clone(), (&selector, &metric, window, ttl)).await?;
         // The site file's own per-slot rules judge the slot with the variants it already has, so
         // fields that a variant would no longer fit are refused here, not discovered at approval.
+        spec.page = page.clone();
         crate::site_file::validate_slot(&spec).map_err(|e| ApiError::BadRequest(format!("{e} (the slot's existing variants must still fit; nothing was changed)")))?;
         if let Some(items) = &u.items {
             set_items(&mut tx, slot_id, items, call_row, who.agent).await?;
         }
-        sqlx::query("UPDATE slots SET selector = $2, metric = $3, attribution_window_secs = $4, decision_ttl_secs = $5, copy = $6, sorted = $7 WHERE id = $1")
+        sqlx::query("UPDATE slots SET selector = $2, metric = $3, attribution_window_secs = $4, decision_ttl_secs = $5, copy = $6, sorted = $7, page = $8 WHERE id = $1")
             .bind(slot_id)
             .bind(&selector)
             .bind(&metric)
@@ -776,6 +796,7 @@ async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, wh
             .bind(ttl)
             .bind(crate::copy::stored(&spec))
             .bind(crate::sorted::stored(&spec))
+            .bind(&page)
             .execute(&mut *tx)
             .await?;
         let o = out.as_object_mut().expect("object");
@@ -783,6 +804,7 @@ async fn update_slot(pool: &PgPool, site: &str, u: SlotUpdate, call_row: i64, wh
         o.insert("metric".into(), json!(metric));
         o.insert("attribution_window_secs".into(), json!(window));
         o.insert("decision_ttl_secs".into(), json!(ttl));
+        o.insert("page".into(), json!(page));
         o.insert("copy".into(), json!(crate::copy::stored(&spec)));
         o.insert("sorted".into(), json!(crate::sorted::stored(&spec)));
     }
@@ -902,6 +924,7 @@ async fn kind_spec(
         revenue_cap: None,
         sorted,
         copy,
+        page: None,
         variants,
     })
 }
@@ -1219,18 +1242,18 @@ async fn slot_id(pool: &PgPool, site: &str, slot: &str) -> Result<i64, ApiError>
 async fn get_site(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
     let (origin, holdout, forbidden, facts): (String, f32, Vec<String>, Option<String>) =
         sqlx::query_as("SELECT origin, holdout_fraction, forbidden_claims, facts FROM sites WHERE id = $1").bind(site).fetch_one(pool).await?;
-    let slots: Vec<(String, String, String, i32, String)> =
-        sqlx::query_as("SELECT key, selector, metric, attribution_window_secs, goal FROM slots WHERE site_id = $1 ORDER BY key").bind(site).fetch_all(pool).await?;
+    let slots: Vec<(String, String, String, i32, String, Option<String>)> =
+        sqlx::query_as("SELECT key, selector, metric, attribution_window_secs, goal, page FROM slots WHERE site_id = $1 ORDER BY key").bind(site).fetch_all(pool).await?;
     Ok(json!({
         "id": site, "origin": origin, "holdout_fraction": holdout, "forbidden_claims": forbidden, "facts": facts,
-        "slots": slots.into_iter().map(|(key, selector, metric, w, goal)| json!({ "key": key, "selector": selector, "metric": metric, "attribution_window_secs": w, "goal": goal })).collect::<Vec<_>>(),
+        "slots": slots.into_iter().map(|(key, selector, metric, w, goal, page)| json!({ "key": key, "selector": selector, "metric": metric, "attribution_window_secs": w, "goal": goal, "page": page })).collect::<Vec<_>>(),
     }))
 }
 
 async fn list_slots(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
     let r = results::site(pool, site, results::ALL_TIME, Utc::now()).await?.ok_or_else(|| ApiError::NotFound(format!("unknown site {site:?}")))?;
-    let rows: Vec<(i64, String, String, Option<Value>)> =
-        sqlx::query_as("SELECT id, selector, kind, copy FROM slots WHERE site_id = $1").bind(site).fetch_all(pool).await?;
+    let rows: Vec<(i64, String, String, Option<Value>, Option<String>)> =
+        sqlx::query_as("SELECT id, selector, kind, copy, page FROM slots WHERE site_id = $1").bind(site).fetch_all(pool).await?;
     let slots: Vec<Value> = r
         .slots
         .iter()
@@ -1241,6 +1264,7 @@ async fn list_slots(pool: &PgPool, site: &str) -> Result<Value, ApiError> {
                 "key": s.key, "metric": s.metric,
                 "selector": row.map(|r| r.1.clone()),
                 "kind": row.map(|r| r.2.clone()),
+                "page": row.and_then(|r| r.4.clone()),
                 // A copy slot's fields (F4): propose_copy text must fit these.
                 "copy_fields": row.and_then(|r| r.3.as_ref()).map(|c| c["fields"].clone()),
                 "champion": admin::champion(&s.variants).map(|v| v.key.clone()),

@@ -756,3 +756,55 @@ async fn a_dropped_item_listed_again_is_a_draft_again(pool: PgPool) {
     assert_eq!(grid_variants(&pool).await, vec![draft("mug", true), draft("pot", false), draft("tea", false)]);
     assert_eq!(trail(&pool, mug).await.len(), 1, "one retire row, from the drop");
 }
+
+// ---- page ---------------------------------------------------------------------------------------
+
+async fn page_of(pool: &PgPool, slot: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT page FROM slots WHERE key = $1").bind(slot).fetch_one(pool).await.unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_slot_declares_its_page_over_mcp(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let made = data(&call(&app, &t, "create_slot", why(json!({ "key": "promo", "selector": "#promo", "page": "/product/x" }))).await);
+    assert_eq!(made["page"], "/product/x");
+    assert_eq!(page_of(&pool, "promo").await.as_deref(), Some("/product/x"));
+    let listed = data(&call(&app, &t, "list_slots", why(json!({}))).await);
+    let s = listed["slots"].as_array().unwrap().iter().find(|s| s["key"] == "promo").unwrap().clone();
+    assert_eq!(s["page"], "/product/x");
+    let up = data(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "page": "/sale" }))).await);
+    assert_eq!(up["page"], "/sale");
+    assert_eq!(page_of(&pool, "promo").await.as_deref(), Some("/sale"));
+    // Other updates leave it alone; null clears it.
+    data(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "metric": "signup" }))).await);
+    assert_eq!(page_of(&pool, "promo").await.as_deref(), Some("/sale"));
+    data(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "page": null }))).await);
+    assert_eq!(page_of(&pool, "promo").await, None);
+    data(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "page": "/a" }))).await);
+    data(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "page": "" }))).await);
+    assert_eq!(page_of(&pool, "promo").await, None);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_page_without_a_leading_slash_is_refused_over_mcp(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let e = err_text(&call(&app, &t, "create_slot", why(json!({ "key": "promo", "selector": "#promo", "page": "product/x" }))).await);
+    assert!(e.contains("page"), "{e}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM slots WHERE key = 'promo'").await, 0);
+    promo(&app, &t).await;
+    let e = err_text(&call(&app, &t, "update_slot", why(json!({ "slot": "promo", "page": "nope" }))).await);
+    assert!(e.contains("page"), "{e}");
+    assert_eq!(page_of(&pool, "promo").await, None);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_mcp_tool_schemas_offer_page(pool: PgPool) {
+    let (app, t) = setup(&pool).await;
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+    let req = Request::post("/mcp").header("content-type", "application/json").header("authorization", format!("Bearer {t}")).body(Body::from(body.to_string())).unwrap();
+    let r = send(&app, req).await.json();
+    for name in ["create_slot", "update_slot"] {
+        let tool = r["result"]["tools"].as_array().unwrap().iter().find(|x| x["name"] == name).unwrap().clone();
+        assert!(tool["inputSchema"]["properties"]["page"].is_object(), "{name}: {tool}");
+    }
+}

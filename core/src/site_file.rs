@@ -109,6 +109,9 @@ pub struct SlotSpec {
     /// A `kind: "copy"` slot's fields (see [`crate::copy`]); refused on any other kind.
     #[serde(default)]
     pub copy: Option<crate::copy::CopySpec>,
+    /// The page the slot lives on: a URL path starting with `/`, e.g. `/product/x`. Omitted: undeclared.
+    #[serde(default)]
+    pub page: Option<String>,
     pub variants: Vec<VariantSpec>,
 }
 
@@ -215,6 +218,25 @@ impl SiteFile {
     }
 }
 
+/// Longest page path a slot may declare.
+pub const MAX_PAGE_LEN: usize = 512;
+
+/// A slot's declared page, checked and normalised: trimmed, empty means undeclared. A page is a
+/// URL path: it starts with `/`, has no whitespace or control characters, and is at most 512 long.
+pub fn check_page(page: Option<&str>) -> Result<Option<String>, String> {
+    let Some(p) = page.map(str::trim).filter(|p| !p.is_empty()) else { return Ok(None) };
+    if !p.starts_with('/') {
+        return Err(format!("page {p:?} must be a URL path starting with \"/\", e.g. \"/product/x\""));
+    }
+    if p.len() > MAX_PAGE_LEN {
+        return Err(format!("page is longer than {MAX_PAGE_LEN} characters"));
+    }
+    if p.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("page must not contain whitespace or control characters".into());
+    }
+    Ok(Some(p.to_string()))
+}
+
 pub const GOALS: [&str; 2] = ["conversion", "revenue"];
 
 /// One slot's rules, as the site file holds them. The MCP `create_slot` runs the same check on
@@ -238,6 +260,7 @@ pub fn validate_slot(slot: &SlotSpec) -> Result<()> {
     }
     check_attribution(&format!("slot {k:?}"), slot.attribution.as_deref())?;
     check_goal(&format!("slot {k:?}"), slot.goal.as_deref(), slot.revenue_cap)?;
+    check_page(slot.page.as_deref()).map_err(|e| anyhow::anyhow!("slot {k:?}: {e}"))?;
     crate::stated::validate_slot(slot)?;
     crate::sorted::validate_slot(slot)?;
     crate::copy::validate_slot(slot)?;
@@ -389,13 +412,13 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
     for slot in &file.slots {
         let slot_id: i64 = sqlx::query_scalar(
             "INSERT INTO slots (site_id, key, selector, metric, attribution_window_secs, decision_ttl_secs, kind, in_session, picker, cold_start_exposures, attribution,
-                                goal, revenue_cap, sorted, copy)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                goal, revenue_cap, sorted, copy, page)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT (site_id, key) DO UPDATE SET selector = EXCLUDED.selector, metric = EXCLUDED.metric,
                  attribution_window_secs = EXCLUDED.attribution_window_secs, decision_ttl_secs = EXCLUDED.decision_ttl_secs,
                  kind = EXCLUDED.kind, in_session = EXCLUDED.in_session, picker = EXCLUDED.picker,
                  cold_start_exposures = EXCLUDED.cold_start_exposures, attribution = EXCLUDED.attribution,
-                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap, sorted = EXCLUDED.sorted, copy = EXCLUDED.copy
+                 goal = EXCLUDED.goal, revenue_cap = EXCLUDED.revenue_cap, sorted = EXCLUDED.sorted, copy = EXCLUDED.copy, page = EXCLUDED.page
              RETURNING id",
         )
         .bind(&file.site)
@@ -413,6 +436,7 @@ pub async fn apply(pool: &PgPool, file: &SiteFile) -> Result<()> {
         .bind(slot.revenue_cap)
         .bind(crate::sorted::stored(slot))
         .bind(crate::copy::stored(slot))
+        .bind(check_page(slot.page.as_deref()).map_err(|e| anyhow::anyhow!("slot {:?}: {e}", slot.key))?)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO models (slot_id) VALUES ($1) ON CONFLICT DO NOTHING").bind(slot_id).execute(&mut *tx).await?;
